@@ -74,3 +74,4 @@ Commands must print JSON artifact containing:
 - `ORCH_LLM_BACKEND`
 - `ORCH_LLM_MODEL`
 - `ORCH_OLLAMA_BASE_URL`
+# research_henchman

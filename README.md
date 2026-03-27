@@ -16,6 +16,10 @@
   - `Results`: run timeline and retry
   - `Settings`: view/edit `.env` values and add API keys
 
+## Project Docs
+- `docs/interactive_orchestrator_design.md`
+- `docs/orchestrator_app.md`
+
 ## Run
 From repository root:
 

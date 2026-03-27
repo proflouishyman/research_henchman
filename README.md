@@ -16,6 +16,7 @@
 - Plan tab now shows manuscript read diagnostics (status, char count, detected headings) so it is clear when parsing succeeded or fell back.
 - Stores orchestrator runs/events in `app/data`.
 - Supports pull mode routing (`api`, `playwright`, `auto`) through adapter contracts.
+- Workflow UI blocks run launch when required env keys are missing and points users to Settings.
 - Automatically runs:
   - pull -> ingest -> llm fit
 - Exposes connection schema + `.env` save endpoints.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import traceback
@@ -65,7 +66,7 @@ def _validate_preflight(settings: OrchestratorSettings, payload: Dict[str, Any])
 
     missing: List[str] = []
     for key in _required_env_for_run(settings, mode=mode, provider=provider):
-        if not str(__import__("os").environ.get(key, "")).strip():
+        if not str(os.environ.get(key, "")).strip():
             missing.append(key)
     if missing:
         raise RuntimeError(f"Missing required env keys: {', '.join(sorted(missing))}")
@@ -300,4 +301,3 @@ def run_orchestration(
         )
         if settings.fail_fast:
             raise
-

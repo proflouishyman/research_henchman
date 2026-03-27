@@ -6,56 +6,68 @@
   <title>Research Orchestrator</title>
   <style>
     :root {
-      --bg: #f6f1e8;
-      --bg-soft: #fbf8f2;
-      --panel: #fffdf8;
-      --line: #d8cdbb;
-      --line-strong: #c7b79f;
-      --ink: #2e2a25;
-      --muted: #6f665a;
-      --accent: #6b5b45;
-      --accent-soft: #ece3d5;
-      --ok: #3f7a56;
-      --warn: #916c20;
-      --error: #9a3e3e;
-      --radius: 12px;
+      --bg: #f3ede3;
+      --bg-soft: #faf6ef;
+      --panel: #fffdf9;
+      --line: #d9cebc;
+      --line-strong: #c9b99f;
+      --ink: #28231e;
+      --muted: #6f6558;
+      --accent: #5e4f3a;
+      --accent-soft: #ece2d3;
+      --ok: #366c4d;
+      --warn: #8c6827;
+      --error: #983f3f;
+      --radius-sm: 10px;
+      --radius-md: 14px;
       --space-1: 6px;
       --space-2: 10px;
       --space-3: 14px;
       --space-4: 18px;
       --space-5: 24px;
+      --space-6: 32px;
       --font-ui: "Space Grotesk", "Avenir Next", sans-serif;
       --font-mono: "IBM Plex Mono", "Menlo", monospace;
     }
+
     * { box-sizing: border-box; }
+
     body {
       margin: 0;
       color: var(--ink);
       font-family: var(--font-ui);
-      background: radial-gradient(1200px 400px at 80% -10%, #f0e6d8, transparent 70%), var(--bg);
+      background: radial-gradient(900px 320px at 90% -15%, #eadfce, transparent 72%), var(--bg);
     }
+
     .shell {
-      max-width: 1320px;
+      max-width: 1360px;
       margin: 0 auto;
       padding: var(--space-5);
     }
+
     .topbar {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
-      gap: var(--space-3);
+      gap: var(--space-4);
       margin-bottom: var(--space-4);
     }
+
     h1 {
       margin: 0;
-      font-size: 26px;
+      font-size: 36px;
+      line-height: 1;
       letter-spacing: 0.01em;
+      font-weight: 700;
     }
+
     .subtitle {
       color: var(--muted);
-      font-size: 13px;
-      margin-top: 4px;
+      font-size: 14px;
+      margin-top: 8px;
+      max-width: 640px;
     }
+
     .tabs {
       display: flex;
       gap: var(--space-1);
@@ -63,7 +75,9 @@
       border-radius: 999px;
       padding: var(--space-1);
       background: var(--panel);
+      align-self: center;
     }
+
     .tab-btn {
       border: 0;
       background: transparent;
@@ -71,33 +85,108 @@
       padding: 8px 14px;
       border-radius: 999px;
       font-size: 13px;
-      cursor: pointer;
-    }
-    .tab-btn.active {
-      background: var(--accent-soft);
-      color: var(--ink);
       font-weight: 600;
+      cursor: pointer;
+      margin: 0;
     }
-    .layout {
+
+    .tab-btn.active {
+      color: var(--ink);
+      background: var(--accent-soft);
+    }
+
+    .hidden { display: none; }
+
+    .workflow-layout,
+    .results-layout,
+    .settings-layout {
       display: grid;
-      grid-template-columns: 360px minmax(0, 1fr);
       gap: var(--space-3);
     }
+
+    .workflow-layout {
+      grid-template-columns: 420px minmax(0, 1fr);
+    }
+
+    .results-layout,
+    .settings-layout {
+      grid-template-columns: 1fr 1fr;
+    }
+
     .pane {
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: var(--radius);
+      border-radius: var(--radius-md);
       padding: var(--space-4);
       min-height: 72vh;
+      animation: paneIn 220ms ease;
     }
+
+    @keyframes paneIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
     .pane h2 {
       margin: 0 0 var(--space-3);
       font-size: 12px;
-      letter-spacing: 0.09em;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--muted);
+      font-weight: 700;
     }
-    .hidden { display: none; }
+
+    .section-title {
+      margin: 0 0 var(--space-2);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+
+    .section {
+      border-top: 1px solid var(--line);
+      padding-top: var(--space-3);
+      margin-top: var(--space-3);
+    }
+
+    .section:first-of-type {
+      border-top: 0;
+      padding-top: 0;
+      margin-top: 0;
+    }
+
+    .step-rail {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: var(--space-1);
+      margin-bottom: var(--space-3);
+    }
+
+    .step-pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 8px;
+      font-size: 11px;
+      text-align: center;
+      color: var(--muted);
+      background: #faf4ea;
+      transition: all 180ms ease;
+    }
+
+    .step-pill.done {
+      border-color: #a6c9b3;
+      color: var(--ok);
+      background: #ecf6ef;
+      font-weight: 700;
+    }
+
+    .step-pill.active {
+      border-color: var(--line-strong);
+      color: var(--ink);
+      background: var(--accent-soft);
+      font-weight: 700;
+    }
+
     label {
       display: block;
       margin-bottom: 4px;
@@ -105,32 +194,70 @@
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
+      font-weight: 700;
     }
-    input, select, textarea, button {
+
+    input,
+    select,
+    textarea,
+    button {
       width: 100%;
       border: 1px solid var(--line);
-      border-radius: 10px;
+      border-radius: var(--radius-sm);
       background: var(--bg-soft);
       color: var(--ink);
-      padding: 9px 10px;
+      padding: 10px;
       font: inherit;
       font-size: 13px;
       margin-bottom: var(--space-2);
     }
-    textarea { min-height: 72px; resize: vertical; }
+
+    textarea {
+      min-height: 84px;
+      resize: vertical;
+    }
+
     button {
       cursor: pointer;
-      background: #f0e5d2;
+      background: #f0e4d1;
       border-color: var(--line-strong);
-      font-weight: 600;
+      font-weight: 700;
+      transition: background 140ms ease;
     }
-    button:hover { background: #e8dcc7; }
-    .row { display: flex; gap: var(--space-2); }
+
+    button:hover { background: #e6d8c2; }
+
+    .primary-btn {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .primary-btn:hover { background: #524532; }
+
+    .row {
+      display: flex;
+      gap: var(--space-2);
+    }
+
     .row > * { flex: 1; }
+
+    .tiny-col {
+      flex: 0 0 118px;
+    }
+
     .muted {
       color: var(--muted);
       font-size: 12px;
     }
+
+    .code {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      word-break: break-word;
+      color: #574b3d;
+    }
+
     .status {
       display: inline-flex;
       align-items: center;
@@ -142,64 +269,68 @@
       text-transform: lowercase;
       background: #f5ecdf;
     }
+
     .list {
       border: 1px solid var(--line);
-      border-radius: 10px;
+      border-radius: var(--radius-sm);
       background: #fff;
-      max-height: 66vh;
+      max-height: 62vh;
       overflow: auto;
       padding: var(--space-2);
     }
+
     .event {
       border-left: 3px solid var(--line);
       padding: 8px 10px;
       margin-bottom: var(--space-2);
       background: #fcfaf6;
+      border-radius: 0 8px 8px 0;
     }
+
+    .event:last-child { margin-bottom: 0; }
     .event.ok { border-left-color: var(--ok); }
     .event.started { border-left-color: var(--warn); }
     .event.failed { border-left-color: var(--error); }
-    .code {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      word-break: break-word;
-      color: #5a5042;
-    }
+
     .chapter {
       border: 1px solid var(--line);
-      border-radius: 10px;
+      border-radius: var(--radius-sm);
       margin-bottom: var(--space-2);
       overflow: hidden;
+      background: #fff;
     }
+
     .chapter > summary {
       cursor: pointer;
-      padding: 8px 10px;
-      background: #f7f0e4;
+      padding: 9px 10px;
+      background: #f8f0e2;
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 700;
+      list-style: none;
     }
+
+    .chapter > summary::-webkit-details-marker { display: none; }
+
     .gap {
       padding: 8px 10px;
       border-top: 1px solid var(--line);
       font-size: 12px;
     }
+
     .gap-id {
       font-family: var(--font-mono);
       font-size: 11px;
       color: var(--muted);
     }
-    .split {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: var(--space-2);
-    }
+
     .source-group {
       margin-bottom: var(--space-2);
       border: 1px solid var(--line);
-      border-radius: 10px;
+      border-radius: var(--radius-sm);
       background: #fff;
       overflow: hidden;
     }
+
     .source-group h3 {
       margin: 0;
       padding: 8px 10px;
@@ -207,22 +338,26 @@
       text-transform: uppercase;
       letter-spacing: 0.07em;
       color: var(--muted);
-      background: #f7f0e4;
+      background: #f8f0e2;
       border-bottom: 1px solid var(--line);
     }
+
     .source-row {
       padding: 8px 10px;
       border-bottom: 1px solid var(--line);
       font-size: 12px;
       background: #fcfaf6;
     }
+
     .source-row:last-child { border-bottom: 0; }
+
     .source-title {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
     }
+
     .pill {
       border: 1px solid var(--line);
       border-radius: 999px;
@@ -233,19 +368,43 @@
       background: #f5ecdf;
       color: var(--muted);
     }
+
     .pill.on { color: var(--ok); border-color: #aac8b4; background: #ebf5ef; }
     .pill.off { color: var(--error); border-color: #d8b2b2; background: #fbeeee; }
+
+    details {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: #fff;
+      margin-bottom: var(--space-2);
+      overflow: hidden;
+    }
+
+    details > summary {
+      cursor: pointer;
+      padding: 8px 10px;
+      background: #f8f0e2;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 700;
+    }
+
     table {
       width: 100%;
       border-collapse: collapse;
       font-size: 12px;
     }
-    th, td {
+
+    th,
+    td {
       border-bottom: 1px solid var(--line);
       text-align: left;
       padding: 7px 6px;
       vertical-align: top;
     }
+
     th {
       font-size: 11px;
       text-transform: uppercase;
@@ -255,10 +414,55 @@
       top: 0;
       background: #fcfaf6;
     }
-    @media (max-width: 1080px) {
-      .layout { grid-template-columns: 1fr; }
+
+    .workflow-progress {
+      margin-top: var(--space-2);
+      margin-bottom: var(--space-2);
+      padding: 8px 10px;
+      background: #f9f2e7;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+    }
+
+    @media (max-width: 1180px) {
+      .workflow-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .results-layout,
+      .settings-layout {
+        grid-template-columns: 1fr;
+      }
+
       .pane { min-height: auto; }
-      .split { grid-template-columns: 1fr; }
+      h1 { font-size: 30px; }
+    }
+
+    @media (max-width: 760px) {
+      .topbar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .tabs {
+        align-self: stretch;
+      }
+
+      .step-rail {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .row {
+        flex-direction: column;
+      }
+
+      .tiny-col {
+        flex: 1;
+      }
+
+      .shell {
+        padding: var(--space-3);
+      }
     }
   </style>
 </head>
@@ -267,48 +471,115 @@
     <div class="topbar">
       <div>
         <h1>Research Orchestrator</h1>
-        <div class="subtitle">Select manuscript -> inspect gap layout -> choose strategy -> track results</div>
+        <div class="subtitle">One flow: choose manuscript, inspect evidence gaps, pick strategy, launch research run, follow results.</div>
       </div>
       <div class="tabs" role="tablist" aria-label="App tabs">
-        <button class="tab-btn active" data-tab="plan" title="Open manuscript and gap planning workspace.">Plan</button>
-        <button class="tab-btn" data-tab="strategy" title="Choose automatic or narrow-scope research strategy.">Strategy</button>
-        <button class="tab-btn" data-tab="results" title="Follow run status, events, and outputs.">Results</button>
-        <button class="tab-btn" data-tab="settings" title="View and edit .env settings and API keys.">Settings</button>
+        <button class="tab-btn active" data-tab="workflow" title="Open the guided manuscript-to-run workflow.">Workflow</button>
+        <button class="tab-btn" data-tab="results" title="Review run status, events, and retry options.">Results</button>
+        <button class="tab-btn" data-tab="settings" title="Inspect and edit .env values, API keys, and source catalogs.">Settings</button>
       </div>
     </div>
 
-    <div id="tab-plan" class="layout">
+    <div id="tab-workflow" class="workflow-layout">
       <section class="pane">
-        <h2>Manuscript Intake</h2>
-        <label for="manuscript_file_input">Upload Manuscript From Computer</label>
-        <div class="row">
-          <input id="manuscript_file_input" type="file" accept=".docx,.md,.txt,.pdf" title="Choose a manuscript file from your computer to upload into the app." />
-          <button id="upload_manuscript_btn" title="Upload the selected local file and add it to the manuscript selector.">Upload</button>
-        </div>
-        <div class="row">
-          <div>
-            <label for="manuscript_select">Select Manuscript</label>
-            <select id="manuscript_select"></select>
-          </div>
-          <div style="max-width:120px;">
-            <label>&nbsp;</label>
-            <button id="refresh_manuscripts_btn" title="Reload manuscript options from the Manuscript folder.">Refresh</button>
-          </div>
+        <h2>Guided Workflow</h2>
+
+        <div class="step-rail" aria-label="Workflow progress">
+          <div id="wf-step-1" class="step-pill active">1. Manuscript</div>
+          <div id="wf-step-2" class="step-pill">2. Gap Analysis</div>
+          <div id="wf-step-3" class="step-pill">3. Intent</div>
+          <div id="wf-step-4" class="step-pill">4. Run</div>
         </div>
 
-        <label for="search_plan_path">Search Plan Path (Optional)</label>
-        <input id="search_plan_path" placeholder="codex/evidence_hub/data/pull_backlog_by_gap.csv" />
-        <label for="custom_manuscript_path">Or Enter Custom Manuscript Path (Optional)</label>
-        <input id="custom_manuscript_path" placeholder="/absolute/path/to/manuscript.docx" />
+        <div class="workflow-progress muted" id="workflow_progress_text">Start by selecting or uploading a manuscript.</div>
 
-        <button id="load_gaps_btn" title="Load chapter-by-chapter gap layout from gap_claims.csv and backlog data.">Show Gap Layout</button>
-        <button id="create_intent_btn" title="Create a reusable intent from your manuscript and search-plan selection.">Create Intent</button>
+        <div class="section">
+          <div class="section-title">Step 1. Choose Manuscript</div>
+
+          <label for="manuscript_file_input">Upload Manuscript From Computer</label>
+          <div class="row">
+            <input id="manuscript_file_input" type="file" accept=".docx,.md,.txt,.pdf" title="Choose a manuscript file from your computer to upload into the app." />
+            <button id="upload_manuscript_btn" title="Upload the selected local file and add it to manuscript options.">Upload</button>
+          </div>
+
+          <div class="row">
+            <div>
+              <label for="manuscript_select">Select Manuscript</label>
+              <select id="manuscript_select"></select>
+            </div>
+            <div class="tiny-col">
+              <label>&nbsp;</label>
+              <button id="refresh_manuscripts_btn" title="Reload manuscript options from workspace and uploaded files.">Refresh</button>
+            </div>
+          </div>
+
+          <details>
+            <summary>Advanced Manuscript Input</summary>
+            <label for="custom_manuscript_path" style="margin-top:10px;">Custom Manuscript Path (Optional)</label>
+            <input id="custom_manuscript_path" placeholder="/absolute/path/to/manuscript.docx" />
+            <label for="search_plan_path">Search Plan Path (Optional)</label>
+            <input id="search_plan_path" placeholder="codex/evidence_hub/data/pull_backlog_by_gap.csv" />
+          </details>
+
+          <div class="code" id="current_manuscript_path">manuscript path: not selected</div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Step 2. Analyze Gaps</div>
+          <button class="primary-btn" id="load_gaps_btn" title="Read the selected manuscript and generate or load chapter gap analysis.">Analyze Manuscript & Refresh Gaps</button>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Step 3. Create Intent</div>
+          <button id="create_intent_btn" title="Create an orchestration intent from selected manuscript and optional search plan.">Create Intent</button>
+          <div id="strategy_intent_label" class="muted">No intent yet.</div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Step 4. Strategy and Launch</div>
+          <div class="row" style="margin-top:8px;">
+            <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
+              <input type="radio" name="strategy_mode" value="automatic" checked style="width:auto; margin:0;" />
+              Automatic research sweep
+            </label>
+            <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
+              <input type="radio" name="strategy_mode" value="narrow" style="width:auto; margin:0;" />
+              Narrow question
+            </label>
+          </div>
+
+          <label for="narrow_question">Narrow Research Question</label>
+          <textarea id="narrow_question" placeholder="Example: Find sources only on Amazon warehouse injury rates in chapter 4." disabled></textarea>
+
+          <label for="target_gap_id">Target Gap (for narrow mode)</label>
+          <select id="target_gap_id"></select>
+
+          <div class="row">
+            <div>
+              <label for="pull_mode">Pull Mode</label>
+              <select id="pull_mode">
+                <option value="auto">auto</option>
+                <option value="api">api</option>
+                <option value="playwright">playwright</option>
+              </select>
+            </div>
+            <div>
+              <label for="pull_provider">Pull Provider</label>
+              <input id="pull_provider" value="ebscohost" />
+            </div>
+          </div>
+
+          <button class="primary-btn" id="start_run_btn" title="Start a new orchestrated research run using current strategy and provider.">Start Research Run</button>
+          <button id="open_results_btn" title="Jump to the Results tab to monitor run progress and events.">Open Results</button>
+        </div>
+
         <div id="intent_status" class="muted"></div>
+        <div id="run_status" class="muted"></div>
       </section>
 
       <section class="pane">
-        <h2>Gap Layout</h2>
-        <div id="gap_summary" class="muted">Load a manuscript and click “Show Gap Layout”.</div>
+        <h2>Gap Analysis</h2>
+        <div id="gap_summary" class="muted">Run Step 2 to populate gap layout for the selected manuscript.</div>
         <div id="read_status" class="event" style="margin-top:10px;">
           <div><strong>Manuscript Read Status</strong></div>
           <div class="muted">No extraction details yet.</div>
@@ -317,67 +588,12 @@
       </section>
     </div>
 
-    <div id="tab-strategy" class="layout hidden">
-      <section class="pane">
-        <h2>Research Strategy</h2>
-        <div class="muted" id="strategy_intent_label">No intent yet. Create one in Plan tab.</div>
-        <div class="row" style="margin-top:8px;">
-          <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
-            <input type="radio" name="strategy_mode" value="automatic" checked style="width:auto; margin:0;" />
-            Automatic research sweep
-          </label>
-          <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
-            <input type="radio" name="strategy_mode" value="narrow" style="width:auto; margin:0;" />
-            Narrow question
-          </label>
-        </div>
-
-        <label for="narrow_question" style="margin-top:10px;">Narrow Research Question</label>
-        <textarea id="narrow_question" placeholder="Example: Find sources only on Amazon warehouse injury rates in chapter 4." disabled></textarea>
-
-        <label for="target_gap_id">Target Gap (for narrow mode)</label>
-        <select id="target_gap_id"></select>
-
-        <div class="split">
-          <div>
-            <label for="pull_mode">Pull Mode</label>
-            <select id="pull_mode">
-              <option value="auto">auto</option>
-              <option value="api">api</option>
-              <option value="playwright">playwright</option>
-            </select>
-          </div>
-          <div>
-            <label for="pull_provider">Pull Provider</label>
-            <input id="pull_provider" value="ebscohost" />
-          </div>
-        </div>
-
-        <button id="start_run_btn" title="Start a new orchestrated run with the selected strategy and provider mode.">Start Research Run</button>
-        <div id="run_status" class="muted"></div>
-      </section>
-
-      <section class="pane">
-        <h2>Strategy Notes</h2>
-        <div class="list" id="strategy_notes">
-          <div class="event">
-            <div><strong>Automatic mode</strong></div>
-            <div class="muted">Runs broad pull + ingest + LLM fit pipeline for full scope.</div>
-          </div>
-          <div class="event">
-            <div><strong>Narrow mode</strong></div>
-            <div class="muted">Uses your question and optional target gap to constrain LLM fit scope.</div>
-          </div>
-        </div>
-      </section>
-    </div>
-
-    <div id="tab-results" class="layout hidden">
+    <div id="tab-results" class="results-layout hidden">
       <section class="pane">
         <h2>Runs</h2>
         <div class="row">
           <button id="refresh_runs_btn" title="Refresh the list of orchestrator runs.">Refresh Runs</button>
-          <button id="retry_run_btn" title="Retry the selected run ID from the failed/completed state.">Retry Selected Run</button>
+          <button id="retry_run_btn" title="Retry the selected run from failed or completed state.">Retry Selected Run</button>
         </div>
         <div id="runs_list" class="list"></div>
       </section>
@@ -386,20 +602,21 @@
         <h2>Run Events</h2>
         <div class="row">
           <input id="events_run_id" placeholder="run_xxx" />
-          <button id="load_events_btn" title="Load timeline events for the run ID entered to the left.">Load Events</button>
+          <button id="load_events_btn" title="Load timeline events for the entered run ID.">Load Events</button>
         </div>
         <div id="events_list" class="list"></div>
       </section>
     </div>
 
-    <div id="tab-settings" class="layout hidden">
+    <div id="tab-settings" class="settings-layout hidden">
       <section class="pane">
         <h2>Environment Values</h2>
         <div class="row">
           <button id="load_env_btn" title="Load current .env values from disk for review.">Load .env Values</button>
           <button id="load_conn_schema_btn" title="Load recommended connection fields for current mode/provider.">Load Recommended Fields</button>
         </div>
-        <button id="load_sources_btn" title="Refresh the list of free APIs, closed/keyed APIs, and university databases in use.">Refresh Source Catalog</button>
+        <button id="load_sources_btn" title="Refresh lists of free APIs, closed APIs, and university databases.">Refresh Source Catalog</button>
+
         <div class="row">
           <div>
             <label for="settings_mode">Mode</label>
@@ -418,6 +635,7 @@
             </select>
           </div>
         </div>
+
         <div id="settings_status" class="muted"></div>
         <div class="list" style="margin-top:10px;">
           <table>
@@ -480,20 +698,58 @@
     }
 
     function setText(id, text) {
-      q(id).textContent = text;
+      const node = q(id);
+      if (!node) return;
+      node.textContent = text;
+    }
+
+    function currentManuscriptPath() {
+      const customPath = q("custom_manuscript_path").value.trim();
+      const selectedPath = q("manuscript_select").value || "";
+      return customPath || selectedPath;
+    }
+
+    // Keep workflow status explicit so users always know where they are in the flow.
+    function updateWorkflowProgress() {
+      const hasManuscript = !!currentManuscriptPath();
+      const hasGaps = state.gaps.length > 0;
+      const hasIntent = !!state.intentId;
+      const hasRun = !!state.selectedRunId;
+      const steps = [
+        ["wf-step-1", hasManuscript],
+        ["wf-step-2", hasGaps],
+        ["wf-step-3", hasIntent],
+        ["wf-step-4", hasRun],
+      ];
+      steps.forEach(([id, done], idx) => {
+        const el = q(id);
+        if (!el) return;
+        el.classList.toggle("done", done);
+        const prevDone = idx === 0 ? false : steps[idx - 1][1];
+        el.classList.toggle("active", !done && (idx === 0 || prevDone));
+      });
+
+      let message = "Start by selecting or uploading a manuscript.";
+      if (hasManuscript && !hasGaps) message = "Manuscript selected. Run gap analysis next.";
+      if (hasGaps && !hasIntent) message = "Gap map ready. Create an intent to lock your run scope.";
+      if (hasIntent && !hasRun) message = "Intent ready. Choose strategy and start a run.";
+      if (hasRun) message = `Run started (${state.selectedRunId}). Open Results to monitor progress.`;
+      setText("workflow_progress_text", message);
+      setText("current_manuscript_path", `manuscript path: ${currentManuscriptPath() || "not selected"}`);
     }
 
     function showTab(name) {
       document.querySelectorAll(".tab-btn").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.tab === name);
       });
-      ["plan", "strategy", "results", "settings"].forEach((tab) => {
+      ["workflow", "results", "settings"].forEach((tab) => {
         q(`tab-${tab}`).classList.toggle("hidden", tab !== name);
       });
     }
 
     function fillManuscripts() {
       const sel = q("manuscript_select");
+      const previous = sel.value;
       sel.innerHTML = "";
       state.manuscripts.forEach((m) => {
         const opt = document.createElement("option");
@@ -502,6 +758,9 @@
         opt.textContent = `${m.name} [${source}]`;
         sel.appendChild(opt);
       });
+      if (state.manuscripts.length && previous) {
+        sel.value = previous;
+      }
     }
 
     function fillGapSelect() {
@@ -533,14 +792,10 @@
       const llmError = extraction.llm_error || "";
       const message = extraction.message || out.reason || "No extraction metadata.";
       const preview = (extraction.chapter_candidates_preview || []).slice(0, 5);
-      const badgeClass =
-        status === "ok" ? "status" :
-        status === "skipped" ? "status" :
-        "status";
       root.innerHTML = `
         <div>
           <strong>Manuscript Read Status</strong>
-          <span class="${badgeClass}">${status}</span>
+          <span class="status">${status}</span>
         </div>
         <div class="muted">${message}</div>
         <div class="code">chars: ${charCount} | lines: ${lineCount} | sections: ${sectionCount} | chapter candidates: ${detected} | todo markers: ${todoCount}</div>
@@ -557,12 +812,18 @@
       if (!state.manuscripts.length) {
         setText("intent_status", "No manuscript files found in Manuscript/.");
       }
+      updateWorkflowProgress();
     }
 
     async function loadGapLayout(forceRefresh = false) {
-      const customPath = q("custom_manuscript_path").value.trim();
-      const selectedPath = q("manuscript_select").value || "";
-      const manuscriptPath = customPath || selectedPath;
+      const manuscriptPath = currentManuscriptPath();
+      if (!manuscriptPath) {
+        setText("gap_summary", "Select or upload a manuscript, then run analysis.");
+        state.gaps = [];
+        fillGapSelect();
+        updateWorkflowProgress();
+        return;
+      }
       const out = await api(
         `/api/orchestrator/gaps/layout?manuscript_path=${encodeURIComponent(manuscriptPath)}&refresh=${forceRefresh ? "true" : "false"}`
       );
@@ -574,6 +835,7 @@
         "gap_summary",
         `${out.chapter_count || 0} chapters, ${out.gap_count || 0} total gaps (source: ${out.source || "n/a"}${generatedLabel})`
       );
+
       const root = q("gap_layout");
       root.innerHTML = "";
       (out.chapters || []).forEach((ch) => {
@@ -595,12 +857,11 @@
         });
         root.appendChild(details);
       });
+      updateWorkflowProgress();
     }
 
     async function createIntent() {
-      const customPath = q("custom_manuscript_path").value.trim();
-      const selectedPath = q("manuscript_select").value || "";
-      const manuscriptPath = customPath || selectedPath;
+      const manuscriptPath = currentManuscriptPath();
       const searchPlanPath = q("search_plan_path").value.trim();
       if (!manuscriptPath) {
         setText("intent_status", "Select or upload a manuscript first (or provide a custom path).");
@@ -615,7 +876,8 @@
       });
       state.intentId = out.intent_id;
       setText("intent_status", `Intent created: ${state.intentId}`);
-      setText("strategy_intent_label", `Active intent: ${state.intentId}`);
+      setText("strategy_intent_label", `Intent ready: ${state.intentId}`);
+      updateWorkflowProgress();
     }
 
     async function uploadManuscript() {
@@ -667,6 +929,7 @@
       if (mode === "narrow" && narrowQ) strategyMsg += ` | narrow question: ${narrowQ}`;
       setText("run_status", strategyMsg);
       await loadRuns();
+      updateWorkflowProgress();
       showTab("results");
     }
 
@@ -690,6 +953,7 @@
           state.selectedRunId = run.run_id;
           q("events_run_id").value = run.run_id;
           loadEvents();
+          updateWorkflowProgress();
         };
         root.appendChild(div);
       });
@@ -807,6 +1071,8 @@
         btn.addEventListener("click", () => showTab(btn.dataset.tab));
       });
 
+      q("open_results_btn").onclick = () => showTab("results");
+
       q("refresh_manuscripts_btn").onclick = async () => {
         try {
           await loadManuscripts();
@@ -815,18 +1081,29 @@
           setText("intent_status", `Error: ${err.message}`);
         }
       };
+
       q("upload_manuscript_btn").onclick = async () => {
         try { await uploadManuscript(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
       };
+
       q("load_gaps_btn").onclick = async () => {
         try { await loadGapLayout(true); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
       };
+
       q("manuscript_select").onchange = async () => {
+        state.intentId = "";
+        setText("strategy_intent_label", "No intent yet.");
         try { await loadGapLayout(false); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
       };
+
       q("custom_manuscript_path").onchange = async () => {
+        state.intentId = "";
+        setText("strategy_intent_label", "No intent yet.");
         try { await loadGapLayout(true); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
       };
+
+      q("search_plan_path").onchange = updateWorkflowProgress;
+
       q("create_intent_btn").onclick = async () => {
         try { await createIntent(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
       };
@@ -837,6 +1114,7 @@
           q("narrow_question").disabled = !narrow;
         });
       });
+
       q("start_run_btn").onclick = async () => {
         try { await startRun(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
       };
@@ -844,9 +1122,11 @@
       q("refresh_runs_btn").onclick = async () => {
         try { await loadRuns(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
       };
+
       q("load_events_btn").onclick = async () => {
         try { await loadEvents(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
       };
+
       q("retry_run_btn").onclick = async () => {
         try { await retryRun(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
       };
@@ -854,12 +1134,15 @@
       q("load_env_btn").onclick = async () => {
         try { await loadEnvValues(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
       };
+
       q("load_conn_schema_btn").onclick = async () => {
         try { await loadRecommendedFields(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
       };
+
       q("load_sources_btn").onclick = async () => {
         try { await loadSourceCatalog(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
       };
+
       q("save_env_btn").onclick = async () => {
         try { await saveEnvKey(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
       };
@@ -873,7 +1156,9 @@
       try { await loadEnvValues(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
       try { await loadRecommendedFields(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
       try { await loadSourceCatalog(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
+      updateWorkflowProgress();
     }
+
     boot();
   </script>
 </body>

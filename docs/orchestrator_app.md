@@ -37,6 +37,7 @@ while preserving existing Evidence Hub data contracts.
 
 ## Hiccup coverage in MVP
 - Runtime `.env` preflight validation before pulling.
+- API mode has a built-in EBSCO fallback pull command when `ORCH_API_PULL_COMMAND` is unset, preventing hard-fail on missing command setup.
 - Frontend run-start preflight checks required env keys from backend schema before launching runs; missing keys route users to Settings.
 - Artifact-type routing supports:
   - `ebsco_manifest_pair`

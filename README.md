@@ -65,6 +65,8 @@ Notes:
 - Otherwise it executes mode-specific commands from `.env`:
   - `ORCH_API_PULL_COMMAND`
   - `ORCH_PLAYWRIGHT_PULL_COMMAND`
+- If `ORCH_API_PULL_COMMAND` is not set and provider is `ebscohost`, orchestrator uses built-in fallback command (`app/default_api_pull.py`) that returns the newest compatible existing EBSCO run folder.
+- For a live upstream API pull (net-new retrieval), set `ORCH_API_PULL_COMMAND` explicitly.
 
 Commands must print JSON artifact containing:
 - `run_id`

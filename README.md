@@ -14,7 +14,7 @@
   - `Plan`: manuscript selector + gap layout
   - `Strategy`: automatic vs narrow research scope
   - `Results`: run timeline and retry
-  - `Settings`: view/edit `.env` values and add API keys
+  - `Settings`: view/edit `.env` values, add API keys, and view free/closed APIs + university databases in use
 
 ## Project Docs
 - `docs/interactive_orchestrator_design.md`

@@ -42,6 +42,43 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+SOURCE_CATALOG: Dict[str, List[Dict[str, str]]] = {
+    "free_apis": [
+        {"name": "World Bank Indicators API", "notes": "Public macro indicators"},
+        {"name": "FRED Public CSV endpoint", "notes": "Federal Reserve economic series"},
+        {"name": "DOL OLMS public disclosure", "notes": "Union disclosure endpoints"},
+        {"name": "ILOSTAT API", "notes": "Union/labor indicators"},
+        {"name": "IMF SDMX API", "notes": "IMTS/BOP annual panels"},
+        {"name": "UN Comtrade Preview API", "notes": "Trade slices under preview limits"},
+        {"name": "OECD SDMX API", "notes": "TiVA and comparators"},
+        {"name": "WITS SDMX API", "notes": "Trade/tariff indicators"},
+    ],
+    "closed_apis": [
+        {"name": "BLS Public Data API v2", "env_key": "BLS_API_KEY", "notes": "Registered access for extended windows"},
+        {"name": "BEA API", "env_key": "BEA_USER_ID", "notes": "GDP-by-industry and related pulls"},
+        {"name": "Census MRTS API", "env_key": "CENSUS_API_KEY", "notes": "Retail and nonstore annualized context"},
+        {"name": "USITC DataWeb API", "env_key": "USITC_DATAWEB_TOKEN", "notes": "Imports by country"},
+        {"name": "UN Comtrade live API", "env_key": "UNCOMTRADE_API_KEY", "notes": "Non-preview and higher limits"},
+        {"name": "WTO API", "env_key": "WTO_API_KEY", "notes": "WTO timeseries access"},
+        {"name": "EBSCOhost API", "env_key": "EBSCO_API_KEY", "notes": "Institutional source pulls"},
+        {"name": "Statista exports/session", "notes": "Subscription-gated data retrieval"},
+    ],
+    "university_databases": [
+        {"name": "Academic Search Ultimate", "provider": "EBSCOhost"},
+        {"name": "Regional Business News", "provider": "EBSCOhost"},
+        {"name": "EconLit with Full Text", "provider": "EBSCOhost"},
+        {"name": "CINAHL Plus with Full Text", "provider": "EBSCOhost"},
+        {"name": "APA PsycINFO", "provider": "EBSCOhost"},
+        {"name": "APA PsycArticles", "provider": "EBSCOhost"},
+        {"name": "Legal Source", "provider": "EBSCOhost"},
+        {"name": "MLA International Bibliography", "provider": "EBSCOhost"},
+        {"name": "ERIC", "provider": "EBSCOhost"},
+        {"name": "MasterFILE Premier", "provider": "EBSCOhost"},
+        {"name": "Medline (EBSCO)", "provider": "EBSCOhost"},
+    ],
+}
+
+
 def _settings() -> OrchestratorSettings:
     """Reload .env-backed settings so UI config updates apply immediately."""
     workspace = Path(os.getenv("ORCH_WORKSPACE", str(BASE_DIR.parents[0]))).resolve()
@@ -259,6 +296,34 @@ def api_connection_values(mask_secrets: bool = Query(default=True)) -> Dict[str,
             }
         )
     return {"env_path": str(settings.env_path), "values": rows}
+
+
+@app.get("/api/orchestrator/sources/catalog")
+def api_sources_catalog() -> Dict[str, Any]:
+    """Return source inventory for Settings: free APIs, closed APIs, university DBs."""
+    settings = _settings()
+    env_values = read_env_values(settings.env_path)
+
+    def with_env_status(rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        enriched: List[Dict[str, Any]] = []
+        for row in rows:
+            rec: Dict[str, Any] = dict(row)
+            env_key = str(row.get("env_key", "")).strip()
+            if env_key:
+                rec["env_key"] = env_key
+                rec["configured"] = bool(str(env_values.get(env_key, "")).strip())
+            else:
+                rec["env_key"] = ""
+                rec["configured"] = None
+            enriched.append(rec)
+        return enriched
+
+    return {
+        "workspace": str(settings.workspace),
+        "free_apis": with_env_status(SOURCE_CATALOG["free_apis"]),
+        "closed_apis": with_env_status(SOURCE_CATALOG["closed_apis"]),
+        "university_databases": with_env_status(SOURCE_CATALOG["university_databases"]),
+    }
 
 
 def _start_background_run(run_id: str) -> None:

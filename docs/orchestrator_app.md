@@ -19,6 +19,7 @@ while preserving existing Evidence Hub data contracts.
 - `GET /api/orchestrator/intents/{intent_id}`
 - `GET /api/orchestrator/connections/schema`
 - `GET /api/orchestrator/connections/values`
+- `GET /api/orchestrator/sources/catalog`
 - `POST /api/orchestrator/connections/save`
 - `POST /api/orchestrator/runs`
 - `GET /api/orchestrator/runs`
@@ -47,6 +48,10 @@ while preserving existing Evidence Hub data contracts.
 - `Strategy`: automatic research or narrow question.
 - `Results`: run list + event timeline + retry.
 - `Settings`: inspect `.env` values and add/update keys (including API keys).
+- `Settings` also lists:
+  - free APIs in use
+  - closed/keyed APIs in use
+  - university database set used by pull workflows
 
 ## Run locally
 ```bash

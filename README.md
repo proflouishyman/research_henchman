@@ -21,6 +21,27 @@ uvicorn app.main:app --reload --port 8876
 Open:
 - http://127.0.0.1:8876
 
+## Docker
+From `app/` directory:
+
+```bash
+docker compose up --build -d
+```
+
+Open:
+- http://localhost:8876
+
+Stop:
+
+```bash
+docker compose down
+```
+
+Notes:
+- Compose mounts `../` into `/workspace` so existing `codex/evidence_hub` scripts remain available.
+- `ORCH_WORKSPACE` is set to `/workspace` inside container.
+- Ollama default points to host: `http://host.docker.internal:11434`.
+
 ## Pull adapter behavior
 - If `existing_run_id` + `existing_run_dir` are supplied in run request, pull stage uses handoff mode and skips command execution.
 - Otherwise it executes mode-specific commands from `.env`:
@@ -48,4 +69,3 @@ Commands must print JSON artifact containing:
 - `ORCH_LLM_BACKEND`
 - `ORCH_LLM_MODEL`
 - `ORCH_OLLAMA_BASE_URL`
-

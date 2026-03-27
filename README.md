@@ -1,0 +1,51 @@
+# Interactive Orchestrator App
+
+## Location
+- All app implementation lives under `app/` as requested.
+
+## What this MVP does
+- Creates orchestrator intents from manuscript/search-plan inputs.
+- Stores orchestrator runs/events in `app/data`.
+- Supports pull mode routing (`api`, `playwright`, `auto`) through adapter contracts.
+- Automatically runs:
+  - pull -> ingest -> llm fit
+- Exposes connection schema + `.env` save endpoints.
+
+## Run
+From repository root:
+
+```bash
+uvicorn app.main:app --reload --port 8876
+```
+
+Open:
+- http://127.0.0.1:8876
+
+## Pull adapter behavior
+- If `existing_run_id` + `existing_run_dir` are supplied in run request, pull stage uses handoff mode and skips command execution.
+- Otherwise it executes mode-specific commands from `.env`:
+  - `ORCH_API_PULL_COMMAND`
+  - `ORCH_PLAYWRIGHT_PULL_COMMAND`
+
+Commands must print JSON artifact containing:
+- `run_id`
+- `run_dir`
+- Optional: `provider`, `artifact_type`, `status`, `stats`
+
+## Required stage scripts (defaults)
+- `codex/evidence_hub/ingest_ebsco_runs.py`
+- `codex/evidence_hub/ingest_external_run.py`
+- `codex/evidence_hub/generate_llm_fit_evidence.py`
+
+## Core env vars
+- `ORCH_WORKSPACE`
+- `ORCH_PULL_MODE`
+- `ORCH_PULL_PROVIDER`
+- `ORCH_AUTO_INGEST`
+- `ORCH_AUTO_LLM_FIT`
+- `ORCH_API_PULL_COMMAND`
+- `ORCH_PLAYWRIGHT_PULL_COMMAND`
+- `ORCH_LLM_BACKEND`
+- `ORCH_LLM_MODEL`
+- `ORCH_OLLAMA_BASE_URL`
+

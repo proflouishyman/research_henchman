@@ -5,6 +5,9 @@
 
 ## What this MVP does
 - Creates orchestrator intents from manuscript/search-plan inputs.
+- Accepts manuscript files from either:
+  - workspace `Manuscript/` directory, or
+  - local computer upload via Plan tab.
 - Stores orchestrator runs/events in `app/data`.
 - Supports pull mode routing (`api`, `playwright`, `auto`) through adapter contracts.
 - Automatically runs:

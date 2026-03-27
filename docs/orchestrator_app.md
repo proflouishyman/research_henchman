@@ -59,11 +59,16 @@ while preserving existing Evidence Hub data contracts.
 - For Add-to-Cart manuscripts, canonical mapped gaps are used.
 - For other manuscripts:
   - use manuscript sidecar gap map if present
-  - otherwise auto-generate and persist a fallback gap map.
+  - otherwise auto-generate and persist a manuscript-specific gap map.
+- Gap analysis generation now prefers Ollama (`ORCH_GAP_ANALYSIS_USE_OLLAMA=true`) with smart-model selection and structured JSON output.
+- If Ollama is unavailable or errors, the app falls back to heuristic gap analysis and reports the fallback reason in extraction metadata.
+- Generated-map cache keys include manuscript file fingerprint (path + size + mtime) so swapping file contents at the same path triggers fresh analysis.
+- Legacy one-row placeholder maps or maps without metadata are auto-regenerated.
 - Gap layout response now includes manuscript extraction diagnostics:
   - status
   - char/line counts
   - detected chapter-heading candidates
+  - analysis method/model and LLM error fallback state
   - fallback reason when no headings are detected.
 
 ## Run locally

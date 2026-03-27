@@ -526,6 +526,11 @@
       const charCount = extraction.char_count || 0;
       const lineCount = extraction.line_count || 0;
       const detected = extraction.chapter_candidates_detected || 0;
+      const sectionCount = extraction.section_count || 0;
+      const todoCount = extraction.todo_markers_detected || 0;
+      const method = extraction.analysis_method || "unknown";
+      const model = extraction.analysis_model || "";
+      const llmError = extraction.llm_error || "";
       const message = extraction.message || out.reason || "No extraction metadata.";
       const preview = (extraction.chapter_candidates_preview || []).slice(0, 5);
       const badgeClass =
@@ -538,7 +543,9 @@
           <span class="${badgeClass}">${status}</span>
         </div>
         <div class="muted">${message}</div>
-        <div class="code">chars: ${charCount} | lines: ${lineCount} | chapter candidates: ${detected}</div>
+        <div class="code">chars: ${charCount} | lines: ${lineCount} | sections: ${sectionCount} | chapter candidates: ${detected} | todo markers: ${todoCount}</div>
+        <div class="code">analysis: ${method}${model ? ` | model: ${model}` : ""}${llmError ? " | fallback active" : ""}</div>
+        <div class="code" style="color: var(--warn);">${llmError ? `llm error: ${llmError}` : ""}</div>
         <div class="code">${preview.length ? `headings: ${preview.join(" | ")}` : ""}</div>
       `;
     }

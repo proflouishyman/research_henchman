@@ -909,13 +909,25 @@
       if (!state.intentId) {
         await createIntent();
       }
+      const provider = q("pull_provider").value.trim() || "ebscohost";
+      const missing = await missingRequiredEnvKeys(q("pull_mode").value, provider);
+      if (missing.length) {
+        setText("run_status", `Missing required settings: ${missing.join(", ")}. Update Settings first.`);
+        q("settings_mode").value = q("pull_mode").value;
+        const providerOpt = Array.from(q("settings_provider").options).map((o) => o.value);
+        q("settings_provider").value = providerOpt.includes(provider) ? provider : "custom";
+        await loadRecommendedFields();
+        await loadEnvValues();
+        showTab("settings");
+        return;
+      }
       const mode = document.querySelector("input[name='strategy_mode']:checked").value;
       const narrowQ = q("narrow_question").value.trim();
       const targetGap = q("target_gap_id").value;
       const payload = {
         intent_id: state.intentId,
         pull_mode: q("pull_mode").value,
-        pull_provider: q("pull_provider").value.trim() || "ebscohost",
+        pull_provider: provider,
         existing_run_id: "",
         existing_run_dir: "",
         artifact_type: "ebsco_manifest_pair",
@@ -931,6 +943,19 @@
       await loadRuns();
       updateWorkflowProgress();
       showTab("results");
+    }
+
+    // Run preflight uses server contract fields so UI and backend required-key rules stay in sync.
+    async function missingRequiredEnvKeys(mode, provider) {
+      const [schema, values] = await Promise.all([
+        api(`/api/orchestrator/connections/schema?mode=${encodeURIComponent(mode)}&provider=${encodeURIComponent(provider)}`),
+        api("/api/orchestrator/connections/values?mask_secrets=false"),
+      ]);
+      const valueMap = new Map((values.values || []).map((row) => [row.key, String(row.value || "").trim()]));
+      return (schema.fields || [])
+        .filter((field) => field.required)
+        .map((field) => field.key)
+        .filter((key) => !valueMap.get(key));
     }
 
     async function loadRuns() {

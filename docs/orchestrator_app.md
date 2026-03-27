@@ -37,6 +37,7 @@ while preserving existing Evidence Hub data contracts.
 
 ## Hiccup coverage in MVP
 - Runtime `.env` preflight validation before pulling.
+- Frontend run-start preflight checks required env keys from backend schema before launching runs; missing keys route users to Settings.
 - Artifact-type routing supports:
   - `ebsco_manifest_pair`
   - `external_packet`

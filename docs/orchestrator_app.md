@@ -14,6 +14,7 @@ while preserving existing Evidence Hub data contracts.
 ## API Endpoints
 - `GET /api/orchestrator/health`
 - `GET /api/orchestrator/manuscripts`
+- `POST /api/orchestrator/manuscripts/upload`
 - `GET /api/orchestrator/gaps/layout`
 - `POST /api/orchestrator/intents`
 - `GET /api/orchestrator/intents/{intent_id}`
@@ -44,7 +45,7 @@ while preserving existing Evidence Hub data contracts.
 - LLM stage invoked only after successful ingest when auto-chain enabled.
 
 ## Frontend surface
-- `Plan`: manuscript selector and chapter/gap layout.
+- `Plan`: manuscript selector, local manuscript upload, and chapter/gap layout.
 - `Strategy`: automatic research or narrow question.
 - `Results`: run list + event timeline + retry.
 - `Settings`: inspect `.env` values and add/update keys (including API keys).

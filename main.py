@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +29,8 @@ from .store import OrchestratorStore, now_utc
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
+UPLOAD_DIR = DATA_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 store = OrchestratorStore(DATA_DIR)
 app = FastAPI(title="Interactive Research Orchestrator", version="0.1.0")
@@ -115,17 +117,40 @@ def _search_plan_preview(workspace: Path, path_value: str, max_rows: int = 5) ->
 
 
 def _list_manuscripts(workspace: Path) -> List[Dict[str, str]]:
-    """Return available manuscript files for intake selection."""
-    manuscript_dir = workspace / "Manuscript"
-    if not manuscript_dir.exists():
-        return []
+    """Return available manuscript files for intake selection.
 
+    Sources:
+    - workspace `Manuscript/` files
+    - locally uploaded files under app data storage
+    """
+    manuscript_dir = workspace / "Manuscript"
+    allowed_ext = {".docx", ".md", ".txt", ".pdf"}
     rows: List[Dict[str, str]] = []
-    for path in sorted(manuscript_dir.glob("*")):
-        if path.suffix.lower() not in {".docx", ".md", ".txt", ".pdf"}:
+    if manuscript_dir.exists():
+        for path in sorted(manuscript_dir.glob("*")):
+            if path.suffix.lower() not in allowed_ext:
+                continue
+            rel = str(path.relative_to(workspace))
+            rows.append(
+                {
+                    "name": path.name,
+                    "path": rel,
+                    "absolute_path": str(path),
+                    "source": "workspace_manuscript",
+                }
+            )
+
+    for path in sorted(UPLOAD_DIR.glob("*")):
+        if path.suffix.lower() not in allowed_ext:
             continue
-        rel = str(path.relative_to(workspace))
-        rows.append({"name": path.name, "path": rel, "absolute_path": str(path)})
+        rows.append(
+            {
+                "name": path.name,
+                "path": str(path),
+                "absolute_path": str(path),
+                "source": "uploaded",
+            }
+        )
     return rows
 
 
@@ -207,6 +232,27 @@ def api_health() -> Dict[str, Any]:
 def api_manuscripts() -> Dict[str, Any]:
     settings = _settings()
     return {"workspace": str(settings.workspace), "manuscripts": _list_manuscripts(settings.workspace)}
+
+
+@app.post("/api/orchestrator/manuscripts/upload")
+async def api_upload_manuscript(file: UploadFile = File(...)) -> Dict[str, Any]:
+    """Upload manuscript from local machine so non-workspace files can be selected."""
+    filename = Path(file.filename or "").name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".docx", ".md", ".txt", ".pdf"}:
+        raise HTTPException(status_code=400, detail="unsupported manuscript format")
+
+    safe_name = f"{uuid.uuid4().hex[:10]}_{filename}"
+    out_path = UPLOAD_DIR / safe_name
+    content = await file.read()
+    out_path.write_bytes(content)
+
+    return {
+        "uploaded": True,
+        "name": filename,
+        "stored_name": safe_name,
+        "stored_path": str(out_path),
+    }
 
 
 @app.get("/api/orchestrator/gaps/layout")

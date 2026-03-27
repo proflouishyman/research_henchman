@@ -280,6 +280,11 @@
     <div id="tab-plan" class="layout">
       <section class="pane">
         <h2>Manuscript Intake</h2>
+        <label for="manuscript_file_input">Upload Manuscript From Computer</label>
+        <div class="row">
+          <input id="manuscript_file_input" type="file" accept=".docx,.md,.txt,.pdf" title="Choose a manuscript file from your computer to upload into the app." />
+          <button id="upload_manuscript_btn" title="Upload the selected local file and add it to the manuscript selector.">Upload</button>
+        </div>
         <div class="row">
           <div>
             <label for="manuscript_select">Select Manuscript</label>
@@ -293,6 +298,8 @@
 
         <label for="search_plan_path">Search Plan Path (Optional)</label>
         <input id="search_plan_path" placeholder="codex/evidence_hub/data/pull_backlog_by_gap.csv" />
+        <label for="custom_manuscript_path">Or Enter Custom Manuscript Path (Optional)</label>
+        <input id="custom_manuscript_path" placeholder="/absolute/path/to/manuscript.docx" />
 
         <button id="load_gaps_btn" title="Load chapter-by-chapter gap layout from gap_claims.csv and backlog data.">Show Gap Layout</button>
         <button id="create_intent_btn" title="Create a reusable intent from your manuscript and search-plan selection.">Create Intent</button>
@@ -487,7 +494,8 @@
       state.manuscripts.forEach((m) => {
         const opt = document.createElement("option");
         opt.value = m.path;
-        opt.textContent = `${m.name}`;
+        const source = m.source === "uploaded" ? "uploaded" : "workspace";
+        opt.textContent = `${m.name} [${source}]`;
         sel.appendChild(opt);
       });
     }
@@ -548,10 +556,12 @@
     }
 
     async function createIntent() {
-      const manuscriptPath = q("manuscript_select").value || "";
+      const customPath = q("custom_manuscript_path").value.trim();
+      const selectedPath = q("manuscript_select").value || "";
+      const manuscriptPath = customPath || selectedPath;
       const searchPlanPath = q("search_plan_path").value.trim();
       if (!manuscriptPath) {
-        setText("intent_status", "Select a manuscript first.");
+        setText("intent_status", "Select or upload a manuscript first (or provide a custom path).");
         return;
       }
       const out = await api("/api/orchestrator/intents", "POST", {
@@ -564,6 +574,29 @@
       state.intentId = out.intent_id;
       setText("intent_status", `Intent created: ${state.intentId}`);
       setText("strategy_intent_label", `Active intent: ${state.intentId}`);
+    }
+
+    async function uploadManuscript() {
+      const fileInput = q("manuscript_file_input");
+      if (!fileInput.files || !fileInput.files.length) {
+        setText("intent_status", "Choose a file first.");
+        return;
+      }
+      const form = new FormData();
+      form.append("file", fileInput.files[0]);
+      const res = await fetch("/api/orchestrator/manuscripts/upload", {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      const out = await res.json();
+      setText("intent_status", `Uploaded: ${out.name}`);
+      await loadManuscripts();
+      q("manuscript_select").value = out.stored_path;
+      fileInput.value = "";
     }
 
     async function startRun() {
@@ -732,6 +765,9 @@
 
       q("refresh_manuscripts_btn").onclick = async () => {
         try { await loadManuscripts(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
+      };
+      q("upload_manuscript_btn").onclick = async () => {
+        try { await uploadManuscript(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
       };
       q("load_gaps_btn").onclick = async () => {
         try { await loadGapLayout(); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }

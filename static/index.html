@@ -6,197 +6,399 @@
   <title>Research Orchestrator</title>
   <style>
     :root {
-      --bg-canvas: #0a0d12;
-      --bg-pane: #10161f;
-      --line-subtle: #213042;
-      --text-primary: #e7eef6;
-      --text-muted: #9db0c3;
-      --accent: #52c7ff;
-      --ok: #4bd18b;
-      --warn: #ffbf5e;
-      --error: #ff6f7d;
+      --bg: #f6f1e8;
+      --bg-soft: #fbf8f2;
+      --panel: #fffdf8;
+      --line: #d8cdbb;
+      --line-strong: #c7b79f;
+      --ink: #2e2a25;
+      --muted: #6f665a;
+      --accent: #6b5b45;
+      --accent-soft: #ece3d5;
+      --ok: #3f7a56;
+      --warn: #916c20;
+      --error: #9a3e3e;
       --radius: 12px;
-      --space: 14px;
+      --space-1: 6px;
+      --space-2: 10px;
+      --space-3: 14px;
+      --space-4: 18px;
+      --space-5: 24px;
       --font-ui: "Space Grotesk", "Avenir Next", sans-serif;
       --font-mono: "IBM Plex Mono", "Menlo", monospace;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: linear-gradient(165deg, #090d13 0%, #0f1824 60%, #112233 100%);
-      color: var(--text-primary);
+      color: var(--ink);
       font-family: var(--font-ui);
-      min-height: 100vh;
+      background: radial-gradient(1200px 400px at 80% -10%, #f0e6d8, transparent 70%), var(--bg);
     }
-    .app {
-      display: grid;
-      grid-template-columns: 280px 1fr 340px;
-      gap: var(--space);
-      padding: var(--space);
+    .shell {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: var(--space-5);
     }
-    .pane {
-      background: rgba(16, 22, 31, 0.92);
-      border: 1px solid var(--line-subtle);
-      border-radius: var(--radius);
-      padding: var(--space);
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      margin-bottom: var(--space-4);
     }
-    h1, h2, h3 { margin: 0 0 10px; }
-    h1 { font-size: 22px; letter-spacing: 0.02em; }
-    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
-    label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.07em; }
-    input, select, textarea, button {
-      width: 100%;
-      border: 1px solid var(--line-subtle);
-      border-radius: 10px;
-      background: #0d141e;
-      color: var(--text-primary);
-      padding: 9px 10px;
-      font: inherit;
-      margin-bottom: 10px;
+    h1 {
+      margin: 0;
+      font-size: 26px;
+      letter-spacing: 0.01em;
     }
-    textarea { min-height: 66px; resize: vertical; }
-    button {
-      background: linear-gradient(140deg, rgba(82, 199, 255, 0.28), rgba(82, 199, 255, 0.14));
+    .subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+    .tabs {
+      display: flex;
+      gap: var(--space-1);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: var(--space-1);
+      background: var(--panel);
+    }
+    .tab-btn {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-size: 13px;
       cursor: pointer;
+    }
+    .tab-btn.active {
+      background: var(--accent-soft);
+      color: var(--ink);
       font-weight: 600;
     }
-    button:hover { border-color: var(--accent); }
-    .muted { color: var(--text-muted); font-size: 12px; }
-    .code { font-family: var(--font-mono); font-size: 12px; word-break: break-word; }
-    .event {
-      border-left: 3px solid var(--line-subtle);
-      padding-left: 10px;
-      margin-bottom: 10px;
+    .layout {
+      display: grid;
+      grid-template-columns: 360px minmax(0, 1fr);
+      gap: var(--space-3);
     }
-    .event.ok { border-left-color: var(--ok); }
-    .event.failed { border-left-color: var(--error); }
-    .event.started { border-left-color: var(--warn); }
+    .pane {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: var(--space-4);
+      min-height: 72vh;
+    }
+    .pane h2 {
+      margin: 0 0 var(--space-3);
+      font-size: 12px;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .hidden { display: none; }
+    label {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    input, select, textarea, button {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg-soft);
+      color: var(--ink);
+      padding: 9px 10px;
+      font: inherit;
+      font-size: 13px;
+      margin-bottom: var(--space-2);
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    button {
+      cursor: pointer;
+      background: #f0e5d2;
+      border-color: var(--line-strong);
+      font-weight: 600;
+    }
+    button:hover { background: #e8dcc7; }
+    .row { display: flex; gap: var(--space-2); }
+    .row > * { flex: 1; }
+    .muted {
+      color: var(--muted);
+      font-size: 12px;
+    }
     .status {
-      display: inline-block;
-      border: 1px solid var(--line-subtle);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border: 1px solid var(--line);
       border-radius: 999px;
       padding: 2px 8px;
       font-size: 11px;
       text-transform: lowercase;
-      margin-left: 6px;
+      background: #f5ecdf;
     }
-    .row { display: flex; gap: 8px; }
-    .row > * { flex: 1; }
     .list {
-      max-height: 420px;
-      overflow: auto;
-      border: 1px solid var(--line-subtle);
+      border: 1px solid var(--line);
       border-radius: 10px;
-      padding: 8px;
-      background: #0d141e;
+      background: #fff;
+      max-height: 66vh;
+      overflow: auto;
+      padding: var(--space-2);
     }
-    @media (max-width: 1100px) {
-      .app { grid-template-columns: 1fr; }
+    .event {
+      border-left: 3px solid var(--line);
+      padding: 8px 10px;
+      margin-bottom: var(--space-2);
+      background: #fcfaf6;
+    }
+    .event.ok { border-left-color: var(--ok); }
+    .event.started { border-left-color: var(--warn); }
+    .event.failed { border-left-color: var(--error); }
+    .code {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      word-break: break-word;
+      color: #5a5042;
+    }
+    .chapter {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      margin-bottom: var(--space-2);
+      overflow: hidden;
+    }
+    .chapter > summary {
+      cursor: pointer;
+      padding: 8px 10px;
+      background: #f7f0e4;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .gap {
+      padding: 8px 10px;
+      border-top: 1px solid var(--line);
+      font-size: 12px;
+    }
+    .gap-id {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: var(--space-2);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      padding: 7px 6px;
+      vertical-align: top;
+    }
+    th {
+      font-size: 11px;
+      text-transform: uppercase;
+      color: var(--muted);
+      letter-spacing: 0.07em;
+      position: sticky;
+      top: 0;
+      background: #fcfaf6;
+    }
+    @media (max-width: 1080px) {
+      .layout { grid-template-columns: 1fr; }
+      .pane { min-height: auto; }
+      .split { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <div class="app">
-    <section class="pane">
-      <h1>Orchestrator</h1>
-      <p class="muted">Intake and connection settings</p>
-
-      <h2>Create Intent</h2>
-      <label for="input_mode">Input Mode</label>
-      <select id="input_mode">
-        <option value="both">both</option>
-        <option value="manuscript">manuscript</option>
-        <option value="search_plan">search_plan</option>
-      </select>
-      <label for="manuscript_path">Manuscript Path</label>
-      <input id="manuscript_path" placeholder="Manuscript/Add To Cart -- main manuscript -- 2026.docx" />
-      <label for="search_plan_path">Search Plan Path</label>
-      <input id="search_plan_path" placeholder="codex/evidence_hub/data/pull_backlog_by_gap.csv" />
-      <label for="gap_ids">Gap IDs (comma-separated)</label>
-      <input id="gap_ids" placeholder="C2-G4,C4-G1" />
-      <button id="create_intent_btn">Create Intent</button>
-      <div id="intent_status" class="muted"></div>
-
-      <h2 style="margin-top:18px;">Connections</h2>
-      <div class="row">
-        <div>
-          <label for="conn_mode">Mode</label>
-          <select id="conn_mode">
-            <option value="auto">auto</option>
-            <option value="api">api</option>
-            <option value="playwright">playwright</option>
-          </select>
-        </div>
-        <div>
-          <label for="conn_provider">Provider</label>
-          <select id="conn_provider">
-            <option value="ebscohost">ebscohost</option>
-            <option value="statista">statista</option>
-            <option value="custom">custom</option>
-          </select>
-        </div>
+  <div class="shell">
+    <div class="topbar">
+      <div>
+        <h1>Research Orchestrator</h1>
+        <div class="subtitle">Select manuscript -> inspect gap layout -> choose strategy -> track results</div>
       </div>
-      <button id="load_schema_btn">Load Required Fields</button>
-      <div id="conn_fields"></div>
-      <button id="save_conn_btn">Save To .env</button>
-      <div id="conn_status" class="muted"></div>
-    </section>
-
-    <section class="pane">
-      <h2>Run Builder</h2>
-      <label for="intent_id">Intent ID (optional)</label>
-      <input id="intent_id" placeholder="intent_xxx" />
-      <div class="row">
-        <div>
-          <label for="pull_mode">Pull Mode</label>
-          <select id="pull_mode">
-            <option value="auto">auto</option>
-            <option value="api">api</option>
-            <option value="playwright">playwright</option>
-          </select>
-        </div>
-        <div>
-          <label for="pull_provider">Pull Provider</label>
-          <input id="pull_provider" value="ebscohost" />
-        </div>
+      <div class="tabs" role="tablist" aria-label="App tabs">
+        <button class="tab-btn active" data-tab="plan" title="Open manuscript and gap planning workspace.">Plan</button>
+        <button class="tab-btn" data-tab="strategy" title="Choose automatic or narrow-scope research strategy.">Strategy</button>
+        <button class="tab-btn" data-tab="results" title="Follow run status, events, and outputs.">Results</button>
+        <button class="tab-btn" data-tab="settings" title="View and edit .env settings and API keys.">Settings</button>
       </div>
-      <label for="existing_run_id">Existing Run ID (optional handoff)</label>
-      <input id="existing_run_id" placeholder="ebsco_api_run_20260326_190500" />
-      <label for="existing_run_dir">Existing Run Dir (optional handoff)</label>
-      <input id="existing_run_dir" placeholder="codex/add_to_cart_audit/external_sources/..." />
-      <div class="row">
-        <div>
-          <label for="artifact_type">Artifact Type</label>
-          <select id="artifact_type">
-            <option value="ebsco_manifest_pair">ebsco_manifest_pair</option>
-            <option value="external_packet">external_packet</option>
-          </select>
-        </div>
-        <div>
-          <label for="gap_id">Gap ID for LLM Scope (optional)</label>
-          <input id="gap_id" placeholder="C2-G4" />
-        </div>
-      </div>
-      <button id="start_run_btn">Start Orchestrated Run</button>
-      <div id="run_status" class="muted"></div>
+    </div>
 
-      <h2 style="margin-top:18px;">Recent Runs</h2>
-      <button id="refresh_runs_btn">Refresh Runs</button>
-      <div id="runs_list" class="list"></div>
-    </section>
+    <div id="tab-plan" class="layout">
+      <section class="pane">
+        <h2>Manuscript Intake</h2>
+        <div class="row">
+          <div>
+            <label for="manuscript_select">Select Manuscript</label>
+            <select id="manuscript_select"></select>
+          </div>
+          <div style="max-width:120px;">
+            <label>&nbsp;</label>
+            <button id="refresh_manuscripts_btn" title="Reload manuscript options from the Manuscript folder.">Refresh</button>
+          </div>
+        </div>
 
-    <section class="pane">
-      <h2>Run Timeline</h2>
-      <label for="events_run_id">Run ID</label>
-      <input id="events_run_id" placeholder="run_xxx" />
-      <button id="load_events_btn">Load Events</button>
-      <div id="events_list" class="list"></div>
-    </section>
+        <label for="search_plan_path">Search Plan Path (Optional)</label>
+        <input id="search_plan_path" placeholder="codex/evidence_hub/data/pull_backlog_by_gap.csv" />
+
+        <button id="load_gaps_btn" title="Load chapter-by-chapter gap layout from gap_claims.csv and backlog data.">Show Gap Layout</button>
+        <button id="create_intent_btn" title="Create a reusable intent from your manuscript and search-plan selection.">Create Intent</button>
+        <div id="intent_status" class="muted"></div>
+      </section>
+
+      <section class="pane">
+        <h2>Gap Layout</h2>
+        <div id="gap_summary" class="muted">Load a manuscript and click “Show Gap Layout”.</div>
+        <div id="gap_layout" class="list" style="margin-top:10px;"></div>
+      </section>
+    </div>
+
+    <div id="tab-strategy" class="layout hidden">
+      <section class="pane">
+        <h2>Research Strategy</h2>
+        <div class="muted" id="strategy_intent_label">No intent yet. Create one in Plan tab.</div>
+        <div class="row" style="margin-top:8px;">
+          <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
+            <input type="radio" name="strategy_mode" value="automatic" checked style="width:auto; margin:0;" />
+            Automatic research sweep
+          </label>
+          <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
+            <input type="radio" name="strategy_mode" value="narrow" style="width:auto; margin:0;" />
+            Narrow question
+          </label>
+        </div>
+
+        <label for="narrow_question" style="margin-top:10px;">Narrow Research Question</label>
+        <textarea id="narrow_question" placeholder="Example: Find sources only on Amazon warehouse injury rates in chapter 4." disabled></textarea>
+
+        <label for="target_gap_id">Target Gap (for narrow mode)</label>
+        <select id="target_gap_id"></select>
+
+        <div class="split">
+          <div>
+            <label for="pull_mode">Pull Mode</label>
+            <select id="pull_mode">
+              <option value="auto">auto</option>
+              <option value="api">api</option>
+              <option value="playwright">playwright</option>
+            </select>
+          </div>
+          <div>
+            <label for="pull_provider">Pull Provider</label>
+            <input id="pull_provider" value="ebscohost" />
+          </div>
+        </div>
+
+        <button id="start_run_btn" title="Start a new orchestrated run with the selected strategy and provider mode.">Start Research Run</button>
+        <div id="run_status" class="muted"></div>
+      </section>
+
+      <section class="pane">
+        <h2>Strategy Notes</h2>
+        <div class="list" id="strategy_notes">
+          <div class="event">
+            <div><strong>Automatic mode</strong></div>
+            <div class="muted">Runs broad pull + ingest + LLM fit pipeline for full scope.</div>
+          </div>
+          <div class="event">
+            <div><strong>Narrow mode</strong></div>
+            <div class="muted">Uses your question and optional target gap to constrain LLM fit scope.</div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div id="tab-results" class="layout hidden">
+      <section class="pane">
+        <h2>Runs</h2>
+        <div class="row">
+          <button id="refresh_runs_btn" title="Refresh the list of orchestrator runs.">Refresh Runs</button>
+          <button id="retry_run_btn" title="Retry the selected run ID from the failed/completed state.">Retry Selected Run</button>
+        </div>
+        <div id="runs_list" class="list"></div>
+      </section>
+
+      <section class="pane">
+        <h2>Run Events</h2>
+        <div class="row">
+          <input id="events_run_id" placeholder="run_xxx" />
+          <button id="load_events_btn" title="Load timeline events for the run ID entered to the left.">Load Events</button>
+        </div>
+        <div id="events_list" class="list"></div>
+      </section>
+    </div>
+
+    <div id="tab-settings" class="layout hidden">
+      <section class="pane">
+        <h2>Environment Values</h2>
+        <div class="row">
+          <button id="load_env_btn" title="Load current .env values from disk for review.">Load .env Values</button>
+          <button id="load_conn_schema_btn" title="Load recommended connection fields for current mode/provider.">Load Recommended Fields</button>
+        </div>
+        <div class="row">
+          <div>
+            <label for="settings_mode">Mode</label>
+            <select id="settings_mode">
+              <option value="auto">auto</option>
+              <option value="api">api</option>
+              <option value="playwright">playwright</option>
+            </select>
+          </div>
+          <div>
+            <label for="settings_provider">Provider</label>
+            <select id="settings_provider">
+              <option value="ebscohost">ebscohost</option>
+              <option value="statista">statista</option>
+              <option value="custom">custom</option>
+            </select>
+          </div>
+        </div>
+        <div id="settings_status" class="muted"></div>
+        <div class="list" style="margin-top:10px;">
+          <table>
+            <thead>
+              <tr><th>Key</th><th>Value</th><th>Type</th></tr>
+            </thead>
+            <tbody id="env_values_tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="pane">
+        <h2>Add / Update Key</h2>
+        <label for="env_key">Env Key</label>
+        <input id="env_key" placeholder="ORCH_API_PULL_COMMAND" />
+        <label for="env_value">Env Value</label>
+        <textarea id="env_value" placeholder="python3 codex/scripts/your_puller.py --workspace {workspace}"></textarea>
+        <button id="save_env_btn" title="Write this key/value to .env and make it available to new runs.">Save Key To .env</button>
+
+        <h2 style="margin-top:16px;">Recommended Connection Fields</h2>
+        <div id="recommended_fields" class="list"></div>
+      </section>
+    </div>
   </div>
 
   <script>
     const q = (id) => document.getElementById(id);
-    const api = async (path, method = "GET", body = null) => {
+    const state = {
+      manuscripts: [],
+      gaps: [],
+      intentId: "",
+      selectedRunId: "",
+    };
+
+    async function api(path, method = "GET", body = null) {
       const res = await fetch(path, {
         method,
         headers: { "Content-Type": "application/json" },
@@ -207,99 +409,154 @@
         throw new Error(text || `HTTP ${res.status}`);
       }
       return await res.json();
-    };
+    }
 
-    function setText(id, text) { q(id).textContent = text; }
+    function setText(id, text) {
+      q(id).textContent = text;
+    }
 
-    q("create_intent_btn").onclick = async () => {
-      try {
-        const gapIds = q("gap_ids").value.split(",").map(v => v.trim()).filter(Boolean);
-        const payload = {
-          input_mode: q("input_mode").value,
-          manuscript_path: q("manuscript_path").value.trim(),
-          search_plan_path: q("search_plan_path").value.trim(),
-          gap_ids: gapIds,
-          max_queries: 100,
-        };
-        const out = await api("/api/orchestrator/intents", "POST", payload);
-        setText("intent_status", `Created ${out.intent_id} (${out.search_plan_preview.row_count || 0} plan rows)`);
-        q("intent_id").value = out.intent_id;
-      } catch (err) {
-        setText("intent_status", `Error: ${err.message}`);
+    function showTab(name) {
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.tab === name);
+      });
+      ["plan", "strategy", "results", "settings"].forEach((tab) => {
+        q(`tab-${tab}`).classList.toggle("hidden", tab !== name);
+      });
+    }
+
+    function fillManuscripts() {
+      const sel = q("manuscript_select");
+      sel.innerHTML = "";
+      state.manuscripts.forEach((m) => {
+        const opt = document.createElement("option");
+        opt.value = m.path;
+        opt.textContent = `${m.name}`;
+        sel.appendChild(opt);
+      });
+    }
+
+    function fillGapSelect() {
+      const sel = q("target_gap_id");
+      sel.innerHTML = "";
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = "(optional)";
+      sel.appendChild(none);
+      state.gaps.forEach((g) => {
+        const opt = document.createElement("option");
+        opt.value = g.gap_id;
+        opt.textContent = `${g.gap_id} — ${g.chapter}`;
+        sel.appendChild(opt);
+      });
+    }
+
+    async function loadManuscripts() {
+      const out = await api("/api/orchestrator/manuscripts");
+      state.manuscripts = out.manuscripts || [];
+      fillManuscripts();
+      if (!state.manuscripts.length) {
+        setText("intent_status", "No manuscript files found in Manuscript/.");
       }
-    };
+    }
 
-    q("load_schema_btn").onclick = async () => {
-      try {
-        const mode = q("conn_mode").value;
-        const provider = q("conn_provider").value;
-        const out = await api(`/api/orchestrator/connections/schema?mode=${encodeURIComponent(mode)}&provider=${encodeURIComponent(provider)}`);
-        const root = q("conn_fields");
-        root.innerHTML = "";
-        out.fields.forEach((f) => {
-          const lbl = document.createElement("label");
-          lbl.textContent = `${f.label} (${f.key})${f.required ? " *" : ""}`;
-          const inp = document.createElement("input");
-          inp.id = `env_${f.key}`;
-          inp.placeholder = f.key;
-          inp.type = f.secret ? "password" : "text";
-          root.appendChild(lbl);
-          root.appendChild(inp);
+    async function loadGapLayout() {
+      const out = await api("/api/orchestrator/gaps/layout");
+      state.gaps = out.gaps || [];
+      fillGapSelect();
+      setText(
+        "gap_summary",
+        `${out.chapter_count || 0} chapters, ${out.gap_count || 0} total gaps (source: ${out.source || "n/a"})`
+      );
+      const root = q("gap_layout");
+      root.innerHTML = "";
+      (out.chapters || []).forEach((ch) => {
+        const details = document.createElement("details");
+        details.className = "chapter";
+        details.open = false;
+        const summary = document.createElement("summary");
+        summary.textContent = `${ch.chapter} (${ch.gap_count})`;
+        details.appendChild(summary);
+        (ch.gaps || []).forEach((g) => {
+          const div = document.createElement("div");
+          div.className = "gap";
+          div.innerHTML = `
+            <div class="gap-id">${g.gap_id}</div>
+            <div>${g.claim_text || ""}</div>
+            <div class="muted">linked docs: ${g.current_linked_docs || 0} | priority: ${g.priority || "n/a"} | target: ${g.target_total_docs || 0}</div>
+          `;
+          details.appendChild(div);
         });
-      } catch (err) {
-        setText("conn_status", `Error: ${err.message}`);
-      }
-    };
+        root.appendChild(details);
+      });
+    }
 
-    q("save_conn_btn").onclick = async () => {
-      try {
-        const fields = q("conn_fields").querySelectorAll("input[id^='env_']");
-        const updates = {};
-        fields.forEach((inp) => {
-          const key = inp.id.replace("env_", "");
-          if (inp.value.trim()) updates[key] = inp.value.trim();
-        });
-        const out = await api("/api/orchestrator/connections/save", "POST", { updates });
-        setText("conn_status", `Saved ${Object.keys(out.updates).length} fields to ${out.env_path}`);
-      } catch (err) {
-        setText("conn_status", `Error: ${err.message}`);
+    async function createIntent() {
+      const manuscriptPath = q("manuscript_select").value || "";
+      const searchPlanPath = q("search_plan_path").value.trim();
+      if (!manuscriptPath) {
+        setText("intent_status", "Select a manuscript first.");
+        return;
       }
-    };
+      const out = await api("/api/orchestrator/intents", "POST", {
+        input_mode: searchPlanPath ? "both" : "manuscript",
+        manuscript_path: manuscriptPath,
+        search_plan_path: searchPlanPath,
+        gap_ids: [],
+        max_queries: 100,
+      });
+      state.intentId = out.intent_id;
+      setText("intent_status", `Intent created: ${state.intentId}`);
+      setText("strategy_intent_label", `Active intent: ${state.intentId}`);
+    }
 
-    q("start_run_btn").onclick = async () => {
-      try {
-        const payload = {
-          intent_id: q("intent_id").value.trim(),
-          pull_mode: q("pull_mode").value,
-          pull_provider: q("pull_provider").value.trim() || "ebscohost",
-          existing_run_id: q("existing_run_id").value.trim(),
-          existing_run_dir: q("existing_run_dir").value.trim(),
-          artifact_type: q("artifact_type").value,
-          gap_id: q("gap_id").value.trim(),
-          force: false,
-        };
-        const out = await api("/api/orchestrator/runs", "POST", payload);
-        setText("run_status", `Started ${out.run_id} (status: ${out.status})`);
-        q("events_run_id").value = out.run_id;
-        await loadRuns();
-      } catch (err) {
-        setText("run_status", `Error: ${err.message}`);
+    async function startRun() {
+      if (!state.intentId) {
+        await createIntent();
       }
-    };
+      const mode = document.querySelector("input[name='strategy_mode']:checked").value;
+      const narrowQ = q("narrow_question").value.trim();
+      const targetGap = q("target_gap_id").value;
+      const payload = {
+        intent_id: state.intentId,
+        pull_mode: q("pull_mode").value,
+        pull_provider: q("pull_provider").value.trim() || "ebscohost",
+        existing_run_id: "",
+        existing_run_dir: "",
+        artifact_type: "ebsco_manifest_pair",
+        gap_id: mode === "narrow" ? (targetGap || "") : "",
+        force: false,
+      };
+      const run = await api("/api/orchestrator/runs", "POST", payload);
+      state.selectedRunId = run.run_id;
+      q("events_run_id").value = run.run_id;
+      let strategyMsg = `Run started: ${run.run_id}`;
+      if (mode === "narrow" && narrowQ) strategyMsg += ` | narrow question: ${narrowQ}`;
+      setText("run_status", strategyMsg);
+      await loadRuns();
+      showTab("results");
+    }
 
     async function loadRuns() {
-      const out = await api("/api/orchestrator/runs?limit=30");
+      const out = await api("/api/orchestrator/runs?limit=50");
       const root = q("runs_list");
       root.innerHTML = "";
-      out.runs.forEach((run) => {
+      (out.runs || []).forEach((run) => {
         const div = document.createElement("div");
-        div.className = "event";
+        const statusClass =
+          run.status === "completed" ? "ok" :
+          run.status === "failed" ? "failed" :
+          "started";
+        div.className = `event ${statusClass}`;
         div.innerHTML = `
-          <div><strong>${run.run_id}</strong><span class="status">${run.status}</span></div>
-          <div class="muted">${run.stage} | ${run.updated_at || run.created_at}</div>
+          <div><strong>${run.run_id}</strong> <span class="status">${run.status}</span></div>
+          <div class="muted">${run.stage} | updated: ${run.updated_at || run.created_at}</div>
           <div class="code">${(run.error || "").slice(0, 220)}</div>
         `;
-        div.onclick = () => { q("events_run_id").value = run.run_id; loadEvents(); };
+        div.onclick = () => {
+          state.selectedRunId = run.run_id;
+          q("events_run_id").value = run.run_id;
+          loadEvents();
+        };
         root.appendChild(div);
       });
     }
@@ -310,9 +567,10 @@
       const out = await api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/events?limit=500`);
       const root = q("events_list");
       root.innerHTML = "";
-      out.events.forEach((evt) => {
+      (out.events || []).forEach((evt) => {
         const div = document.createElement("div");
-        div.className = `event ${evt.status}`;
+        const statusClass = evt.status === "completed" ? "ok" : evt.status === "failed" ? "failed" : "started";
+        div.className = `event ${statusClass}`;
         div.innerHTML = `
           <div><strong>${evt.stage}</strong> <span class="status">${evt.status}</span></div>
           <div class="muted">${evt.ts_utc}</div>
@@ -323,9 +581,119 @@
       });
     }
 
-    q("refresh_runs_btn").onclick = loadRuns;
-    q("load_events_btn").onclick = loadEvents;
-    loadRuns();
+    async function retryRun() {
+      const runId = q("events_run_id").value.trim();
+      if (!runId) {
+        setText("run_status", "Enter/select a run ID first.");
+        return;
+      }
+      await api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/retry`, "POST", { force: false });
+      setText("run_status", `Retry queued for ${runId}`);
+      await loadRuns();
+      await loadEvents();
+    }
+
+    async function loadEnvValues() {
+      const out = await api("/api/orchestrator/connections/values?mask_secrets=true");
+      setText("settings_status", `Loaded ${out.values.length} keys from ${out.env_path}`);
+      const tbody = q("env_values_tbody");
+      tbody.innerHTML = "";
+      out.values.forEach((row) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="code">${row.key}</td>
+          <td class="code">${row.value || ""}</td>
+          <td>${row.is_secret ? "secret" : "plain"}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function loadRecommendedFields() {
+      const mode = q("settings_mode").value;
+      const provider = q("settings_provider").value;
+      const out = await api(`/api/orchestrator/connections/schema?mode=${encodeURIComponent(mode)}&provider=${encodeURIComponent(provider)}`);
+      const root = q("recommended_fields");
+      root.innerHTML = "";
+      out.fields.forEach((f) => {
+        const div = document.createElement("div");
+        div.className = "event";
+        div.innerHTML = `
+          <div><strong>${f.key}</strong> <span class="status">${f.required ? "required" : "optional"}</span></div>
+          <div class="muted">${f.label}</div>
+        `;
+        root.appendChild(div);
+      });
+    }
+
+    async function saveEnvKey() {
+      const key = q("env_key").value.trim();
+      const value = q("env_value").value;
+      if (!key) {
+        setText("settings_status", "Enter a key.");
+        return;
+      }
+      await api("/api/orchestrator/connections/save", "POST", { updates: { [key]: value } });
+      setText("settings_status", `Saved ${key} to .env`);
+      q("env_value").value = "";
+      await loadEnvValues();
+    }
+
+    function wireEvents() {
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.addEventListener("click", () => showTab(btn.dataset.tab));
+      });
+
+      q("refresh_manuscripts_btn").onclick = async () => {
+        try { await loadManuscripts(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
+      };
+      q("load_gaps_btn").onclick = async () => {
+        try { await loadGapLayout(); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
+      };
+      q("create_intent_btn").onclick = async () => {
+        try { await createIntent(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
+      };
+
+      document.querySelectorAll("input[name='strategy_mode']").forEach((radio) => {
+        radio.addEventListener("change", () => {
+          const narrow = document.querySelector("input[name='strategy_mode']:checked").value === "narrow";
+          q("narrow_question").disabled = !narrow;
+        });
+      });
+      q("start_run_btn").onclick = async () => {
+        try { await startRun(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
+      };
+
+      q("refresh_runs_btn").onclick = async () => {
+        try { await loadRuns(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
+      };
+      q("load_events_btn").onclick = async () => {
+        try { await loadEvents(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
+      };
+      q("retry_run_btn").onclick = async () => {
+        try { await retryRun(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
+      };
+
+      q("load_env_btn").onclick = async () => {
+        try { await loadEnvValues(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
+      };
+      q("load_conn_schema_btn").onclick = async () => {
+        try { await loadRecommendedFields(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
+      };
+      q("save_env_btn").onclick = async () => {
+        try { await saveEnvKey(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
+      };
+    }
+
+    async function boot() {
+      wireEvents();
+      try { await loadManuscripts(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
+      try { await loadGapLayout(); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
+      try { await loadRuns(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
+      try { await loadEnvValues(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
+      try { await loadRecommendedFields(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
+    }
+    boot();
   </script>
 </body>
 </html>

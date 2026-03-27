@@ -10,6 +10,11 @@
 - Automatically runs:
   - pull -> ingest -> llm fit
 - Exposes connection schema + `.env` save endpoints.
+- Provides tabbed UI:
+  - `Plan`: manuscript selector + gap layout
+  - `Strategy`: automatic vs narrow research scope
+  - `Results`: run timeline and retry
+  - `Settings`: view/edit `.env` values and add API keys
 
 ## Run
 From repository root:

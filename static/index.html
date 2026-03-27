@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Research Orchestrator</title>
+  <style>
+    :root {
+      --bg-canvas: #0a0d12;
+      --bg-pane: #10161f;
+      --line-subtle: #213042;
+      --text-primary: #e7eef6;
+      --text-muted: #9db0c3;
+      --accent: #52c7ff;
+      --ok: #4bd18b;
+      --warn: #ffbf5e;
+      --error: #ff6f7d;
+      --radius: 12px;
+      --space: 14px;
+      --font-ui: "Space Grotesk", "Avenir Next", sans-serif;
+      --font-mono: "IBM Plex Mono", "Menlo", monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: linear-gradient(165deg, #090d13 0%, #0f1824 60%, #112233 100%);
+      color: var(--text-primary);
+      font-family: var(--font-ui);
+      min-height: 100vh;
+    }
+    .app {
+      display: grid;
+      grid-template-columns: 280px 1fr 340px;
+      gap: var(--space);
+      padding: var(--space);
+    }
+    .pane {
+      background: rgba(16, 22, 31, 0.92);
+      border: 1px solid var(--line-subtle);
+      border-radius: var(--radius);
+      padding: var(--space);
+    }
+    h1, h2, h3 { margin: 0 0 10px; }
+    h1 { font-size: 22px; letter-spacing: 0.02em; }
+    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
+    label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.07em; }
+    input, select, textarea, button {
+      width: 100%;
+      border: 1px solid var(--line-subtle);
+      border-radius: 10px;
+      background: #0d141e;
+      color: var(--text-primary);
+      padding: 9px 10px;
+      font: inherit;
+      margin-bottom: 10px;
+    }
+    textarea { min-height: 66px; resize: vertical; }
+    button {
+      background: linear-gradient(140deg, rgba(82, 199, 255, 0.28), rgba(82, 199, 255, 0.14));
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:hover { border-color: var(--accent); }
+    .muted { color: var(--text-muted); font-size: 12px; }
+    .code { font-family: var(--font-mono); font-size: 12px; word-break: break-word; }
+    .event {
+      border-left: 3px solid var(--line-subtle);
+      padding-left: 10px;
+      margin-bottom: 10px;
+    }
+    .event.ok { border-left-color: var(--ok); }
+    .event.failed { border-left-color: var(--error); }
+    .event.started { border-left-color: var(--warn); }
+    .status {
+      display: inline-block;
+      border: 1px solid var(--line-subtle);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      text-transform: lowercase;
+      margin-left: 6px;
+    }
+    .row { display: flex; gap: 8px; }
+    .row > * { flex: 1; }
+    .list {
+      max-height: 420px;
+      overflow: auto;
+      border: 1px solid var(--line-subtle);
+      border-radius: 10px;
+      padding: 8px;
+      background: #0d141e;
+    }
+    @media (max-width: 1100px) {
+      .app { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="pane">
+      <h1>Orchestrator</h1>
+      <p class="muted">Intake and connection settings</p>
+
+      <h2>Create Intent</h2>
+      <label for="input_mode">Input Mode</label>
+      <select id="input_mode">
+        <option value="both">both</option>
+        <option value="manuscript">manuscript</option>
+        <option value="search_plan">search_plan</option>
+      </select>
+      <label for="manuscript_path">Manuscript Path</label>
+      <input id="manuscript_path" placeholder="Manuscript/Add To Cart -- main manuscript -- 2026.docx" />
+      <label for="search_plan_path">Search Plan Path</label>
+      <input id="search_plan_path" placeholder="codex/evidence_hub/data/pull_backlog_by_gap.csv" />
+      <label for="gap_ids">Gap IDs (comma-separated)</label>
+      <input id="gap_ids" placeholder="C2-G4,C4-G1" />
+      <button id="create_intent_btn">Create Intent</button>
+      <div id="intent_status" class="muted"></div>
+
+      <h2 style="margin-top:18px;">Connections</h2>
+      <div class="row">
+        <div>
+          <label for="conn_mode">Mode</label>
+          <select id="conn_mode">
+            <option value="auto">auto</option>
+            <option value="api">api</option>
+            <option value="playwright">playwright</option>
+          </select>
+        </div>
+        <div>
+          <label for="conn_provider">Provider</label>
+          <select id="conn_provider">
+            <option value="ebscohost">ebscohost</option>
+            <option value="statista">statista</option>
+            <option value="custom">custom</option>
+          </select>
+        </div>
+      </div>
+      <button id="load_schema_btn">Load Required Fields</button>
+      <div id="conn_fields"></div>
+      <button id="save_conn_btn">Save To .env</button>
+      <div id="conn_status" class="muted"></div>
+    </section>
+
+    <section class="pane">
+      <h2>Run Builder</h2>
+      <label for="intent_id">Intent ID (optional)</label>
+      <input id="intent_id" placeholder="intent_xxx" />
+      <div class="row">
+        <div>
+          <label for="pull_mode">Pull Mode</label>
+          <select id="pull_mode">
+            <option value="auto">auto</option>
+            <option value="api">api</option>
+            <option value="playwright">playwright</option>
+          </select>
+        </div>
+        <div>
+          <label for="pull_provider">Pull Provider</label>
+          <input id="pull_provider" value="ebscohost" />
+        </div>
+      </div>
+      <label for="existing_run_id">Existing Run ID (optional handoff)</label>
+      <input id="existing_run_id" placeholder="ebsco_api_run_20260326_190500" />
+      <label for="existing_run_dir">Existing Run Dir (optional handoff)</label>
+      <input id="existing_run_dir" placeholder="codex/add_to_cart_audit/external_sources/..." />
+      <div class="row">
+        <div>
+          <label for="artifact_type">Artifact Type</label>
+          <select id="artifact_type">
+            <option value="ebsco_manifest_pair">ebsco_manifest_pair</option>
+            <option value="external_packet">external_packet</option>
+          </select>
+        </div>
+        <div>
+          <label for="gap_id">Gap ID for LLM Scope (optional)</label>
+          <input id="gap_id" placeholder="C2-G4" />
+        </div>
+      </div>
+      <button id="start_run_btn">Start Orchestrated Run</button>
+      <div id="run_status" class="muted"></div>
+
+      <h2 style="margin-top:18px;">Recent Runs</h2>
+      <button id="refresh_runs_btn">Refresh Runs</button>
+      <div id="runs_list" class="list"></div>
+    </section>
+
+    <section class="pane">
+      <h2>Run Timeline</h2>
+      <label for="events_run_id">Run ID</label>
+      <input id="events_run_id" placeholder="run_xxx" />
+      <button id="load_events_btn">Load Events</button>
+      <div id="events_list" class="list"></div>
+    </section>
+  </div>
+
+  <script>
+    const q = (id) => document.getElementById(id);
+    const api = async (path, method = "GET", body = null) => {
+      const res = await fetch(path, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: body ? JSON.stringify(body) : null,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      return await res.json();
+    };
+
+    function setText(id, text) { q(id).textContent = text; }
+
+    q("create_intent_btn").onclick = async () => {
+      try {
+        const gapIds = q("gap_ids").value.split(",").map(v => v.trim()).filter(Boolean);
+        const payload = {
+          input_mode: q("input_mode").value,
+          manuscript_path: q("manuscript_path").value.trim(),
+          search_plan_path: q("search_plan_path").value.trim(),
+          gap_ids: gapIds,
+          max_queries: 100,
+        };
+        const out = await api("/api/orchestrator/intents", "POST", payload);
+        setText("intent_status", `Created ${out.intent_id} (${out.search_plan_preview.row_count || 0} plan rows)`);
+        q("intent_id").value = out.intent_id;
+      } catch (err) {
+        setText("intent_status", `Error: ${err.message}`);
+      }
+    };
+
+    q("load_schema_btn").onclick = async () => {
+      try {
+        const mode = q("conn_mode").value;
+        const provider = q("conn_provider").value;
+        const out = await api(`/api/orchestrator/connections/schema?mode=${encodeURIComponent(mode)}&provider=${encodeURIComponent(provider)}`);
+        const root = q("conn_fields");
+        root.innerHTML = "";
+        out.fields.forEach((f) => {
+          const lbl = document.createElement("label");
+          lbl.textContent = `${f.label} (${f.key})${f.required ? " *" : ""}`;
+          const inp = document.createElement("input");
+          inp.id = `env_${f.key}`;
+          inp.placeholder = f.key;
+          inp.type = f.secret ? "password" : "text";
+          root.appendChild(lbl);
+          root.appendChild(inp);
+        });
+      } catch (err) {
+        setText("conn_status", `Error: ${err.message}`);
+      }
+    };
+
+    q("save_conn_btn").onclick = async () => {
+      try {
+        const fields = q("conn_fields").querySelectorAll("input[id^='env_']");
+        const updates = {};
+        fields.forEach((inp) => {
+          const key = inp.id.replace("env_", "");
+          if (inp.value.trim()) updates[key] = inp.value.trim();
+        });
+        const out = await api("/api/orchestrator/connections/save", "POST", { updates });
+        setText("conn_status", `Saved ${Object.keys(out.updates).length} fields to ${out.env_path}`);
+      } catch (err) {
+        setText("conn_status", `Error: ${err.message}`);
+      }
+    };
+
+    q("start_run_btn").onclick = async () => {
+      try {
+        const payload = {
+          intent_id: q("intent_id").value.trim(),
+          pull_mode: q("pull_mode").value,
+          pull_provider: q("pull_provider").value.trim() || "ebscohost",
+          existing_run_id: q("existing_run_id").value.trim(),
+          existing_run_dir: q("existing_run_dir").value.trim(),
+          artifact_type: q("artifact_type").value,
+          gap_id: q("gap_id").value.trim(),
+          force: false,
+        };
+        const out = await api("/api/orchestrator/runs", "POST", payload);
+        setText("run_status", `Started ${out.run_id} (status: ${out.status})`);
+        q("events_run_id").value = out.run_id;
+        await loadRuns();
+      } catch (err) {
+        setText("run_status", `Error: ${err.message}`);
+      }
+    };
+
+    async function loadRuns() {
+      const out = await api("/api/orchestrator/runs?limit=30");
+      const root = q("runs_list");
+      root.innerHTML = "";
+      out.runs.forEach((run) => {
+        const div = document.createElement("div");
+        div.className = "event";
+        div.innerHTML = `
+          <div><strong>${run.run_id}</strong><span class="status">${run.status}</span></div>
+          <div class="muted">${run.stage} | ${run.updated_at || run.created_at}</div>
+          <div class="code">${(run.error || "").slice(0, 220)}</div>
+        `;
+        div.onclick = () => { q("events_run_id").value = run.run_id; loadEvents(); };
+        root.appendChild(div);
+      });
+    }
+
+    async function loadEvents() {
+      const runId = q("events_run_id").value.trim();
+      if (!runId) return;
+      const out = await api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/events?limit=500`);
+      const root = q("events_list");
+      root.innerHTML = "";
+      out.events.forEach((evt) => {
+        const div = document.createElement("div");
+        div.className = `event ${evt.status}`;
+        div.innerHTML = `
+          <div><strong>${evt.stage}</strong> <span class="status">${evt.status}</span></div>
+          <div class="muted">${evt.ts_utc}</div>
+          <div>${evt.message}</div>
+          <div class="code">${JSON.stringify(evt.meta || {})}</div>
+        `;
+        root.appendChild(div);
+      });
+    }
+
+    q("refresh_runs_btn").onclick = loadRuns;
+    q("load_events_btn").onclick = loadEvents;
+    loadRuns();
+  </script>
+</body>
+</html>
+

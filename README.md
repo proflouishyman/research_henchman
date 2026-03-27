@@ -8,6 +8,10 @@
 - Accepts manuscript files from either:
   - workspace `Manuscript/` directory, or
   - local computer upload via Plan tab.
+- Gap layout is manuscript-aware:
+  - Add-to-Cart manuscripts use canonical mapped gaps.
+  - Other manuscripts use sidecar maps when present.
+  - If missing, the app auto-generates and stores a gap map.
 - Stores orchestrator runs/events in `app/data`.
 - Supports pull mode routing (`api`, `playwright`, `auto`) through adapter contracts.
 - Automatically runs:

@@ -54,6 +54,13 @@ while preserving existing Evidence Hub data contracts.
   - closed/keyed APIs in use
   - university database set used by pull workflows
 
+## Manuscript-aware gap behavior
+- Gap layout endpoint accepts selected manuscript path and refresh flag.
+- For Add-to-Cart manuscripts, canonical mapped gaps are used.
+- For other manuscripts:
+  - use manuscript sidecar gap map if present
+  - otherwise auto-generate and persist a fallback gap map.
+
 ## Run locally
 ```bash
 uvicorn app.main:app --reload --port 8876

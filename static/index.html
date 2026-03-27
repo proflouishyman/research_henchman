@@ -524,13 +524,19 @@
       }
     }
 
-    async function loadGapLayout() {
-      const out = await api("/api/orchestrator/gaps/layout");
+    async function loadGapLayout(forceRefresh = false) {
+      const customPath = q("custom_manuscript_path").value.trim();
+      const selectedPath = q("manuscript_select").value || "";
+      const manuscriptPath = customPath || selectedPath;
+      const out = await api(
+        `/api/orchestrator/gaps/layout?manuscript_path=${encodeURIComponent(manuscriptPath)}&refresh=${forceRefresh ? "true" : "false"}`
+      );
       state.gaps = out.gaps || [];
       fillGapSelect();
+      const generatedLabel = out.generated ? " | auto-generated map" : "";
       setText(
         "gap_summary",
-        `${out.chapter_count || 0} chapters, ${out.gap_count || 0} total gaps (source: ${out.source || "n/a"})`
+        `${out.chapter_count || 0} chapters, ${out.gap_count || 0} total gaps (source: ${out.source || "n/a"}${generatedLabel})`
       );
       const root = q("gap_layout");
       root.innerHTML = "";
@@ -596,7 +602,9 @@
       setText("intent_status", `Uploaded: ${out.name}`);
       await loadManuscripts();
       q("manuscript_select").value = out.stored_path;
+      q("custom_manuscript_path").value = "";
       fileInput.value = "";
+      await loadGapLayout(true);
     }
 
     async function startRun() {
@@ -764,13 +772,24 @@
       });
 
       q("refresh_manuscripts_btn").onclick = async () => {
-        try { await loadManuscripts(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
+        try {
+          await loadManuscripts();
+          await loadGapLayout(true);
+        } catch (err) {
+          setText("intent_status", `Error: ${err.message}`);
+        }
       };
       q("upload_manuscript_btn").onclick = async () => {
         try { await uploadManuscript(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
       };
       q("load_gaps_btn").onclick = async () => {
-        try { await loadGapLayout(); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
+        try { await loadGapLayout(true); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
+      };
+      q("manuscript_select").onchange = async () => {
+        try { await loadGapLayout(false); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
+      };
+      q("custom_manuscript_path").onchange = async () => {
+        try { await loadGapLayout(true); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
       };
       q("create_intent_btn").onclick = async () => {
         try { await createIntent(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }

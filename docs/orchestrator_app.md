@@ -60,6 +60,11 @@ while preserving existing Evidence Hub data contracts.
 - For other manuscripts:
   - use manuscript sidecar gap map if present
   - otherwise auto-generate and persist a fallback gap map.
+- Gap layout response now includes manuscript extraction diagnostics:
+  - status
+  - char/line counts
+  - detected chapter-heading candidates
+  - fallback reason when no headings are detected.
 
 ## Run locally
 ```bash

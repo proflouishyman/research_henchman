@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import os
+import re
 import threading
 import uuid
+import zipfile
+from html import unescape as html_unescape
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -30,7 +34,9 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
+GAP_MAP_DIR = DATA_DIR / "gap_maps"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+GAP_MAP_DIR.mkdir(parents=True, exist_ok=True)
 
 store = OrchestratorStore(DATA_DIR)
 app = FastAPI(title="Interactive Research Orchestrator", version="0.1.0")
@@ -154,28 +160,171 @@ def _list_manuscripts(workspace: Path) -> List[Dict[str, str]]:
     return rows
 
 
-def _gap_layout(workspace: Path) -> Dict[str, Any]:
-    """Build chapter -> gaps layout from canonical gap claims CSV.
+def _resolve_manuscript_path(workspace: Path, manuscript_path: str) -> Path | None:
+    """Resolve manuscript path from relative/absolute UI input."""
+    raw = (manuscript_path or "").strip()
+    if not raw:
+        return None
+    p = Path(raw)
+    if p.is_absolute():
+        return p.resolve()
+    return (workspace / p).resolve()
 
-    Non-obvious logic:
-    - If pull backlog exists, enrich with current linked-doc counts and priority.
-    """
-    gap_claims = workspace / "codex" / "add_to_cart_audit" / "gap_claims.csv"
+
+def _default_gap_claims(workspace: Path) -> Path:
+    return workspace / "codex" / "add_to_cart_audit" / "gap_claims.csv"
+
+
+def _load_backlog_map(workspace: Path) -> Dict[str, Dict[str, str]]:
     backlog = workspace / "codex" / "evidence_hub" / "data" / "pull_backlog_by_gap.csv"
+    backlog_map: Dict[str, Dict[str, str]] = {}
+    if not backlog.exists():
+        return backlog_map
+    try:
+        with backlog.open("r", newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                gap_id = str(row.get("gap_id", "")).strip()
+                if gap_id:
+                    backlog_map[gap_id] = row
+    except Exception:
+        return {}
+    return backlog_map
+
+
+def _extract_docx_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as zf:
+        xml = zf.read("word/document.xml").decode("utf-8", errors="ignore")
+    xml = re.sub(r"</w:p>", "\n", xml)
+    xml = re.sub(r"</w:tr>", "\n", xml)
+    xml = re.sub(r"<[^>]+>", " ", xml)
+    return html_unescape(xml)
+
+
+def _extract_text_for_gap_generation(path: Path) -> str:
+    suffix = path.suffix.lower()
+    try:
+        if suffix in {".txt", ".md"}:
+            return path.read_text(encoding="utf-8", errors="ignore")
+        if suffix == ".docx":
+            return _extract_docx_text(path)
+    except Exception:
+        return ""
+    return ""
+
+
+def _candidate_chapters_from_text(text: str) -> List[str]:
+    """Extract likely chapter-like headings from manuscript text."""
+    chapters: List[str] = []
+    seen: set[str] = set()
+    for raw_line in text.splitlines():
+        line = " ".join((raw_line or "").strip().split())
+        if not line:
+            continue
+        low = line.lower()
+
+        looks_like = False
+        if re.match(r"^chapter\s+\d+[a-z]?(?:[:.\-]\s*|\s+).+", line, flags=re.IGNORECASE):
+            looks_like = True
+        elif low.startswith("introduction"):
+            looks_like = True
+        elif low.startswith("conclusion"):
+            looks_like = True
+        elif re.match(r"^(part|section)\s+[ivx0-9]+", line, flags=re.IGNORECASE):
+            looks_like = True
+
+        if not looks_like:
+            continue
+        key = low
+        if key in seen:
+            continue
+        seen.add(key)
+        chapters.append(line)
+        if len(chapters) >= 40:
+            break
+    return chapters
+
+
+def _generated_gap_map_path(manuscript_file: Path) -> Path:
+    signature = hashlib.sha1(str(manuscript_file).encode("utf-8")).hexdigest()[:16]
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", manuscript_file.stem)[:40] or "manuscript"
+    return GAP_MAP_DIR / f"{safe_stem}_{signature}_gap_claims.csv"
+
+
+def _generate_gap_claims_for_manuscript(manuscript_file: Path, out_csv: Path) -> Dict[str, Any]:
+    """Generate fallback gap claims CSV when manuscript has no mapped gap file."""
+    text = _extract_text_for_gap_generation(manuscript_file)
+    chapters = _candidate_chapters_from_text(text)
+    rows: List[Dict[str, str]] = []
+
+    if not chapters:
+        chapters = ["Auto Generated: Manuscript Review"]
+    for idx, chapter in enumerate(chapters, start=1):
+        rows.append(
+            {
+                "gap_id": f"AUTO-{idx:02d}-G1",
+                "chapter": chapter,
+                "claim_text": (
+                    "Auto-generated placeholder gap for selected manuscript. "
+                    "Refine this claim text before production pull runs."
+                ),
+            }
+        )
+
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    with out_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["gap_id", "chapter", "claim_text"])
+        writer.writeheader()
+        writer.writerows(rows)
+    return {"generated": True, "row_count": len(rows), "source_manuscript": str(manuscript_file)}
+
+
+def _gap_claims_for_manuscript(workspace: Path, manuscript_path: str, refresh: bool = False) -> Dict[str, Any]:
+    """Resolve or create gap-claims source for the selected manuscript."""
+    default_claims = _default_gap_claims(workspace)
+    manuscript_file = _resolve_manuscript_path(workspace, manuscript_path)
+    if not manuscript_file or not manuscript_file.exists():
+        return {"path": default_claims, "generated": False, "reason": "missing_manuscript_path"}
+
+    # Keep current canonical mapping for Add To Cart manuscript variants.
+    add_to_cart_hint = "add to cart" in manuscript_file.name.lower()
+    if add_to_cart_hint and default_claims.exists():
+        return {"path": default_claims, "generated": False, "reason": "canonical_add_to_cart_map"}
+
+    sidecar_candidates = [
+        manuscript_file.with_suffix(".gap_claims.csv"),
+        manuscript_file.with_name(f"{manuscript_file.stem}_gap_claims.csv"),
+    ]
+    for cand in sidecar_candidates:
+        if cand.exists():
+            return {"path": cand, "generated": False, "reason": "manuscript_sidecar_map"}
+
+    generated_csv = _generated_gap_map_path(manuscript_file)
+    if refresh or (not generated_csv.exists()):
+        meta = _generate_gap_claims_for_manuscript(manuscript_file, generated_csv)
+        return {"path": generated_csv, **meta, "reason": "generated_missing_map"}
+    return {"path": generated_csv, "generated": False, "reason": "existing_generated_map"}
+
+
+def _gap_layout(workspace: Path, manuscript_path: str = "", refresh: bool = False) -> Dict[str, Any]:
+    """Build chapter -> gaps layout for selected manuscript.
+
+    Behavior:
+    - Uses manuscript-specific sidecar map when present.
+    - Uses canonical Add-to-Cart map for Add-to-Cart manuscript variants.
+    - Auto-generates and persists a gap map when missing.
+    """
+    claims_meta = _gap_claims_for_manuscript(workspace, manuscript_path, refresh=refresh)
+    gap_claims = Path(claims_meta["path"])
+    backlog_map = _load_backlog_map(workspace)
 
     if not gap_claims.exists():
-        return {"source": str(gap_claims), "chapters": [], "gaps": []}
-
-    backlog_map: Dict[str, Dict[str, str]] = {}
-    if backlog.exists():
-        try:
-            with backlog.open("r", newline="", encoding="utf-8") as handle:
-                for row in csv.DictReader(handle):
-                    gap_id = str(row.get("gap_id", "")).strip()
-                    if gap_id:
-                        backlog_map[gap_id] = row
-        except Exception:
-            backlog_map = {}
+        return {
+            "source": str(gap_claims),
+            "chapters": [],
+            "gaps": [],
+            "generated": bool(claims_meta.get("generated", False)),
+            "reason": str(claims_meta.get("reason", "missing_gap_claims")),
+        }
 
     chapters: Dict[str, Dict[str, Any]] = {}
     gaps_flat: List[Dict[str, Any]] = []
@@ -208,6 +357,9 @@ def _gap_layout(workspace: Path) -> Dict[str, Any]:
         chapter["gap_count"] = len(chapter["gaps"])
     return {
         "source": str(gap_claims),
+        "manuscript_path": manuscript_path,
+        "generated": bool(claims_meta.get("generated", False)),
+        "reason": str(claims_meta.get("reason", "")),
         "chapter_count": len(chapter_rows),
         "gap_count": len(gaps_flat),
         "chapters": chapter_rows,
@@ -256,9 +408,12 @@ async def api_upload_manuscript(file: UploadFile = File(...)) -> Dict[str, Any]:
 
 
 @app.get("/api/orchestrator/gaps/layout")
-def api_gaps_layout() -> Dict[str, Any]:
+def api_gaps_layout(
+    manuscript_path: str = Query(default=""),
+    refresh: bool = Query(default=False),
+) -> Dict[str, Any]:
     settings = _settings()
-    return _gap_layout(settings.workspace)
+    return _gap_layout(settings.workspace, manuscript_path=manuscript_path, refresh=refresh)
 
 
 @app.post("/api/orchestrator/intents")

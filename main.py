@@ -14,7 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .config import OrchestratorSettings, load_runtime_env, required_connection_fields, write_env_updates
+from .config import (
+    OrchestratorSettings,
+    load_runtime_env,
+    read_env_values,
+    required_connection_fields,
+    write_env_updates,
+)
 from .contracts import ConnectionSaveInput, ConnectionSchemaResponse, IntentCreateInput, RetryInput, RunCreateInput
 from .pipeline import emit_event, run_orchestration
 from .store import OrchestratorStore, now_utc
@@ -71,6 +77,82 @@ def _search_plan_preview(workspace: Path, path_value: str, max_rows: int = 5) ->
     return {"path": str(path), "exists": True, "rows": rows, "row_count": row_count}
 
 
+def _list_manuscripts(workspace: Path) -> List[Dict[str, str]]:
+    """Return available manuscript files for intake selection."""
+    manuscript_dir = workspace / "Manuscript"
+    if not manuscript_dir.exists():
+        return []
+
+    rows: List[Dict[str, str]] = []
+    for path in sorted(manuscript_dir.glob("*")):
+        if path.suffix.lower() not in {".docx", ".md", ".txt", ".pdf"}:
+            continue
+        rel = str(path.relative_to(workspace))
+        rows.append({"name": path.name, "path": rel, "absolute_path": str(path)})
+    return rows
+
+
+def _gap_layout(workspace: Path) -> Dict[str, Any]:
+    """Build chapter -> gaps layout from canonical gap claims CSV.
+
+    Non-obvious logic:
+    - If pull backlog exists, enrich with current linked-doc counts and priority.
+    """
+    gap_claims = workspace / "codex" / "add_to_cart_audit" / "gap_claims.csv"
+    backlog = workspace / "codex" / "evidence_hub" / "data" / "pull_backlog_by_gap.csv"
+
+    if not gap_claims.exists():
+        return {"source": str(gap_claims), "chapters": [], "gaps": []}
+
+    backlog_map: Dict[str, Dict[str, str]] = {}
+    if backlog.exists():
+        try:
+            with backlog.open("r", newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    gap_id = str(row.get("gap_id", "")).strip()
+                    if gap_id:
+                        backlog_map[gap_id] = row
+        except Exception:
+            backlog_map = {}
+
+    chapters: Dict[str, Dict[str, Any]] = {}
+    gaps_flat: List[Dict[str, Any]] = []
+    with gap_claims.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            gap_id = str(row.get("gap_id", "")).strip()
+            chapter = str(row.get("chapter", "")).strip()
+            claim_text = str(row.get("claim_text", "")).strip()
+            if not gap_id:
+                continue
+
+            extra = backlog_map.get(gap_id, {})
+            gap = {
+                "gap_id": gap_id,
+                "chapter": chapter,
+                "claim_text": claim_text,
+                "current_linked_docs": int(str(extra.get("current_linked_docs", "0") or "0")),
+                "priority": str(extra.get("priority", "")).strip(),
+                "target_total_docs": int(str(extra.get("target_total_docs", "0") or "0")),
+                "status": str(extra.get("status", "")).strip(),
+            }
+            gaps_flat.append(gap)
+
+            chapter_rec = chapters.setdefault(chapter, {"chapter": chapter, "gaps": []})
+            chapter_rec["gaps"].append(gap)
+
+    chapter_rows = sorted(chapters.values(), key=lambda x: x["chapter"])
+    for chapter in chapter_rows:
+        chapter["gap_count"] = len(chapter["gaps"])
+    return {
+        "source": str(gap_claims),
+        "chapter_count": len(chapter_rows),
+        "gap_count": len(gaps_flat),
+        "chapters": chapter_rows,
+        "gaps": gaps_flat,
+    }
+
+
 @app.get("/api/orchestrator/health")
 def api_health() -> Dict[str, Any]:
     settings = _settings()
@@ -82,6 +164,18 @@ def api_health() -> Dict[str, Any]:
         "pull_mode_default": settings.pull_mode,
         "pull_provider_default": settings.pull_provider,
     }
+
+
+@app.get("/api/orchestrator/manuscripts")
+def api_manuscripts() -> Dict[str, Any]:
+    settings = _settings()
+    return {"workspace": str(settings.workspace), "manuscripts": _list_manuscripts(settings.workspace)}
+
+
+@app.get("/api/orchestrator/gaps/layout")
+def api_gaps_layout() -> Dict[str, Any]:
+    settings = _settings()
+    return _gap_layout(settings.workspace)
 
 
 @app.post("/api/orchestrator/intents")
@@ -138,6 +232,33 @@ def api_connection_save(inp: ConnectionSaveInput) -> Dict[str, Any]:
         "env_path": str(refreshed.env_path),
         "updates": masked,
     }
+
+
+@app.get("/api/orchestrator/connections/values")
+def api_connection_values(mask_secrets: bool = Query(default=True)) -> Dict[str, Any]:
+    """Return current .env values for settings page editing."""
+    settings = _settings()
+    values = read_env_values(settings.env_path)
+    rows: List[Dict[str, Any]] = []
+    for key in sorted(values.keys()):
+        value = str(values.get(key, ""))
+        is_secret = any(token in key.upper() for token in ["PASSWORD", "KEY", "TOKEN", "SECRET"])
+        display = value
+        if mask_secrets and is_secret:
+            if len(value) <= 4:
+                display = "*" * len(value)
+            else:
+                display = value[:2] + "*" * (len(value) - 4) + value[-2:]
+        rows.append(
+            {
+                "key": key,
+                "value": display,
+                "raw_value": value if (not mask_secrets or not is_secret) else "",
+                "is_secret": is_secret,
+                "has_value": bool(value),
+            }
+        )
+    return {"env_path": str(settings.env_path), "values": rows}
 
 
 def _start_background_run(run_id: str) -> None:

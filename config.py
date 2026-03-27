@@ -245,3 +245,21 @@ def write_env_updates(env_path: Path, updates: Dict[str, str]) -> None:
         # Best-effort on filesystems that may not support POSIX chmod.
         pass
 
+
+def read_env_values(env_path: Path) -> Dict[str, str]:
+    """Read key-value pairs from .env preserving only valid assignments."""
+    if not env_path.exists():
+        return {}
+    out: Dict[str, str] = {}
+    for raw_line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = ENV_LINE_RE.match(line)
+        if not match:
+            continue
+        key = match.group(1).strip()
+        value = match.group(2).strip().strip("'").strip('"')
+        if key:
+            out[key] = value
+    return out

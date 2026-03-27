@@ -12,6 +12,7 @@
   - Add-to-Cart manuscripts use canonical mapped gaps.
   - Other manuscripts use sidecar maps when present.
   - If missing, the app auto-generates and stores a gap map.
+- Plan tab now shows manuscript read diagnostics (status, char count, detected headings) so it is clear when parsing succeeded or fell back.
 - Stores orchestrator runs/events in `app/data`.
 - Supports pull mode routing (`api`, `playwright`, `auto`) through adapter contracts.
 - Automatically runs:

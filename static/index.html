@@ -309,6 +309,10 @@
       <section class="pane">
         <h2>Gap Layout</h2>
         <div id="gap_summary" class="muted">Load a manuscript and click “Show Gap Layout”.</div>
+        <div id="read_status" class="event" style="margin-top:10px;">
+          <div><strong>Manuscript Read Status</strong></div>
+          <div class="muted">No extraction details yet.</div>
+        </div>
         <div id="gap_layout" class="list" style="margin-top:10px;"></div>
       </section>
     </div>
@@ -515,6 +519,30 @@
       });
     }
 
+    function renderReadStatus(out) {
+      const root = q("read_status");
+      const extraction = out.extraction || {};
+      const status = extraction.status || "unknown";
+      const charCount = extraction.char_count || 0;
+      const lineCount = extraction.line_count || 0;
+      const detected = extraction.chapter_candidates_detected || 0;
+      const message = extraction.message || out.reason || "No extraction metadata.";
+      const preview = (extraction.chapter_candidates_preview || []).slice(0, 5);
+      const badgeClass =
+        status === "ok" ? "status" :
+        status === "skipped" ? "status" :
+        "status";
+      root.innerHTML = `
+        <div>
+          <strong>Manuscript Read Status</strong>
+          <span class="${badgeClass}">${status}</span>
+        </div>
+        <div class="muted">${message}</div>
+        <div class="code">chars: ${charCount} | lines: ${lineCount} | chapter candidates: ${detected}</div>
+        <div class="code">${preview.length ? `headings: ${preview.join(" | ")}` : ""}</div>
+      `;
+    }
+
     async function loadManuscripts() {
       const out = await api("/api/orchestrator/manuscripts");
       state.manuscripts = out.manuscripts || [];
@@ -533,6 +561,7 @@
       );
       state.gaps = out.gaps || [];
       fillGapSelect();
+      renderReadStatus(out);
       const generatedLabel = out.generated ? " | auto-generated map" : "";
       setText(
         "gap_summary",

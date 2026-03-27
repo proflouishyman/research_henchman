@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import os
 import re
 import threading
@@ -200,16 +201,39 @@ def _extract_docx_text(path: Path) -> str:
     return html_unescape(xml)
 
 
-def _extract_text_for_gap_generation(path: Path) -> str:
+def _extract_text_for_gap_generation(path: Path) -> tuple[str, Dict[str, Any]]:
     suffix = path.suffix.lower()
+    meta: Dict[str, Any] = {
+        "status": "unsupported_format",
+        "format": suffix or "unknown",
+        "char_count": 0,
+        "line_count": 0,
+    }
     try:
         if suffix in {".txt", ".md"}:
-            return path.read_text(encoding="utf-8", errors="ignore")
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            meta.update(
+                {
+                    "status": "ok",
+                    "char_count": len(text),
+                    "line_count": len(text.splitlines()),
+                }
+            )
+            return text, meta
         if suffix == ".docx":
-            return _extract_docx_text(path)
+            text = _extract_docx_text(path)
+            meta.update(
+                {
+                    "status": "ok",
+                    "char_count": len(text),
+                    "line_count": len(text.splitlines()),
+                }
+            )
+            return text, meta
     except Exception:
-        return ""
-    return ""
+        meta["status"] = "extract_failed"
+        return "", meta
+    return "", meta
 
 
 def _candidate_chapters_from_text(text: str) -> List[str]:
@@ -225,6 +249,10 @@ def _candidate_chapters_from_text(text: str) -> List[str]:
         looks_like = False
         if re.match(r"^chapter\s+\d+[a-z]?(?:[:.\-]\s*|\s+).+", line, flags=re.IGNORECASE):
             looks_like = True
+        elif re.match(r"^chapter\s+[a-z0-9ivx]+", line, flags=re.IGNORECASE):
+            looks_like = True
+        elif re.match(r"^chapter\b", line, flags=re.IGNORECASE):
+            looks_like = len(line.split()) <= 14
         elif low.startswith("introduction"):
             looks_like = True
         elif low.startswith("conclusion"):
@@ -250,13 +278,19 @@ def _generated_gap_map_path(manuscript_file: Path) -> Path:
     return GAP_MAP_DIR / f"{safe_stem}_{signature}_gap_claims.csv"
 
 
+def _generated_gap_meta_path(gap_csv: Path) -> Path:
+    return gap_csv.with_suffix(".meta.json")
+
+
 def _generate_gap_claims_for_manuscript(manuscript_file: Path, out_csv: Path) -> Dict[str, Any]:
     """Generate fallback gap claims CSV when manuscript has no mapped gap file."""
-    text = _extract_text_for_gap_generation(manuscript_file)
+    text, extract_meta = _extract_text_for_gap_generation(manuscript_file)
     chapters = _candidate_chapters_from_text(text)
     rows: List[Dict[str, str]] = []
 
+    used_fallback = False
     if not chapters:
+        used_fallback = True
         chapters = ["Auto Generated: Manuscript Review"]
     for idx, chapter in enumerate(chapters, start=1):
         rows.append(
@@ -275,7 +309,25 @@ def _generate_gap_claims_for_manuscript(manuscript_file: Path, out_csv: Path) ->
         writer = csv.DictWriter(handle, fieldnames=["gap_id", "chapter", "claim_text"])
         writer.writeheader()
         writer.writerows(rows)
-    return {"generated": True, "row_count": len(rows), "source_manuscript": str(manuscript_file)}
+
+    meta = {
+        "generated": True,
+        "row_count": len(rows),
+        "source_manuscript": str(manuscript_file),
+        "extraction": {
+            **extract_meta,
+            "chapter_candidates_detected": len(chapters) if not used_fallback else 0,
+            "chapter_candidates_preview": chapters[:12] if not used_fallback else [],
+            "used_fallback_single_gap": used_fallback,
+            "message": (
+                "No chapter headings detected; fallback placeholder gap map generated."
+                if used_fallback
+                else "Chapter headings detected and mapped into auto gap claims."
+            ),
+        },
+    }
+    _generated_gap_meta_path(out_csv).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return meta
 
 
 def _gap_claims_for_manuscript(workspace: Path, manuscript_path: str, refresh: bool = False) -> Dict[str, Any]:
@@ -288,7 +340,15 @@ def _gap_claims_for_manuscript(workspace: Path, manuscript_path: str, refresh: b
     # Keep current canonical mapping for Add To Cart manuscript variants.
     add_to_cart_hint = "add to cart" in manuscript_file.name.lower()
     if add_to_cart_hint and default_claims.exists():
-        return {"path": default_claims, "generated": False, "reason": "canonical_add_to_cart_map"}
+        return {
+            "path": default_claims,
+            "generated": False,
+            "reason": "canonical_add_to_cart_map",
+            "extraction": {
+                "status": "skipped",
+                "message": "Using canonical Add-to-Cart gap map for selected manuscript.",
+            },
+        }
 
     sidecar_candidates = [
         manuscript_file.with_suffix(".gap_claims.csv"),
@@ -296,13 +356,37 @@ def _gap_claims_for_manuscript(workspace: Path, manuscript_path: str, refresh: b
     ]
     for cand in sidecar_candidates:
         if cand.exists():
-            return {"path": cand, "generated": False, "reason": "manuscript_sidecar_map"}
+            return {
+                "path": cand,
+                "generated": False,
+                "reason": "manuscript_sidecar_map",
+                "extraction": {
+                    "status": "skipped",
+                    "message": "Using manuscript sidecar gap map.",
+                },
+            }
 
     generated_csv = _generated_gap_map_path(manuscript_file)
     if refresh or (not generated_csv.exists()):
         meta = _generate_gap_claims_for_manuscript(manuscript_file, generated_csv)
         return {"path": generated_csv, **meta, "reason": "generated_missing_map"}
-    return {"path": generated_csv, "generated": False, "reason": "existing_generated_map"}
+    meta_path = _generated_gap_meta_path(generated_csv)
+    if meta_path.exists():
+        try:
+            prev = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(prev, dict):
+                return {"path": generated_csv, "generated": False, "reason": "existing_generated_map", **prev}
+        except Exception:
+            pass
+    return {
+        "path": generated_csv,
+        "generated": False,
+        "reason": "existing_generated_map",
+        "extraction": {
+            "status": "unknown",
+            "message": "Using previously generated map; extraction metadata unavailable.",
+        },
+    }
 
 
 def _gap_layout(workspace: Path, manuscript_path: str = "", refresh: bool = False) -> Dict[str, Any]:
@@ -360,6 +444,7 @@ def _gap_layout(workspace: Path, manuscript_path: str = "", refresh: bool = Fals
         "manuscript_path": manuscript_path,
         "generated": bool(claims_meta.get("generated", False)),
         "reason": str(claims_meta.get("reason", "")),
+        "extraction": claims_meta.get("extraction", {}),
         "chapter_count": len(chapter_rows),
         "gap_count": len(gaps_flat),
         "chapters": chapter_rows,

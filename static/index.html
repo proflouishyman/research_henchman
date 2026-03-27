@@ -193,6 +193,48 @@
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: var(--space-2);
     }
+    .source-group {
+      margin-bottom: var(--space-2);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .source-group h3 {
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      background: #f7f0e4;
+      border-bottom: 1px solid var(--line);
+    }
+    .source-row {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      font-size: 12px;
+      background: #fcfaf6;
+    }
+    .source-row:last-child { border-bottom: 0; }
+    .source-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 1px 8px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      background: #f5ecdf;
+      color: var(--muted);
+    }
+    .pill.on { color: var(--ok); border-color: #aac8b4; background: #ebf5ef; }
+    .pill.off { color: var(--error); border-color: #d8b2b2; background: #fbeeee; }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -346,6 +388,7 @@
           <button id="load_env_btn" title="Load current .env values from disk for review.">Load .env Values</button>
           <button id="load_conn_schema_btn" title="Load recommended connection fields for current mode/provider.">Load Recommended Fields</button>
         </div>
+        <button id="load_sources_btn" title="Refresh the list of free APIs, closed/keyed APIs, and university databases in use.">Refresh Source Catalog</button>
         <div class="row">
           <div>
             <label for="settings_mode">Mode</label>
@@ -376,6 +419,20 @@
       </section>
 
       <section class="pane">
+        <h2>Data Sources In Use</h2>
+        <div class="source-group">
+          <h3>Free APIs</h3>
+          <div id="free_api_list"></div>
+        </div>
+        <div class="source-group">
+          <h3>Closed / Keyed APIs</h3>
+          <div id="closed_api_list"></div>
+        </div>
+        <div class="source-group">
+          <h3>University Databases</h3>
+          <div id="university_db_list"></div>
+        </div>
+
         <h2>Add / Update Key</h2>
         <label for="env_key">Env Key</label>
         <input id="env_key" placeholder="ORCH_API_PULL_COMMAND" />
@@ -626,6 +683,35 @@
       });
     }
 
+    function renderSourceList(rootId, rows, kind) {
+      const root = q(rootId);
+      root.innerHTML = "";
+      (rows || []).forEach((row) => {
+        const div = document.createElement("div");
+        div.className = "source-row";
+        const status = row.configured === true ? "configured" : row.configured === false ? "missing key" : kind;
+        const pillClass = row.configured === true ? "pill on" : row.configured === false ? "pill off" : "pill";
+        const notes = row.notes || row.provider || "";
+        const envInfo = row.env_key ? `env: ${row.env_key}` : "";
+        div.innerHTML = `
+          <div class="source-title">
+            <strong>${row.name}</strong>
+            <span class="${pillClass}">${status}</span>
+          </div>
+          <div class="muted">${notes}</div>
+          <div class="code">${envInfo}</div>
+        `;
+        root.appendChild(div);
+      });
+    }
+
+    async function loadSourceCatalog() {
+      const out = await api("/api/orchestrator/sources/catalog");
+      renderSourceList("free_api_list", out.free_apis || [], "free");
+      renderSourceList("closed_api_list", out.closed_apis || [], "closed");
+      renderSourceList("university_db_list", out.university_databases || [], "university");
+    }
+
     async function saveEnvKey() {
       const key = q("env_key").value.trim();
       const value = q("env_value").value;
@@ -680,6 +766,9 @@
       q("load_conn_schema_btn").onclick = async () => {
         try { await loadRecommendedFields(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
       };
+      q("load_sources_btn").onclick = async () => {
+        try { await loadSourceCatalog(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
+      };
       q("save_env_btn").onclick = async () => {
         try { await saveEnvKey(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
       };
@@ -692,9 +781,9 @@
       try { await loadRuns(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
       try { await loadEnvValues(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
       try { await loadRecommendedFields(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
+      try { await loadSourceCatalog(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
     }
     boot();
   </script>
 </body>
 </html>
-

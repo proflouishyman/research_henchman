@@ -45,8 +45,7 @@ while preserving existing Evidence Hub data contracts.
 - LLM stage invoked only after successful ingest when auto-chain enabled.
 
 ## Frontend surface
-- `Plan`: manuscript selector, local manuscript upload, and chapter/gap layout.
-- `Strategy`: automatic research or narrow question.
+- `Workflow`: guided sequence for manuscript intake -> gap analysis -> intent creation -> run launch.
 - `Results`: run list + event timeline + retry.
 - `Settings`: inspect `.env` values and add/update keys (including API keys).
 - `Settings` also lists:

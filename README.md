@@ -12,6 +12,7 @@
   - Add-to-Cart manuscripts use canonical mapped gaps.
   - Other manuscripts use sidecar maps when present.
   - If missing, the app auto-generates and stores a gap map.
+- Gap analysis prefers Ollama smart-model generation (with heuristic fallback on error).
 - Plan tab now shows manuscript read diagnostics (status, char count, detected headings) so it is clear when parsing succeeded or fell back.
 - Stores orchestrator runs/events in `app/data`.
 - Supports pull mode routing (`api`, `playwright`, `auto`) through adapter contracts.
@@ -86,4 +87,7 @@ Commands must print JSON artifact containing:
 - `ORCH_LLM_BACKEND`
 - `ORCH_LLM_MODEL`
 - `ORCH_OLLAMA_BASE_URL`
+- `ORCH_GAP_ANALYSIS_USE_OLLAMA`
+- `ORCH_GAP_ANALYSIS_MODEL`
+- `ORCH_GAP_ANALYSIS_OLLAMA_BASE_URL`
 # research_henchman

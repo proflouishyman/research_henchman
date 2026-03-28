@@ -55,6 +55,7 @@ while preserving existing Evidence Hub data contracts.
   - already-analyzed/cached-map indicator
 - `Workflow` includes backend activity log panel that streams run events.
 - Run log now announces the resolved run plan at launch and reports each stage with plan position (`N/Total`).
+- Run monitor includes heartbeat feedback (pulsing live dot + “last check” age) and periodic long-stage heartbeat entries in the backend log.
 - `Workflow` run launch button and run-status badge update visually while run is active.
 - `Results`: run list + event timeline + retry.
 - `Settings`: inspect `.env` values and add/update keys (including API keys).

@@ -28,6 +28,7 @@
   - run status badge updates by stage
 - Workflow includes a backend activity log panel that streams run stage events as they arrive.
 - Activity log now prints a run plan at launch and prefixes stage events with step progress (`N/Total`) so users can track where the run is in the plan.
+- Run monitor now includes a heartbeat indicator (pulsing dot + last backend check age) and periodic “still running” log lines during long stages.
 - Automatically runs:
   - pull -> ingest -> llm fit
 - Exposes connection schema + `.env` save endpoints.

@@ -39,6 +39,7 @@ while preserving existing Evidence Hub data contracts.
 - Runtime `.env` preflight validation before pulling.
 - API mode has a built-in EBSCO fallback pull command when `ORCH_API_PULL_COMMAND` is unset, preventing hard-fail on missing command setup.
 - Frontend run-start preflight checks required env keys from backend schema before launching runs; missing keys route users to Settings.
+- Required-key preflight and Settings now use effective runtime env values (`process_env` + `.env`), so Docker compose env injection is not misreported as missing.
 - Artifact-type routing supports:
   - `ebsco_manifest_pair`
   - `external_packet`
@@ -48,8 +49,15 @@ while preserving existing Evidence Hub data contracts.
 
 ## Frontend surface
 - `Workflow`: guided sequence for manuscript intake -> gap analysis -> intent creation -> run launch.
+- `Workflow` persists last-used manuscript and active tab in browser local storage.
+- `Workflow` includes explicit analysis status text:
+  - running indicator
+  - already-analyzed/cached-map indicator
+- `Workflow` includes backend activity log panel that streams run events.
+- `Workflow` run launch button and run-status badge update visually while run is active.
 - `Results`: run list + event timeline + retry.
 - `Settings`: inspect `.env` values and add/update keys (including API keys).
+- `Settings` env-value grid includes source field (`process_env` or `.env`).
 - `Settings` also lists:
   - free APIs in use
   - closed/keyed APIs in use

@@ -226,6 +226,10 @@
     }
 
     button:hover { background: #e6d8c2; }
+    button:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
 
     .primary-btn {
       background: var(--accent);
@@ -234,6 +238,10 @@
     }
 
     .primary-btn:hover { background: #524532; }
+    .primary-btn.running {
+      background: #8a6d44;
+      border-color: #8a6d44;
+    }
 
     .row {
       display: flex;
@@ -268,6 +276,21 @@
       font-size: 11px;
       text-transform: lowercase;
       background: #f5ecdf;
+    }
+    .status.ok {
+      color: var(--ok);
+      border-color: #aac8b4;
+      background: #ebf5ef;
+    }
+    .status.started {
+      color: var(--warn);
+      border-color: #d6c097;
+      background: #faf0df;
+    }
+    .status.failed {
+      color: var(--error);
+      border-color: #d8b2b2;
+      background: #fbeeee;
     }
 
     .list {
@@ -424,6 +447,40 @@
       border-radius: var(--radius-sm);
     }
 
+    .indicator-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+      margin-bottom: 10px;
+    }
+
+    .log-panel {
+      max-height: 220px;
+      overflow: auto;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.45;
+      background: #fefcf8;
+    }
+
+    .log-line {
+      border-bottom: 1px solid var(--line);
+      padding: 6px 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .log-line.error {
+      color: var(--error);
+      background: #fff6f6;
+    }
+
+    .log-line.ok {
+      color: var(--ok);
+      background: #f4fbf6;
+    }
+
     @media (max-width: 1180px) {
       .workflow-layout {
         grid-template-columns: 1fr;
@@ -527,6 +584,7 @@
         <div class="section">
           <div class="section-title">Step 2. Analyze Gaps</div>
           <button class="primary-btn" id="load_gaps_btn" title="Read the selected manuscript and generate or load chapter gap analysis.">Analyze Manuscript & Refresh Gaps</button>
+          <div id="analysis_status" class="muted">No analysis run yet.</div>
         </div>
 
         <div class="section">
@@ -570,11 +628,21 @@
           </div>
 
           <button class="primary-btn" id="start_run_btn" title="Start a new orchestrated research run using current strategy and provider.">Start Research Run</button>
+          <div class="indicator-row">
+            <span id="run_live_status" class="status">idle</span>
+            <span class="muted">Run monitor</span>
+          </div>
           <button id="open_results_btn" title="Jump to the Results tab to monitor run progress and events.">Open Results</button>
         </div>
 
         <div id="intent_status" class="muted"></div>
         <div id="run_status" class="muted"></div>
+
+        <div class="section">
+          <div class="section-title">Backend Activity Log</div>
+          <div id="backend_log" class="list log-panel"></div>
+          <button id="clear_log_btn" title="Clear only the on-screen activity log panel.">Clear Log Panel</button>
+        </div>
       </section>
 
       <section class="pane">
@@ -640,7 +708,7 @@
         <div class="list" style="margin-top:10px;">
           <table>
             <thead>
-              <tr><th>Key</th><th>Value</th><th>Type</th></tr>
+              <tr><th>Key</th><th>Value</th><th>Type</th><th>Source</th></tr>
             </thead>
             <tbody id="env_values_tbody"></tbody>
           </table>
@@ -677,11 +745,25 @@
 
   <script>
     const q = (id) => document.getElementById(id);
+    const TABS = ["workflow", "results", "settings"];
+    const TERMINAL_STATUSES = new Set(["completed", "failed", "partial_completed"]);
+    const STORAGE_KEYS = {
+      activeTab: "orchestrator.active_tab",
+      selectedManuscript: "orchestrator.selected_manuscript",
+      customManuscriptPath: "orchestrator.custom_manuscript_path",
+      searchPlanPath: "orchestrator.search_plan_path",
+      pullMode: "orchestrator.pull_mode",
+      pullProvider: "orchestrator.pull_provider",
+      selectedRunId: "orchestrator.selected_run_id",
+    };
     const state = {
       manuscripts: [],
       gaps: [],
       intentId: "",
       selectedRunId: "",
+      runMonitorTimer: null,
+      seenRunEventKeys: new Set(),
+      activeTab: "workflow",
     };
 
     async function api(path, method = "GET", body = null) {
@@ -697,16 +779,96 @@
       return await res.json();
     }
 
+    function loadPref(key, fallback = "") {
+      try {
+        const value = localStorage.getItem(key);
+        return value === null ? fallback : value;
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    function savePref(key, value) {
+      try {
+        localStorage.setItem(key, value || "");
+      } catch (_) {}
+    }
+
     function setText(id, text) {
       const node = q(id);
       if (!node) return;
       node.textContent = text;
     }
 
+    function appendLog(message, kind = "info") {
+      const root = q("backend_log");
+      if (!root) return;
+      const stamp = new Date().toLocaleTimeString();
+      const row = document.createElement("div");
+      row.className = `log-line ${kind === "error" ? "error" : kind === "ok" ? "ok" : ""}`;
+      row.textContent = `[${stamp}] ${message}`;
+      root.appendChild(row);
+      if (root.childElementCount > 300) {
+        root.removeChild(root.firstChild);
+      }
+      root.scrollTop = root.scrollHeight;
+    }
+
+    function bindAction(id, eventName, handler) {
+      const el = q(id);
+      if (!el) {
+        appendLog(`UI wiring missing element: #${id}`, "error");
+        return;
+      }
+      el.addEventListener(eventName, (evt) => {
+        Promise.resolve(handler(evt)).catch((err) => {
+          appendLog(`Action failed (${id}): ${err.message || err}`, "error");
+        });
+      });
+    }
+
+    function setButtonBusy(id, busy, busyLabel, defaultLabel) {
+      const btn = q(id);
+      if (!btn) return;
+      if (!btn.dataset.defaultLabel) {
+        btn.dataset.defaultLabel = defaultLabel || btn.textContent;
+      }
+      if (busy) {
+        btn.disabled = true;
+        btn.classList.add("running");
+        btn.textContent = busyLabel || btn.textContent;
+        return;
+      }
+      btn.disabled = false;
+      btn.classList.remove("running");
+      btn.textContent = btn.dataset.defaultLabel;
+    }
+
+    function setRunIndicator(status, detail = "") {
+      const node = q("run_live_status");
+      if (!node) return;
+      const norm = String(status || "idle").toLowerCase();
+      node.className = "status";
+      if (norm === "completed") node.classList.add("ok");
+      else if (norm === "failed") node.classList.add("failed");
+      else if (norm !== "idle") node.classList.add("started");
+      node.textContent = detail ? `${norm}: ${detail}` : norm;
+    }
+
     function currentManuscriptPath() {
-      const customPath = q("custom_manuscript_path").value.trim();
-      const selectedPath = q("manuscript_select").value || "";
+      const custom = q("custom_manuscript_path");
+      const select = q("manuscript_select");
+      const customPath = custom ? custom.value.trim() : "";
+      const selectedPath = select ? (select.value || "") : "";
       return customPath || selectedPath;
+    }
+
+    function persistWorkflowInputs() {
+      savePref(STORAGE_KEYS.customManuscriptPath, q("custom_manuscript_path")?.value.trim() || "");
+      savePref(STORAGE_KEYS.searchPlanPath, q("search_plan_path")?.value.trim() || "");
+      savePref(STORAGE_KEYS.selectedManuscript, q("manuscript_select")?.value || "");
+      savePref(STORAGE_KEYS.pullMode, q("pull_mode")?.value || "auto");
+      savePref(STORAGE_KEYS.pullProvider, q("pull_provider")?.value.trim() || "ebscohost");
     }
 
     // Keep workflow status explicit so users always know where they are in the flow.
@@ -733,23 +895,62 @@
       if (hasManuscript && !hasGaps) message = "Manuscript selected. Run gap analysis next.";
       if (hasGaps && !hasIntent) message = "Gap map ready. Create an intent to lock your run scope.";
       if (hasIntent && !hasRun) message = "Intent ready. Choose strategy and start a run.";
-      if (hasRun) message = `Run started (${state.selectedRunId}). Open Results to monitor progress.`;
+      if (hasRun) message = `Run selected (${state.selectedRunId}). Open Results to monitor progress.`;
       setText("workflow_progress_text", message);
       setText("current_manuscript_path", `manuscript path: ${currentManuscriptPath() || "not selected"}`);
     }
 
+    async function refreshTabData(name) {
+      if (name === "results") {
+        await loadRuns();
+        if (q("events_run_id")?.value.trim()) {
+          await loadEvents();
+        }
+        return;
+      }
+      if (name === "settings") {
+        await loadEnvValues();
+        await loadRecommendedFields();
+        await loadSourceCatalog();
+      }
+    }
+
     function showTab(name) {
+      const tabName = TABS.includes(name) ? name : "workflow";
+      state.activeTab = tabName;
+      savePref(STORAGE_KEYS.activeTab, tabName);
       document.querySelectorAll(".tab-btn").forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.tab === name);
+        btn.classList.toggle("active", btn.dataset.tab === tabName);
       });
-      ["workflow", "results", "settings"].forEach((tab) => {
-        q(`tab-${tab}`).classList.toggle("hidden", tab !== name);
+      TABS.forEach((tab) => {
+        const panel = q(`tab-${tab}`);
+        if (panel) panel.classList.toggle("hidden", tab !== tabName);
       });
+      refreshTabData(tabName).catch((err) => {
+        const target = tabName === "settings" ? "settings_status" : "run_status";
+        setText(target, `Error: ${err.message}`);
+      });
+    }
+
+    function analysisReasonText(reason, refresh) {
+      const map = {
+        canonical_add_to_cart_map: "Using canonical Add-to-Cart map (already curated).",
+        manuscript_sidecar_map: "Using manuscript sidecar gap map (analysis already supplied).",
+        existing_generated_map: "Analysis already ran for this manuscript. Loaded existing map.",
+        generated_missing_map: refresh ? "Analysis refreshed and saved for this manuscript." : "Analysis generated and saved for this manuscript.",
+        regenerated_placeholder_map: "Placeholder map detected and replaced with fresh analysis.",
+        regenerated_missing_metadata: "Legacy map lacked metadata and was regenerated.",
+        regenerated_analysis_upgrade: "Map upgraded to current analysis version.",
+        missing_manuscript_path: "No manuscript selected yet.",
+      };
+      return map[String(reason || "")] || `Gap layout loaded (${reason || "unspecified source"}).`;
     }
 
     function fillManuscripts() {
       const sel = q("manuscript_select");
+      if (!sel) return;
       const previous = sel.value;
+      const stored = loadPref(STORAGE_KEYS.selectedManuscript, "");
       sel.innerHTML = "";
       state.manuscripts.forEach((m) => {
         const opt = document.createElement("option");
@@ -758,13 +959,17 @@
         opt.textContent = `${m.name} [${source}]`;
         sel.appendChild(opt);
       });
-      if (state.manuscripts.length && previous) {
-        sel.value = previous;
+      const available = new Set(state.manuscripts.map((m) => m.path));
+      const preferred = [previous, stored].find((path) => path && available.has(path)) || (state.manuscripts[0]?.path || "");
+      if (preferred) {
+        sel.value = preferred;
+        savePref(STORAGE_KEYS.selectedManuscript, preferred);
       }
     }
 
     function fillGapSelect() {
       const sel = q("target_gap_id");
+      if (!sel) return;
       sel.innerHTML = "";
       const none = document.createElement("option");
       none.value = "";
@@ -780,6 +985,7 @@
 
     function renderReadStatus(out) {
       const root = q("read_status");
+      if (!root) return;
       const extraction = out.extraction || {};
       const status = extraction.status || "unknown";
       const charCount = extraction.char_count || 0;
@@ -812,6 +1018,7 @@
       if (!state.manuscripts.length) {
         setText("intent_status", "No manuscript files found in Manuscript/.");
       }
+      persistWorkflowInputs();
       updateWorkflowProgress();
     }
 
@@ -819,54 +1026,70 @@
       const manuscriptPath = currentManuscriptPath();
       if (!manuscriptPath) {
         setText("gap_summary", "Select or upload a manuscript, then run analysis.");
+        setText("analysis_status", "No manuscript selected.");
         state.gaps = [];
         fillGapSelect();
         updateWorkflowProgress();
         return;
       }
-      const out = await api(
-        `/api/orchestrator/gaps/layout?manuscript_path=${encodeURIComponent(manuscriptPath)}&refresh=${forceRefresh ? "true" : "false"}`
-      );
-      state.gaps = out.gaps || [];
-      fillGapSelect();
-      renderReadStatus(out);
-      const generatedLabel = out.generated ? " | auto-generated map" : "";
-      setText(
-        "gap_summary",
-        `${out.chapter_count || 0} chapters, ${out.gap_count || 0} total gaps (source: ${out.source || "n/a"}${generatedLabel})`
-      );
 
-      const root = q("gap_layout");
-      root.innerHTML = "";
-      (out.chapters || []).forEach((ch) => {
-        const details = document.createElement("details");
-        details.className = "chapter";
-        details.open = false;
-        const summary = document.createElement("summary");
-        summary.textContent = `${ch.chapter} (${ch.gap_count})`;
-        details.appendChild(summary);
-        (ch.gaps || []).forEach((g) => {
-          const div = document.createElement("div");
-          div.className = "gap";
-          div.innerHTML = `
-            <div class="gap-id">${g.gap_id}</div>
-            <div>${g.claim_text || ""}</div>
-            <div class="muted">linked docs: ${g.current_linked_docs || 0} | priority: ${g.priority || "n/a"} | target: ${g.target_total_docs || 0}</div>
-          `;
-          details.appendChild(div);
-        });
-        root.appendChild(details);
-      });
-      updateWorkflowProgress();
+      setButtonBusy("load_gaps_btn", true, forceRefresh ? "Refreshing Analysis..." : "Analyzing Manuscript...");
+      setText("analysis_status", forceRefresh ? "Refreshing analysis..." : "Checking existing analysis...");
+      appendLog(`Gap analysis requested for ${manuscriptPath} (refresh=${forceRefresh})`);
+      try {
+        const out = await api(
+          `/api/orchestrator/gaps/layout?manuscript_path=${encodeURIComponent(manuscriptPath)}&refresh=${forceRefresh ? "true" : "false"}`
+        );
+        state.gaps = out.gaps || [];
+        fillGapSelect();
+        renderReadStatus(out);
+        const generatedLabel = out.generated ? " | auto-generated map" : "";
+        setText(
+          "gap_summary",
+          `${out.chapter_count || 0} chapters, ${out.gap_count || 0} total gaps (source: ${out.source || "n/a"}${generatedLabel})`
+        );
+        const reasonLabel = analysisReasonText(out.reason, forceRefresh);
+        setText("analysis_status", reasonLabel);
+        appendLog(reasonLabel, out.reason === "existing_generated_map" ? "ok" : "info");
+
+        const root = q("gap_layout");
+        if (root) {
+          root.innerHTML = "";
+          (out.chapters || []).forEach((ch) => {
+            const details = document.createElement("details");
+            details.className = "chapter";
+            details.open = false;
+            const summary = document.createElement("summary");
+            summary.textContent = `${ch.chapter} (${ch.gap_count})`;
+            details.appendChild(summary);
+            (ch.gaps || []).forEach((g) => {
+              const div = document.createElement("div");
+              div.className = "gap";
+              div.innerHTML = `
+                <div class="gap-id">${g.gap_id}</div>
+                <div>${g.claim_text || ""}</div>
+                <div class="muted">linked docs: ${g.current_linked_docs || 0} | priority: ${g.priority || "n/a"} | target: ${g.target_total_docs || 0}</div>
+              `;
+              details.appendChild(div);
+            });
+            root.appendChild(details);
+          });
+        }
+      } finally {
+        setButtonBusy("load_gaps_btn", false, "", "Analyze Manuscript & Refresh Gaps");
+        persistWorkflowInputs();
+        updateWorkflowProgress();
+      }
     }
 
     async function createIntent() {
       const manuscriptPath = currentManuscriptPath();
-      const searchPlanPath = q("search_plan_path").value.trim();
+      const searchPlanPath = q("search_plan_path")?.value.trim() || "";
       if (!manuscriptPath) {
         setText("intent_status", "Select or upload a manuscript first (or provide a custom path).");
         return;
       }
+      appendLog(`Creating intent for manuscript: ${manuscriptPath}`);
       const out = await api("/api/orchestrator/intents", "POST", {
         input_mode: searchPlanPath ? "both" : "manuscript",
         manuscript_path: manuscriptPath,
@@ -877,15 +1100,18 @@
       state.intentId = out.intent_id;
       setText("intent_status", `Intent created: ${state.intentId}`);
       setText("strategy_intent_label", `Intent ready: ${state.intentId}`);
+      appendLog(`Intent created: ${state.intentId}`, "ok");
       updateWorkflowProgress();
     }
 
     async function uploadManuscript() {
       const fileInput = q("manuscript_file_input");
-      if (!fileInput.files || !fileInput.files.length) {
+      if (!fileInput || !fileInput.files || !fileInput.files.length) {
         setText("intent_status", "Choose a file first.");
         return;
       }
+      const fileName = fileInput.files[0].name;
+      appendLog(`Uploading manuscript: ${fileName}`);
       const form = new FormData();
       form.append("file", fileInput.files[0]);
       const res = await fetch("/api/orchestrator/manuscripts/upload", {
@@ -899,50 +1125,13 @@
       const out = await res.json();
       setText("intent_status", `Uploaded: ${out.name}`);
       await loadManuscripts();
-      q("manuscript_select").value = out.stored_path;
-      q("custom_manuscript_path").value = "";
+      if (q("manuscript_select")) q("manuscript_select").value = out.stored_path;
+      if (q("custom_manuscript_path")) q("custom_manuscript_path").value = "";
+      savePref(STORAGE_KEYS.selectedManuscript, out.stored_path || "");
+      savePref(STORAGE_KEYS.customManuscriptPath, "");
       fileInput.value = "";
+      appendLog(`Upload complete: ${out.name}`, "ok");
       await loadGapLayout(true);
-    }
-
-    async function startRun() {
-      if (!state.intentId) {
-        await createIntent();
-      }
-      const provider = q("pull_provider").value.trim() || "ebscohost";
-      const missing = await missingRequiredEnvKeys(q("pull_mode").value, provider);
-      if (missing.length) {
-        setText("run_status", `Missing required settings: ${missing.join(", ")}. Update Settings first.`);
-        q("settings_mode").value = q("pull_mode").value;
-        const providerOpt = Array.from(q("settings_provider").options).map((o) => o.value);
-        q("settings_provider").value = providerOpt.includes(provider) ? provider : "custom";
-        await loadRecommendedFields();
-        await loadEnvValues();
-        showTab("settings");
-        return;
-      }
-      const mode = document.querySelector("input[name='strategy_mode']:checked").value;
-      const narrowQ = q("narrow_question").value.trim();
-      const targetGap = q("target_gap_id").value;
-      const payload = {
-        intent_id: state.intentId,
-        pull_mode: q("pull_mode").value,
-        pull_provider: provider,
-        existing_run_id: "",
-        existing_run_dir: "",
-        artifact_type: "ebsco_manifest_pair",
-        gap_id: mode === "narrow" ? (targetGap || "") : "",
-        force: false,
-      };
-      const run = await api("/api/orchestrator/runs", "POST", payload);
-      state.selectedRunId = run.run_id;
-      q("events_run_id").value = run.run_id;
-      let strategyMsg = `Run started: ${run.run_id}`;
-      if (mode === "narrow" && narrowQ) strategyMsg += ` | narrow question: ${narrowQ}`;
-      setText("run_status", strategyMsg);
-      await loadRuns();
-      updateWorkflowProgress();
-      showTab("results");
     }
 
     // Run preflight uses server contract fields so UI and backend required-key rules stay in sync.
@@ -958,44 +1147,166 @@
         .filter((key) => !valueMap.get(key));
     }
 
+    function stopRunMonitor() {
+      if (state.runMonitorTimer) {
+        clearInterval(state.runMonitorTimer);
+        state.runMonitorTimer = null;
+      }
+    }
+
+    async function pollRun(runId) {
+      if (!runId) return;
+      const [runOut, eventsOut] = await Promise.all([
+        api(`/api/orchestrator/runs/${encodeURIComponent(runId)}`),
+        api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/events?limit=500`),
+      ]);
+
+      const runStatus = String(runOut.status || "unknown");
+      const stage = String(runOut.stage || "");
+      setRunIndicator(runStatus, stage || runId);
+      if (runOut.error) {
+        appendLog(`[${runId}] ${runOut.error}`, "error");
+      }
+
+      (eventsOut.events || []).forEach((evt) => {
+        const key = `${evt.ts_utc}|${evt.stage}|${evt.status}|${evt.message}`;
+        if (state.seenRunEventKeys.has(key)) return;
+        state.seenRunEventKeys.add(key);
+        if (state.seenRunEventKeys.size > 2000) {
+          state.seenRunEventKeys.clear();
+        }
+        const kind = evt.status === "failed" ? "error" : evt.status === "completed" ? "ok" : "info";
+        appendLog(`[${runId}] ${evt.stage}/${evt.status}: ${evt.message}`, kind);
+      });
+
+      if (TERMINAL_STATUSES.has(runStatus)) {
+        stopRunMonitor();
+        setButtonBusy("start_run_btn", false, "", "Start Research Run");
+      }
+    }
+
+    function startRunMonitor(runId, markBusy = false) {
+      if (!runId) return;
+      stopRunMonitor();
+      state.selectedRunId = runId;
+      savePref(STORAGE_KEYS.selectedRunId, runId);
+      state.seenRunEventKeys = new Set();
+      if (q("events_run_id")) q("events_run_id").value = runId;
+      if (markBusy) {
+        setButtonBusy("start_run_btn", true, "Run In Progress...", "Start Research Run");
+      }
+      pollRun(runId).catch((err) => appendLog(`Run monitor error (${runId}): ${err.message}`, "error"));
+      state.runMonitorTimer = setInterval(() => {
+        pollRun(runId).catch((err) => appendLog(`Run monitor error (${runId}): ${err.message}`, "error"));
+      }, 3500);
+      updateWorkflowProgress();
+    }
+
+    async function startRun() {
+      setButtonBusy("start_run_btn", true, "Starting Run...", "Start Research Run");
+      setRunIndicator("started", "preflight");
+      let runLaunched = false;
+      try {
+        if (!state.intentId) {
+          await createIntent();
+        }
+        const provider = (q("pull_provider")?.value.trim() || "ebscohost");
+        const pullMode = q("pull_mode")?.value || "auto";
+        savePref(STORAGE_KEYS.pullMode, pullMode);
+        savePref(STORAGE_KEYS.pullProvider, provider);
+        const missing = await missingRequiredEnvKeys(pullMode, provider);
+        if (missing.length) {
+          const msg = `Missing required settings: ${missing.join(", ")}. Update Settings first.`;
+          setText("run_status", msg);
+          appendLog(msg, "error");
+          if (q("settings_mode")) q("settings_mode").value = pullMode;
+          const providerOpt = Array.from(q("settings_provider")?.options || []).map((o) => o.value);
+          if (q("settings_provider")) q("settings_provider").value = providerOpt.includes(provider) ? provider : "custom";
+          await loadRecommendedFields();
+          await loadEnvValues();
+          showTab("settings");
+          setRunIndicator("failed", "missing settings");
+          return;
+        }
+        const mode = document.querySelector("input[name='strategy_mode']:checked")?.value || "automatic";
+        const narrowQ = q("narrow_question")?.value.trim() || "";
+        const targetGap = q("target_gap_id")?.value || "";
+        const payload = {
+          intent_id: state.intentId,
+          pull_mode: pullMode,
+          pull_provider: provider,
+          existing_run_id: "",
+          existing_run_dir: "",
+          artifact_type: "ebsco_manifest_pair",
+          gap_id: mode === "narrow" ? (targetGap || "") : "",
+          force: false,
+        };
+        appendLog(`Starting run with mode=${pullMode}, provider=${provider}`);
+        const run = await api("/api/orchestrator/runs", "POST", payload);
+        runLaunched = true;
+        state.selectedRunId = run.run_id;
+        savePref(STORAGE_KEYS.selectedRunId, run.run_id);
+        if (q("events_run_id")) q("events_run_id").value = run.run_id;
+        let strategyMsg = `Run started: ${run.run_id}`;
+        if (mode === "narrow" && narrowQ) strategyMsg += ` | narrow question: ${narrowQ}`;
+        setText("run_status", strategyMsg);
+        appendLog(strategyMsg, "ok");
+        await loadRuns();
+        startRunMonitor(run.run_id, true);
+        updateWorkflowProgress();
+        showTab("results");
+      } finally {
+        if (!runLaunched) {
+          setButtonBusy("start_run_btn", false, "", "Start Research Run");
+        }
+      }
+    }
+
     async function loadRuns() {
       const out = await api("/api/orchestrator/runs?limit=50");
       const root = q("runs_list");
+      if (!root) return;
       root.innerHTML = "";
-      (out.runs || []).forEach((run) => {
+      const runs = out.runs || [];
+      runs.forEach((run) => {
         const div = document.createElement("div");
-        const statusClass =
-          run.status === "completed" ? "ok" :
-          run.status === "failed" ? "failed" :
-          "started";
+        const statusClass = run.status === "completed" ? "ok" : run.status === "failed" ? "failed" : "started";
         div.className = `event ${statusClass}`;
         div.innerHTML = `
-          <div><strong>${run.run_id}</strong> <span class="status">${run.status}</span></div>
+          <div><strong>${run.run_id}</strong> <span class="status ${statusClass}">${run.status}</span></div>
           <div class="muted">${run.stage} | updated: ${run.updated_at || run.created_at}</div>
           <div class="code">${(run.error || "").slice(0, 220)}</div>
         `;
         div.onclick = () => {
           state.selectedRunId = run.run_id;
-          q("events_run_id").value = run.run_id;
-          loadEvents();
+          savePref(STORAGE_KEYS.selectedRunId, run.run_id);
+          if (q("events_run_id")) q("events_run_id").value = run.run_id;
+          loadEvents().catch((err) => setText("run_status", `Error: ${err.message}`));
+          startRunMonitor(run.run_id, false);
           updateWorkflowProgress();
         };
         root.appendChild(div);
       });
+
+      if (!state.selectedRunId && runs.length) {
+        state.selectedRunId = runs[0].run_id;
+        savePref(STORAGE_KEYS.selectedRunId, runs[0].run_id);
+      }
     }
 
     async function loadEvents() {
-      const runId = q("events_run_id").value.trim();
+      const runId = q("events_run_id")?.value.trim() || "";
       if (!runId) return;
       const out = await api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/events?limit=500`);
       const root = q("events_list");
+      if (!root) return;
       root.innerHTML = "";
       (out.events || []).forEach((evt) => {
         const div = document.createElement("div");
         const statusClass = evt.status === "completed" ? "ok" : evt.status === "failed" ? "failed" : "started";
         div.className = `event ${statusClass}`;
         div.innerHTML = `
-          <div><strong>${evt.stage}</strong> <span class="status">${evt.status}</span></div>
+          <div><strong>${evt.stage}</strong> <span class="status ${statusClass}">${evt.status}</span></div>
           <div class="muted">${evt.ts_utc}</div>
           <div>${evt.message}</div>
           <div class="code">${JSON.stringify(evt.meta || {})}</div>
@@ -1005,14 +1316,17 @@
     }
 
     async function retryRun() {
-      const runId = q("events_run_id").value.trim();
+      const runId = q("events_run_id")?.value.trim() || "";
       if (!runId) {
         setText("run_status", "Enter/select a run ID first.");
         return;
       }
+      appendLog(`Retry requested for ${runId}`);
       await api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/retry`, "POST", { force: false });
       setText("run_status", `Retry queued for ${runId}`);
+      appendLog(`Retry queued for ${runId}`, "ok");
       await loadRuns();
+      startRunMonitor(runId, true);
       await loadEvents();
     }
 
@@ -1020,6 +1334,7 @@
       const out = await api("/api/orchestrator/connections/values?mask_secrets=true");
       setText("settings_status", `Loaded ${out.values.length} keys from ${out.env_path}`);
       const tbody = q("env_values_tbody");
+      if (!tbody) return;
       tbody.innerHTML = "";
       out.values.forEach((row) => {
         const tr = document.createElement("tr");
@@ -1027,16 +1342,18 @@
           <td class="code">${row.key}</td>
           <td class="code">${row.value || ""}</td>
           <td>${row.is_secret ? "secret" : "plain"}</td>
+          <td>${row.source || "n/a"}</td>
         `;
         tbody.appendChild(tr);
       });
     }
 
     async function loadRecommendedFields() {
-      const mode = q("settings_mode").value;
-      const provider = q("settings_provider").value;
+      const mode = q("settings_mode")?.value || "auto";
+      const provider = q("settings_provider")?.value || "ebscohost";
       const out = await api(`/api/orchestrator/connections/schema?mode=${encodeURIComponent(mode)}&provider=${encodeURIComponent(provider)}`);
       const root = q("recommended_fields");
+      if (!root) return;
       root.innerHTML = "";
       out.fields.forEach((f) => {
         const div = document.createElement("div");
@@ -1051,6 +1368,7 @@
 
     function renderSourceList(rootId, rows, kind) {
       const root = q(rootId);
+      if (!root) return;
       root.innerHTML = "";
       (rows || []).forEach((row) => {
         const div = document.createElement("div");
@@ -1079,109 +1397,160 @@
     }
 
     async function saveEnvKey() {
-      const key = q("env_key").value.trim();
-      const value = q("env_value").value;
+      const key = q("env_key")?.value.trim() || "";
+      const value = q("env_value")?.value || "";
       if (!key) {
         setText("settings_status", "Enter a key.");
         return;
       }
       await api("/api/orchestrator/connections/save", "POST", { updates: { [key]: value } });
       setText("settings_status", `Saved ${key} to .env`);
-      q("env_value").value = "";
+      if (q("env_value")) q("env_value").value = "";
+      appendLog(`Saved env key ${key}`, "ok");
       await loadEnvValues();
     }
 
     function wireEvents() {
       document.querySelectorAll(".tab-btn").forEach((btn) => {
-        btn.addEventListener("click", () => showTab(btn.dataset.tab));
+        btn.addEventListener("click", () => showTab(btn.dataset.tab || "workflow"));
       });
 
-      q("open_results_btn").onclick = () => showTab("results");
+      bindAction("open_results_btn", "click", async () => showTab("results"));
+      bindAction("clear_log_btn", "click", async () => {
+        const root = q("backend_log");
+        if (root) root.innerHTML = "";
+      });
 
-      q("refresh_manuscripts_btn").onclick = async () => {
-        try {
-          await loadManuscripts();
-          await loadGapLayout(true);
-        } catch (err) {
-          setText("intent_status", `Error: ${err.message}`);
-        }
-      };
+      bindAction("refresh_manuscripts_btn", "click", async () => {
+        await loadManuscripts();
+        await loadGapLayout(true);
+      });
 
-      q("upload_manuscript_btn").onclick = async () => {
-        try { await uploadManuscript(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
-      };
+      bindAction("upload_manuscript_btn", "click", async () => {
+        await uploadManuscript();
+      });
 
-      q("load_gaps_btn").onclick = async () => {
-        try { await loadGapLayout(true); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
-      };
+      bindAction("load_gaps_btn", "click", async () => {
+        await loadGapLayout(false);
+      });
 
-      q("manuscript_select").onchange = async () => {
+      bindAction("manuscript_select", "change", async () => {
         state.intentId = "";
         setText("strategy_intent_label", "No intent yet.");
-        try { await loadGapLayout(false); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
-      };
+        savePref(STORAGE_KEYS.selectedManuscript, q("manuscript_select")?.value || "");
+        savePref(STORAGE_KEYS.customManuscriptPath, "");
+        if (q("custom_manuscript_path")) q("custom_manuscript_path").value = "";
+        await loadGapLayout(false);
+      });
 
-      q("custom_manuscript_path").onchange = async () => {
+      bindAction("custom_manuscript_path", "change", async () => {
         state.intentId = "";
         setText("strategy_intent_label", "No intent yet.");
-        try { await loadGapLayout(true); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
-      };
+        savePref(STORAGE_KEYS.customManuscriptPath, q("custom_manuscript_path")?.value.trim() || "");
+        await loadGapLayout(false);
+      });
 
-      q("search_plan_path").onchange = updateWorkflowProgress;
+      bindAction("search_plan_path", "change", async () => {
+        savePref(STORAGE_KEYS.searchPlanPath, q("search_plan_path")?.value.trim() || "");
+        updateWorkflowProgress();
+      });
 
-      q("create_intent_btn").onclick = async () => {
-        try { await createIntent(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
-      };
+      bindAction("pull_mode", "change", async () => {
+        savePref(STORAGE_KEYS.pullMode, q("pull_mode")?.value || "auto");
+      });
+
+      bindAction("pull_provider", "change", async () => {
+        savePref(STORAGE_KEYS.pullProvider, q("pull_provider")?.value.trim() || "ebscohost");
+      });
+
+      bindAction("create_intent_btn", "click", async () => {
+        await createIntent();
+      });
 
       document.querySelectorAll("input[name='strategy_mode']").forEach((radio) => {
         radio.addEventListener("change", () => {
-          const narrow = document.querySelector("input[name='strategy_mode']:checked").value === "narrow";
-          q("narrow_question").disabled = !narrow;
+          const narrow = document.querySelector("input[name='strategy_mode']:checked")?.value === "narrow";
+          if (q("narrow_question")) q("narrow_question").disabled = !narrow;
         });
       });
 
-      q("start_run_btn").onclick = async () => {
-        try { await startRun(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
-      };
+      bindAction("start_run_btn", "click", async () => {
+        await startRun();
+      });
 
-      q("refresh_runs_btn").onclick = async () => {
-        try { await loadRuns(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
-      };
+      bindAction("refresh_runs_btn", "click", async () => {
+        await loadRuns();
+      });
 
-      q("load_events_btn").onclick = async () => {
-        try { await loadEvents(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
-      };
+      bindAction("load_events_btn", "click", async () => {
+        await loadEvents();
+      });
 
-      q("retry_run_btn").onclick = async () => {
-        try { await retryRun(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
-      };
+      bindAction("retry_run_btn", "click", async () => {
+        await retryRun();
+      });
 
-      q("load_env_btn").onclick = async () => {
-        try { await loadEnvValues(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
-      };
+      bindAction("load_env_btn", "click", async () => {
+        await loadEnvValues();
+      });
 
-      q("load_conn_schema_btn").onclick = async () => {
-        try { await loadRecommendedFields(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
-      };
+      bindAction("load_conn_schema_btn", "click", async () => {
+        await loadRecommendedFields();
+      });
 
-      q("load_sources_btn").onclick = async () => {
-        try { await loadSourceCatalog(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
-      };
+      bindAction("load_sources_btn", "click", async () => {
+        await loadSourceCatalog();
+      });
 
-      q("save_env_btn").onclick = async () => {
-        try { await saveEnvKey(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
-      };
+      bindAction("save_env_btn", "click", async () => {
+        await saveEnvKey();
+      });
+
+      bindAction("settings_mode", "change", async () => {
+        await loadRecommendedFields();
+      });
+
+      bindAction("settings_provider", "change", async () => {
+        await loadRecommendedFields();
+      });
+    }
+
+    function restoreUiState() {
+      if (q("custom_manuscript_path")) q("custom_manuscript_path").value = loadPref(STORAGE_KEYS.customManuscriptPath, "");
+      if (q("search_plan_path")) q("search_plan_path").value = loadPref(STORAGE_KEYS.searchPlanPath, "");
+      const storedPullMode = loadPref(STORAGE_KEYS.pullMode, "");
+      const pullModeSelect = q("pull_mode");
+      if (pullModeSelect && storedPullMode && Array.from(pullModeSelect.options).some((o) => o.value === storedPullMode)) {
+        pullModeSelect.value = storedPullMode;
+      }
+      const storedProvider = loadPref(STORAGE_KEYS.pullProvider, "");
+      if (q("pull_provider") && storedProvider) q("pull_provider").value = storedProvider;
+      const storedTab = loadPref(STORAGE_KEYS.activeTab, "workflow");
+      state.activeTab = TABS.includes(storedTab) ? storedTab : "workflow";
+      const savedRun = loadPref(STORAGE_KEYS.selectedRunId, "");
+      if (savedRun) {
+        state.selectedRunId = savedRun;
+        if (q("events_run_id")) q("events_run_id").value = savedRun;
+      }
     }
 
     async function boot() {
       wireEvents();
-      try { await loadManuscripts(); } catch (err) { setText("intent_status", `Error: ${err.message}`); }
-      try { await loadGapLayout(); } catch (err) { setText("gap_summary", `Error: ${err.message}`); }
-      try { await loadRuns(); } catch (err) { setText("run_status", `Error: ${err.message}`); }
-      try { await loadEnvValues(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
-      try { await loadRecommendedFields(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
-      try { await loadSourceCatalog(); } catch (err) { setText("settings_status", `Error: ${err.message}`); }
+      restoreUiState();
+      setRunIndicator("idle");
+      appendLog("UI booted. Loading manuscripts, runs, settings.");
+      try { await loadManuscripts(); } catch (err) { setText("intent_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
+      try { await loadGapLayout(false); } catch (err) { setText("gap_summary", `Error: ${err.message}`); appendLog(err.message, "error"); }
+      try { await loadRuns(); } catch (err) { setText("run_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
+      try { await loadEnvValues(); } catch (err) { setText("settings_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
+      try { await loadRecommendedFields(); } catch (err) { setText("settings_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
+      try { await loadSourceCatalog(); } catch (err) { setText("settings_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
+      const savedRun = loadPref(STORAGE_KEYS.selectedRunId, "");
+      if (savedRun) {
+        startRunMonitor(savedRun, false);
+      }
       updateWorkflowProgress();
+      showTab(state.activeTab);
     }
 
     boot();

@@ -861,12 +861,29 @@ def api_connection_save(inp: ConnectionSaveInput) -> Dict[str, Any]:
 
 @app.get("/api/orchestrator/connections/values")
 def api_connection_values(mask_secrets: bool = Query(default=True)) -> Dict[str, Any]:
-    """Return current .env values for settings page editing."""
+    """Return effective connection values (runtime env + .env) for settings page.
+
+    Non-obvious behavior:
+    - Runtime environment variables (for example Docker compose env vars) take
+      precedence over `.env` file values because that is what execution uses.
+    """
     settings = _settings()
-    values = read_env_values(settings.env_path)
+    file_values = read_env_values(settings.env_path)
+    keys: set[str] = set(file_values.keys())
+    # Include keys from known connection contracts so required-field checks are accurate.
+    for mode in ("auto", "api", "playwright"):
+        for provider in ("ebscohost", "statista", "custom"):
+            for field in required_connection_fields(mode=mode, provider=provider):
+                keys.add(str(field.get("key", "")))
+    # Include runtime ORCH_* keys even if absent from .env.
+    for key in os.environ.keys():
+        if key.startswith("ORCH_"):
+            keys.add(key)
+
     rows: List[Dict[str, Any]] = []
-    for key in sorted(values.keys()):
-        value = str(values.get(key, ""))
+    for key in sorted(k for k in keys if k):
+        in_env = key in os.environ
+        value = str(os.environ.get(key, file_values.get(key, "")))
         is_secret = any(token in key.upper() for token in ["PASSWORD", "KEY", "TOKEN", "SECRET"])
         display = value
         if mask_secrets and is_secret:
@@ -881,6 +898,7 @@ def api_connection_values(mask_secrets: bool = Query(default=True)) -> Dict[str,
                 "raw_value": value if (not mask_secrets or not is_secret) else "",
                 "is_secret": is_secret,
                 "has_value": bool(value),
+                "source": "process_env" if in_env else ".env",
             }
         )
     return {"env_path": str(settings.env_path), "values": rows}
@@ -890,7 +908,11 @@ def api_connection_values(mask_secrets: bool = Query(default=True)) -> Dict[str,
 def api_sources_catalog() -> Dict[str, Any]:
     """Return source inventory for Settings: free APIs, closed APIs, university DBs."""
     settings = _settings()
-    env_values = read_env_values(settings.env_path)
+    file_values = read_env_values(settings.env_path)
+    effective_env = dict(file_values)
+    # Runtime env values (for example Docker compose) are authoritative at execution time.
+    for key, value in os.environ.items():
+        effective_env[key] = value
 
     def with_env_status(rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         enriched: List[Dict[str, Any]] = []
@@ -899,7 +921,7 @@ def api_sources_catalog() -> Dict[str, Any]:
             env_key = str(row.get("env_key", "")).strip()
             if env_key:
                 rec["env_key"] = env_key
-                rec["configured"] = bool(str(env_values.get(env_key, "")).strip())
+                rec["configured"] = bool(str(effective_env.get(env_key, "")).strip())
             else:
                 rec["env_key"] = ""
                 rec["configured"] = None

@@ -17,6 +17,16 @@
 - Stores orchestrator runs/events in `app/data`.
 - Supports pull mode routing (`api`, `playwright`, `auto`) through adapter contracts.
 - Workflow UI blocks run launch when required env keys are missing and points users to Settings.
+- Workflow persists operator state in-browser:
+  - last selected manuscript
+  - custom manuscript path
+  - search plan path
+  - active tab
+- Analyze action now provides explicit progress and reuse messaging (for example, when analysis already exists and cached map is reused).
+- Run launch now provides live visual state:
+  - start button switches to in-progress state/color
+  - run status badge updates by stage
+- Workflow includes a backend activity log panel that streams run stage events as they arrive.
 - Automatically runs:
   - pull -> ingest -> llm fit
 - Exposes connection schema + `.env` save endpoints.
@@ -24,6 +34,7 @@
   - `Workflow`: manuscript selector + gap analysis + intent + run launch
   - `Results`: run timeline and retry
   - `Settings`: view/edit `.env` values, add API keys, and view free/closed APIs + university databases in use
+  - `Settings` env table now shows value source (`process_env` vs `.env`) so Docker-injected runtime values are visible.
 
 ## Project Docs
 - `docs/interactive_orchestrator_design.md`

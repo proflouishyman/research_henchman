@@ -763,7 +763,11 @@
       selectedRunId: "",
       runMonitorTimer: null,
       seenRunEventKeys: new Set(),
+      seenRunErrors: new Set(),
       activeTab: "workflow",
+      health: null,
+      runPlans: {},
+      loggedRunPlans: new Set(),
     };
 
     async function api(path, method = "GET", body = null) {
@@ -853,6 +857,61 @@
       else if (norm === "failed") node.classList.add("failed");
       else if (norm !== "idle") node.classList.add("started");
       node.textContent = detail ? `${norm}: ${detail}` : norm;
+    }
+
+    async function loadHealth() {
+      const out = await api("/api/orchestrator/health");
+      state.health = out || {};
+      return state.health;
+    }
+
+    function buildRunPlan(payload) {
+      const health = state.health || {};
+      const mode = String(payload?.pull_mode || q("pull_mode")?.value || "auto");
+      const provider = String(payload?.pull_provider || q("pull_provider")?.value || "ebscohost");
+      const autoIngest = health.auto_ingest !== false;
+      const autoLlmFit = health.auto_llm_fit !== false;
+      const plan = [
+        { stage: "validating_config", label: "Validate configuration and required settings" },
+        { stage: "planning", label: "Resolve intent and run parameters" },
+        { stage: "pulling", label: `Pull sources (${mode}/${provider})` },
+      ];
+      if (autoIngest) {
+        plan.push({ stage: "ingesting", label: "Ingest pulled artifacts" });
+      }
+      if (autoIngest && autoLlmFit) {
+        plan.push({ stage: "llm_processing", label: "Run LLM fit processing" });
+      }
+      plan.push({ stage: "completed", label: "Finalize run and persist outputs" });
+      return plan;
+    }
+
+    function ensureRunPlan(runId, payload, announce = false) {
+      if (!runId) return [];
+      if (!state.runPlans[runId]) {
+        state.runPlans[runId] = buildRunPlan(payload || {});
+      }
+      const plan = state.runPlans[runId];
+      if (announce && !state.loggedRunPlans.has(runId)) {
+        appendLog(`[${runId}] Plan loaded (${plan.length} steps):`, "ok");
+        plan.forEach((step, idx) => {
+          appendLog(`[${runId}] ${idx + 1}/${plan.length} ${step.label}`);
+        });
+        state.loggedRunPlans.add(runId);
+      }
+      return plan;
+    }
+
+    function stepProgressLabel(runId, stageName) {
+      const plan = state.runPlans[runId] || [];
+      if (!plan.length) return "";
+      const stage = String(stageName || "");
+      if (stage === "queued") {
+        return `0/${plan.length}`;
+      }
+      const idx = plan.findIndex((step) => step.stage === stage);
+      if (idx < 0) return `?/${plan.length}`;
+      return `${idx + 1}/${plan.length}`;
     }
 
     function currentManuscriptPath() {
@@ -1160,12 +1219,18 @@
         api(`/api/orchestrator/runs/${encodeURIComponent(runId)}`),
         api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/events?limit=500`),
       ]);
+      ensureRunPlan(runId, runOut.payload || {}, true);
 
       const runStatus = String(runOut.status || "unknown");
       const stage = String(runOut.stage || "");
-      setRunIndicator(runStatus, stage || runId);
+      const stepLabel = stepProgressLabel(runId, stage);
+      setRunIndicator(runStatus, stepLabel ? `${stepLabel} ${stage}` : (stage || runId));
       if (runOut.error) {
-        appendLog(`[${runId}] ${runOut.error}`, "error");
+        const errKey = `${runId}|${runOut.error}`;
+        if (!state.seenRunErrors.has(errKey)) {
+          appendLog(`[${runId}] ${runOut.error}`, "error");
+          state.seenRunErrors.add(errKey);
+        }
       }
 
       (eventsOut.events || []).forEach((evt) => {
@@ -1176,7 +1241,11 @@
           state.seenRunEventKeys.clear();
         }
         const kind = evt.status === "failed" ? "error" : evt.status === "completed" ? "ok" : "info";
-        appendLog(`[${runId}] ${evt.stage}/${evt.status}: ${evt.message}`, kind);
+        const evtStep = stepProgressLabel(runId, evt.stage);
+        appendLog(
+          `[${runId}] ${evtStep ? `${evtStep} ` : ""}${evt.stage}/${evt.status}: ${evt.message}`,
+          kind
+        );
       });
 
       if (TERMINAL_STATUSES.has(runStatus)) {
@@ -1231,6 +1300,9 @@
         const mode = document.querySelector("input[name='strategy_mode']:checked")?.value || "automatic";
         const narrowQ = q("narrow_question")?.value.trim() || "";
         const targetGap = q("target_gap_id")?.value || "";
+        if (!state.health) {
+          try { await loadHealth(); } catch (_) {}
+        }
         const payload = {
           intent_id: state.intentId,
           pull_mode: pullMode,
@@ -1241,12 +1313,15 @@
           gap_id: mode === "narrow" ? (targetGap || "") : "",
           force: false,
         };
+        const planPreview = buildRunPlan(payload);
         appendLog(`Starting run with mode=${pullMode}, provider=${provider}`);
+        appendLog(`Run plan preview (${planPreview.length} steps). Awaiting run id...`);
         const run = await api("/api/orchestrator/runs", "POST", payload);
         runLaunched = true;
         state.selectedRunId = run.run_id;
         savePref(STORAGE_KEYS.selectedRunId, run.run_id);
         if (q("events_run_id")) q("events_run_id").value = run.run_id;
+        ensureRunPlan(run.run_id, payload, true);
         let strategyMsg = `Run started: ${run.run_id}`;
         if (mode === "narrow" && narrowQ) strategyMsg += ` | narrow question: ${narrowQ}`;
         setText("run_status", strategyMsg);
@@ -1325,6 +1400,7 @@
       await api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/retry`, "POST", { force: false });
       setText("run_status", `Retry queued for ${runId}`);
       appendLog(`Retry queued for ${runId}`, "ok");
+      state.loggedRunPlans.delete(runId);
       await loadRuns();
       startRunMonitor(runId, true);
       await loadEvents();
@@ -1539,6 +1615,7 @@
       restoreUiState();
       setRunIndicator("idle");
       appendLog("UI booted. Loading manuscripts, runs, settings.");
+      try { await loadHealth(); } catch (err) { appendLog(`Health load failed: ${err.message}`, "error"); }
       try { await loadManuscripts(); } catch (err) { setText("intent_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
       try { await loadGapLayout(false); } catch (err) { setText("gap_summary", `Error: ${err.message}`); appendLog(err.message, "error"); }
       try { await loadRuns(); } catch (err) { setText("run_status", `Error: ${err.message}`); appendLog(err.message, "error"); }

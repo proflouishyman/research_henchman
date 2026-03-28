@@ -455,6 +455,43 @@
       margin-bottom: 10px;
     }
 
+    .heartbeat-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #9f9383;
+      border: 1px solid #8b7d67;
+      flex: 0 0 10px;
+    }
+
+    .heartbeat-dot.live {
+      background: #2f8a5c;
+      border-color: #2f8a5c;
+      animation: hbPulse 1.1s ease-in-out infinite;
+      box-shadow: 0 0 0 0 rgba(47, 138, 92, 0.5);
+    }
+
+    .heartbeat-dot.stale {
+      background: #a0702a;
+      border-color: #a0702a;
+    }
+
+    .heartbeat-dot.error {
+      background: #983f3f;
+      border-color: #983f3f;
+    }
+
+    .heartbeat-dot.idle {
+      background: #9f9383;
+      border-color: #8b7d67;
+    }
+
+    @keyframes hbPulse {
+      0% { box-shadow: 0 0 0 0 rgba(47, 138, 92, 0.5); }
+      70% { box-shadow: 0 0 0 8px rgba(47, 138, 92, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(47, 138, 92, 0); }
+    }
+
     .log-panel {
       max-height: 220px;
       overflow: auto;
@@ -630,6 +667,8 @@
           <button class="primary-btn" id="start_run_btn" title="Start a new orchestrated research run using current strategy and provider.">Start Research Run</button>
           <div class="indicator-row">
             <span id="run_live_status" class="status">idle</span>
+            <span id="run_heartbeat_dot" class="heartbeat-dot idle" title="Polling heartbeat from backend run monitor."></span>
+            <span id="run_heartbeat_text" class="muted">idle</span>
             <span class="muted">Run monitor</span>
           </div>
           <button id="open_results_btn" title="Jump to the Results tab to monitor run progress and events.">Open Results</button>
@@ -747,6 +786,8 @@
     const q = (id) => document.getElementById(id);
     const TABS = ["workflow", "results", "settings"];
     const TERMINAL_STATUSES = new Set(["completed", "failed", "partial_completed"]);
+    const HEARTBEAT_STALE_MS = 9000;
+    const HEARTBEAT_LOG_INTERVAL_MS = 15000;
     const STORAGE_KEYS = {
       activeTab: "orchestrator.active_tab",
       selectedManuscript: "orchestrator.selected_manuscript",
@@ -768,6 +809,13 @@
       health: null,
       runPlans: {},
       loggedRunPlans: new Set(),
+      monitorTickerTimer: null,
+      monitorState: {
+        mode: "idle",
+        lastSuccessMs: 0,
+        detail: "idle",
+      },
+      runHeartbeatNotices: {},
     };
 
     async function api(path, method = "GET", body = null) {
@@ -857,6 +905,57 @@
       else if (norm === "failed") node.classList.add("failed");
       else if (norm !== "idle") node.classList.add("started");
       node.textContent = detail ? `${norm}: ${detail}` : norm;
+    }
+
+    function setMonitorState(mode, detail = "") {
+      state.monitorState.mode = mode;
+      state.monitorState.detail = detail || mode;
+      if (mode === "live") {
+        state.monitorState.lastSuccessMs = Date.now();
+      }
+      renderHeartbeat();
+    }
+
+    function renderHeartbeat() {
+      const dot = q("run_heartbeat_dot");
+      const text = q("run_heartbeat_text");
+      if (!dot || !text) return;
+      const now = Date.now();
+      const lastSuccess = state.monitorState.lastSuccessMs || 0;
+      const ageMs = lastSuccess ? Math.max(0, now - lastSuccess) : 0;
+      const ageSec = Math.floor(ageMs / 1000);
+
+      let mode = state.monitorState.mode || "idle";
+      if (mode === "live" && ageMs > HEARTBEAT_STALE_MS) {
+        mode = "stale";
+      }
+
+      dot.className = `heartbeat-dot ${mode}`;
+      if (mode === "live") {
+        text.textContent = `live • checked ${ageSec}s ago`;
+      } else if (mode === "stale") {
+        text.textContent = `waiting • last check ${ageSec}s ago`;
+      } else if (mode === "error") {
+        text.textContent = state.monitorState.detail || "monitor error";
+      } else if (mode === "done") {
+        text.textContent = state.monitorState.detail || "run completed";
+      } else {
+        text.textContent = state.monitorState.detail || "idle";
+      }
+    }
+
+    function startHeartbeatTicker() {
+      if (state.monitorTickerTimer) {
+        clearInterval(state.monitorTickerTimer);
+      }
+      state.monitorTickerTimer = setInterval(renderHeartbeat, 1000);
+    }
+
+    function stopHeartbeatTicker() {
+      if (state.monitorTickerTimer) {
+        clearInterval(state.monitorTickerTimer);
+        state.monitorTickerTimer = null;
+      }
     }
 
     async function loadHealth() {
@@ -1211,6 +1310,7 @@
         clearInterval(state.runMonitorTimer);
         state.runMonitorTimer = null;
       }
+      stopHeartbeatTicker();
     }
 
     async function pollRun(runId) {
@@ -1219,6 +1319,7 @@
         api(`/api/orchestrator/runs/${encodeURIComponent(runId)}`),
         api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/events?limit=500`),
       ]);
+      setMonitorState("live", "live");
       ensureRunPlan(runId, runOut.payload || {}, true);
 
       const runStatus = String(runOut.status || "unknown");
@@ -1233,10 +1334,12 @@
         }
       }
 
+      let newEvents = 0;
       (eventsOut.events || []).forEach((evt) => {
         const key = `${evt.ts_utc}|${evt.stage}|${evt.status}|${evt.message}`;
         if (state.seenRunEventKeys.has(key)) return;
         state.seenRunEventKeys.add(key);
+        newEvents += 1;
         if (state.seenRunEventKeys.size > 2000) {
           state.seenRunEventKeys.clear();
         }
@@ -1248,25 +1351,53 @@
         );
       });
 
+      if (!TERMINAL_STATUSES.has(runStatus)) {
+        const now = Date.now();
+        const notice = state.runHeartbeatNotices[runId] || { stage: "", lastNoticeMs: 0 };
+        if (notice.stage !== stage || newEvents > 0) {
+          state.runHeartbeatNotices[runId] = { stage, lastNoticeMs: now };
+        } else if (now - notice.lastNoticeMs >= HEARTBEAT_LOG_INTERVAL_MS) {
+          appendLog(`[${runId}] heartbeat: still ${stage}; backend checks are alive`);
+          state.runHeartbeatNotices[runId] = { stage, lastNoticeMs: now };
+        }
+      }
+
       if (TERMINAL_STATUSES.has(runStatus)) {
         stopRunMonitor();
         setButtonBusy("start_run_btn", false, "", "Start Research Run");
+        if (runStatus === "completed") {
+          setMonitorState("done", "run completed");
+        } else if (runStatus === "failed") {
+          setMonitorState("error", "run failed");
+        } else {
+          setMonitorState("done", runStatus);
+        }
       }
     }
 
     function startRunMonitor(runId, markBusy = false) {
       if (!runId) return;
       stopRunMonitor();
+      startHeartbeatTicker();
+      setMonitorState("live", "connecting");
       state.selectedRunId = runId;
       savePref(STORAGE_KEYS.selectedRunId, runId);
       state.seenRunEventKeys = new Set();
+      state.seenRunErrors = new Set();
+      state.runHeartbeatNotices[runId] = { stage: "", lastNoticeMs: Date.now() };
       if (q("events_run_id")) q("events_run_id").value = runId;
       if (markBusy) {
         setButtonBusy("start_run_btn", true, "Run In Progress...", "Start Research Run");
       }
-      pollRun(runId).catch((err) => appendLog(`Run monitor error (${runId}): ${err.message}`, "error"));
+      pollRun(runId).catch((err) => {
+        setMonitorState("error", "poll error");
+        appendLog(`Run monitor error (${runId}): ${err.message}`, "error");
+      });
       state.runMonitorTimer = setInterval(() => {
-        pollRun(runId).catch((err) => appendLog(`Run monitor error (${runId}): ${err.message}`, "error"));
+        pollRun(runId).catch((err) => {
+          setMonitorState("error", "poll error");
+          appendLog(`Run monitor error (${runId}): ${err.message}`, "error");
+        });
       }, 3500);
       updateWorkflowProgress();
     }
@@ -1295,6 +1426,7 @@
           await loadEnvValues();
           showTab("settings");
           setRunIndicator("failed", "missing settings");
+          setMonitorState("error", "missing settings");
           return;
         }
         const mode = document.querySelector("input[name='strategy_mode']:checked")?.value || "automatic";
@@ -1333,6 +1465,7 @@
       } finally {
         if (!runLaunched) {
           setButtonBusy("start_run_btn", false, "", "Start Research Run");
+          setMonitorState("idle", "idle");
         }
       }
     }
@@ -1614,6 +1747,8 @@
       wireEvents();
       restoreUiState();
       setRunIndicator("idle");
+      setMonitorState("idle", "idle");
+      renderHeartbeat();
       appendLog("UI booted. Loading manuscripts, runs, settings.");
       try { await loadHealth(); } catch (err) { appendLog(`Health load failed: ${err.message}`, "error"); }
       try { await loadManuscripts(); } catch (err) { setText("intent_status", `Error: ${err.message}`); appendLog(err.message, "error"); }

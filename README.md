@@ -26,14 +26,15 @@
 - Run launch now provides live visual state:
   - start button switches to in-progress state/color
   - run status badge updates by stage
-- Workflow includes a backend activity log panel that streams run stage events as they arrive.
+- Workflow now uses a simplified 3-step sequence (manuscript -> gap analysis -> run), with intent creation handled automatically when starting a run.
+- Backend activity log is now a persistent bottom dock so run progress remains visible from Workflow, Results, and Settings tabs.
 - Activity log now prints a run plan at launch and prefixes stage events with step progress (`N/Total`) so users can track where the run is in the plan.
 - Run monitor now includes a heartbeat indicator (pulsing dot + last backend check age) and periodic “still running” log lines during long stages.
 - Automatically runs:
   - pull -> ingest -> llm fit
 - Exposes connection schema + `.env` save endpoints.
 - Provides tabbed UI:
-  - `Workflow`: manuscript selector + gap analysis + intent + run launch
+  - `Workflow`: manuscript selector + gap analysis + run launch
   - `Results`: run timeline and retry
   - `Settings`: view/edit `.env` values, add API keys, and view free/closed APIs + university databases in use
   - `Settings` env table now shows value source (`process_env` vs `.env`) so Docker-injected runtime values are visible.

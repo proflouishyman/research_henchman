@@ -37,6 +37,7 @@
       color: var(--ink);
       font-family: var(--font-ui);
       background: radial-gradient(900px 320px at 90% -15%, #eadfce, transparent 72%), var(--bg);
+      padding-bottom: 230px;
     }
 
     .shell {
@@ -105,7 +106,7 @@
     }
 
     .workflow-layout {
-      grid-template-columns: 420px minmax(0, 1fr);
+      grid-template-columns: 380px minmax(0, 1fr);
     }
 
     .results-layout,
@@ -157,7 +158,7 @@
 
     .step-rail {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: var(--space-1);
       margin-bottom: var(--space-3);
     }
@@ -518,6 +519,89 @@
       background: #f4fbf6;
     }
 
+    .link-btn {
+      border: 0;
+      background: transparent;
+      padding: 2px 0;
+      margin: 0;
+      color: var(--accent);
+      text-align: left;
+      font-weight: 700;
+    }
+
+    .link-btn:hover {
+      text-decoration: underline;
+      background: transparent;
+    }
+
+    .log-dock {
+      position: fixed;
+      left: 14px;
+      right: 14px;
+      bottom: 12px;
+      z-index: 45;
+      border: 1px solid var(--line-strong);
+      border-radius: 14px;
+      background: #fffdfa;
+      box-shadow: 0 10px 28px rgba(40, 35, 30, 0.14);
+      overflow: hidden;
+    }
+
+    .log-dock-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #f4ead9;
+    }
+
+    .log-dock-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #4f4438;
+    }
+
+    .log-dock-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .dock-btn {
+      border: 1px solid var(--line);
+      background: #fffdf8;
+      color: var(--muted);
+      width: auto;
+      margin: 0;
+      padding: 6px 10px;
+      font-size: 11px;
+      border-radius: 999px;
+      font-weight: 700;
+    }
+
+    .log-dock-body {
+      max-height: 180px;
+      overflow: auto;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      background: #fffdfa;
+    }
+
+    .log-dock.collapsed .log-dock-body {
+      display: none;
+    }
+
+    .log-dock.collapsed {
+      box-shadow: 0 8px 20px rgba(40, 35, 30, 0.11);
+    }
+
     @media (max-width: 1180px) {
       .workflow-layout {
         grid-template-columns: 1fr;
@@ -530,6 +614,7 @@
 
       .pane { min-height: auto; }
       h1 { font-size: 30px; }
+      body { padding-bottom: 250px; }
     }
 
     @media (max-width: 760px) {
@@ -557,6 +642,16 @@
       .shell {
         padding: var(--space-3);
       }
+
+      .log-dock {
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+      }
+
+      .log-dock-body {
+        max-height: 34vh;
+      }
     }
   </style>
 </head>
@@ -581,8 +676,7 @@
         <div class="step-rail" aria-label="Workflow progress">
           <div id="wf-step-1" class="step-pill active">1. Manuscript</div>
           <div id="wf-step-2" class="step-pill">2. Gap Analysis</div>
-          <div id="wf-step-3" class="step-pill">3. Intent</div>
-          <div id="wf-step-4" class="step-pill">4. Run</div>
+          <div id="wf-step-3" class="step-pill">3. Run</div>
         </div>
 
         <div class="workflow-progress muted" id="workflow_progress_text">Start by selecting or uploading a manuscript.</div>
@@ -603,16 +697,43 @@
             </div>
             <div class="tiny-col">
               <label>&nbsp;</label>
-              <button id="refresh_manuscripts_btn" title="Reload manuscript options from workspace and uploaded files.">Refresh</button>
+              <button id="refresh_manuscripts_btn" title="Reload manuscript options from workspace and uploaded files.">↻</button>
             </div>
           </div>
 
           <details>
-            <summary>Advanced Manuscript Input</summary>
+            <summary>Advanced Options</summary>
             <label for="custom_manuscript_path" style="margin-top:10px;">Custom Manuscript Path (Optional)</label>
             <input id="custom_manuscript_path" placeholder="/absolute/path/to/manuscript.docx" />
             <label for="search_plan_path">Search Plan Path (Optional)</label>
             <input id="search_plan_path" placeholder="codex/evidence_hub/data/pull_backlog_by_gap.csv" />
+
+            <label for="pull_mode">Pull Mode</label>
+            <select id="pull_mode">
+              <option value="auto">auto</option>
+              <option value="api">api</option>
+              <option value="playwright">playwright</option>
+            </select>
+
+            <label for="pull_provider">Pull Provider</label>
+            <input id="pull_provider" value="ebscohost" />
+
+            <div class="row" style="margin-top:8px;">
+              <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
+                <input type="radio" name="strategy_mode" value="automatic" checked style="width:auto; margin:0;" />
+                Automatic research sweep
+              </label>
+              <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
+                <input type="radio" name="strategy_mode" value="narrow" style="width:auto; margin:0;" />
+                Narrow question
+              </label>
+            </div>
+
+            <label for="narrow_question">Narrow Research Question</label>
+            <textarea id="narrow_question" placeholder="Example: Find sources only on Amazon warehouse injury rates in chapter 4." disabled></textarea>
+
+            <label for="target_gap_id">Target Gap (for narrow mode)</label>
+            <select id="target_gap_id"></select>
           </details>
 
           <div class="code" id="current_manuscript_path">manuscript path: not selected</div>
@@ -620,50 +741,12 @@
 
         <div class="section">
           <div class="section-title">Step 2. Analyze Gaps</div>
-          <button class="primary-btn" id="load_gaps_btn" title="Read the selected manuscript and generate or load chapter gap analysis.">Analyze Manuscript & Refresh Gaps</button>
+          <button class="primary-btn" id="load_gaps_btn" title="Read the selected manuscript and generate or load chapter gap analysis.">Analyze Manuscript</button>
           <div id="analysis_status" class="muted">No analysis run yet.</div>
         </div>
 
         <div class="section">
-          <div class="section-title">Step 3. Create Intent</div>
-          <button id="create_intent_btn" title="Create an orchestration intent from selected manuscript and optional search plan.">Create Intent</button>
-          <div id="strategy_intent_label" class="muted">No intent yet.</div>
-        </div>
-
-        <div class="section">
-          <div class="section-title">Step 4. Strategy and Launch</div>
-          <div class="row" style="margin-top:8px;">
-            <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
-              <input type="radio" name="strategy_mode" value="automatic" checked style="width:auto; margin:0;" />
-              Automatic research sweep
-            </label>
-            <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
-              <input type="radio" name="strategy_mode" value="narrow" style="width:auto; margin:0;" />
-              Narrow question
-            </label>
-          </div>
-
-          <label for="narrow_question">Narrow Research Question</label>
-          <textarea id="narrow_question" placeholder="Example: Find sources only on Amazon warehouse injury rates in chapter 4." disabled></textarea>
-
-          <label for="target_gap_id">Target Gap (for narrow mode)</label>
-          <select id="target_gap_id"></select>
-
-          <div class="row">
-            <div>
-              <label for="pull_mode">Pull Mode</label>
-              <select id="pull_mode">
-                <option value="auto">auto</option>
-                <option value="api">api</option>
-                <option value="playwright">playwright</option>
-              </select>
-            </div>
-            <div>
-              <label for="pull_provider">Pull Provider</label>
-              <input id="pull_provider" value="ebscohost" />
-            </div>
-          </div>
-
+          <div class="section-title">Step 3. Start Research Run</div>
           <button class="primary-btn" id="start_run_btn" title="Start a new orchestrated research run using current strategy and provider.">Start Research Run</button>
           <div class="indicator-row">
             <span id="run_live_status" class="status">idle</span>
@@ -671,17 +754,11 @@
             <span id="run_heartbeat_text" class="muted">idle</span>
             <span class="muted">Run monitor</span>
           </div>
-          <button id="open_results_btn" title="Jump to the Results tab to monitor run progress and events.">Open Results</button>
+          <button id="open_results_btn" class="link-btn" title="Jump to the Results tab to monitor run progress and events.">View Results</button>
         </div>
 
         <div id="intent_status" class="muted"></div>
         <div id="run_status" class="muted"></div>
-
-        <div class="section">
-          <div class="section-title">Backend Activity Log</div>
-          <div id="backend_log" class="list log-panel"></div>
-          <button id="clear_log_btn" title="Clear only the on-screen activity log panel.">Clear Log Panel</button>
-        </div>
       </section>
 
       <section class="pane">
@@ -782,6 +859,21 @@
     </div>
   </div>
 
+  <section id="log_dock" class="log-dock" aria-label="Live backend log">
+    <div class="log-dock-header">
+      <div class="log-dock-title">
+        <span>Live Run Log</span>
+        <span id="dock_run_stage" class="status">idle</span>
+      </div>
+      <div class="log-dock-actions">
+        <button id="dock_view_results_btn" class="dock-btn" title="Open Results tab">Results</button>
+        <button id="clear_log_btn" class="dock-btn" title="Clear only the on-screen activity log panel.">Clear</button>
+        <button id="toggle_log_dock_btn" class="dock-btn" title="Collapse or expand the live log dock.">Collapse</button>
+      </div>
+    </div>
+    <div id="backend_log" class="log-dock-body"></div>
+  </section>
+
   <script>
     const q = (id) => document.getElementById(id);
     const TABS = ["workflow", "results", "settings"];
@@ -796,6 +888,7 @@
       pullMode: "orchestrator.pull_mode",
       pullProvider: "orchestrator.pull_provider",
       selectedRunId: "orchestrator.selected_run_id",
+      logDockCollapsed: "orchestrator.log_dock_collapsed",
     };
     const state = {
       manuscripts: [],
@@ -898,13 +991,27 @@
 
     function setRunIndicator(status, detail = "") {
       const node = q("run_live_status");
-      if (!node) return;
       const norm = String(status || "idle").toLowerCase();
-      node.className = "status";
-      if (norm === "completed") node.classList.add("ok");
-      else if (norm === "failed") node.classList.add("failed");
-      else if (norm !== "idle") node.classList.add("started");
-      node.textContent = detail ? `${norm}: ${detail}` : norm;
+      [node, q("dock_run_stage")].forEach((el) => {
+        if (!el) return;
+        el.className = "status";
+        if (norm === "completed") el.classList.add("ok");
+        else if (norm === "failed") el.classList.add("failed");
+        else if (norm !== "idle") el.classList.add("started");
+        el.textContent = detail ? `${norm}: ${detail}` : norm;
+      });
+    }
+
+    // Keep the global dock state explicit so logs remain available while preserving user preference.
+    function applyLogDockCollapsed(collapsed, persist = true) {
+      const dock = q("log_dock");
+      const toggle = q("toggle_log_dock_btn");
+      if (!dock) return;
+      dock.classList.toggle("collapsed", !!collapsed);
+      if (toggle) toggle.textContent = collapsed ? "Expand" : "Collapse";
+      if (persist) {
+        savePref(STORAGE_KEYS.logDockCollapsed, collapsed ? "1" : "0");
+      }
     }
 
     function setMonitorState(mode, detail = "") {
@@ -1033,13 +1140,11 @@
     function updateWorkflowProgress() {
       const hasManuscript = !!currentManuscriptPath();
       const hasGaps = state.gaps.length > 0;
-      const hasIntent = !!state.intentId;
       const hasRun = !!state.selectedRunId;
       const steps = [
         ["wf-step-1", hasManuscript],
         ["wf-step-2", hasGaps],
-        ["wf-step-3", hasIntent],
-        ["wf-step-4", hasRun],
+        ["wf-step-3", hasRun],
       ];
       steps.forEach(([id, done], idx) => {
         const el = q(id);
@@ -1051,8 +1156,7 @@
 
       let message = "Start by selecting or uploading a manuscript.";
       if (hasManuscript && !hasGaps) message = "Manuscript selected. Run gap analysis next.";
-      if (hasGaps && !hasIntent) message = "Gap map ready. Create an intent to lock your run scope.";
-      if (hasIntent && !hasRun) message = "Intent ready. Choose strategy and start a run.";
+      if (hasGaps && !hasRun) message = "Gap map ready. Choose strategy and start a run.";
       if (hasRun) message = `Run selected (${state.selectedRunId}). Open Results to monitor progress.`;
       setText("workflow_progress_text", message);
       setText("current_manuscript_path", `manuscript path: ${currentManuscriptPath() || "not selected"}`);
@@ -1234,7 +1338,7 @@
           });
         }
       } finally {
-        setButtonBusy("load_gaps_btn", false, "", "Analyze Manuscript & Refresh Gaps");
+        setButtonBusy("load_gaps_btn", false, "", "Analyze Manuscript");
         persistWorkflowInputs();
         updateWorkflowProgress();
       }
@@ -1257,7 +1361,6 @@
       });
       state.intentId = out.intent_id;
       setText("intent_status", `Intent created: ${state.intentId}`);
-      setText("strategy_intent_label", `Intent ready: ${state.intentId}`);
       appendLog(`Intent created: ${state.intentId}`, "ok");
       updateWorkflowProgress();
     }
@@ -1625,6 +1728,11 @@
       });
 
       bindAction("open_results_btn", "click", async () => showTab("results"));
+      bindAction("dock_view_results_btn", "click", async () => showTab("results"));
+      bindAction("toggle_log_dock_btn", "click", async () => {
+        const dock = q("log_dock");
+        applyLogDockCollapsed(!(dock && dock.classList.contains("collapsed")));
+      });
       bindAction("clear_log_btn", "click", async () => {
         const root = q("backend_log");
         if (root) root.innerHTML = "";
@@ -1645,7 +1753,6 @@
 
       bindAction("manuscript_select", "change", async () => {
         state.intentId = "";
-        setText("strategy_intent_label", "No intent yet.");
         savePref(STORAGE_KEYS.selectedManuscript, q("manuscript_select")?.value || "");
         savePref(STORAGE_KEYS.customManuscriptPath, "");
         if (q("custom_manuscript_path")) q("custom_manuscript_path").value = "";
@@ -1654,7 +1761,6 @@
 
       bindAction("custom_manuscript_path", "change", async () => {
         state.intentId = "";
-        setText("strategy_intent_label", "No intent yet.");
         savePref(STORAGE_KEYS.customManuscriptPath, q("custom_manuscript_path")?.value.trim() || "");
         await loadGapLayout(false);
       });
@@ -1670,10 +1776,6 @@
 
       bindAction("pull_provider", "change", async () => {
         savePref(STORAGE_KEYS.pullProvider, q("pull_provider")?.value.trim() || "ebscohost");
-      });
-
-      bindAction("create_intent_btn", "click", async () => {
-        await createIntent();
       });
 
       document.querySelectorAll("input[name='strategy_mode']").forEach((radio) => {
@@ -1741,6 +1843,7 @@
         state.selectedRunId = savedRun;
         if (q("events_run_id")) q("events_run_id").value = savedRun;
       }
+      applyLogDockCollapsed(loadPref(STORAGE_KEYS.logDockCollapsed, "0") === "1", false);
     }
 
     async function boot() {

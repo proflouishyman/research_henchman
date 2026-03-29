@@ -48,12 +48,13 @@ while preserving existing Evidence Hub data contracts.
 - LLM stage invoked only after successful ingest when auto-chain enabled.
 
 ## Frontend surface
-- `Workflow`: guided sequence for manuscript intake -> gap analysis -> intent creation -> run launch.
+- `Workflow`: guided sequence for manuscript intake -> gap analysis -> run launch.
+- Intent creation remains in backend contract but is auto-invoked by run start from the UI.
 - `Workflow` persists last-used manuscript and active tab in browser local storage.
 - `Workflow` includes explicit analysis status text:
   - running indicator
   - already-analyzed/cached-map indicator
-- `Workflow` includes backend activity log panel that streams run events.
+- App includes a persistent bottom run-log dock (`Live Run Log`) that streams run events across tabs.
 - Run log now announces the resolved run plan at launch and reports each stage with plan position (`N/Total`).
 - Run monitor includes heartbeat feedback (pulsing live dot + “last check” age) and periodic long-stage heartbeat entries in the backend log.
 - `Workflow` run launch button and run-status badge update visually while run is active.

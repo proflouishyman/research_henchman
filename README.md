@@ -13,7 +13,7 @@
   - Other manuscripts use sidecar maps when present.
   - If missing, the app auto-generates and stores a gap map.
 - Gap analysis prefers Ollama smart-model generation (with heuristic fallback on error).
-- Plan tab now shows manuscript read diagnostics (status, char count, detected headings) so it is clear when parsing succeeded or fell back.
+- Gap Analysis tab shows manuscript read diagnostics (status, char count, detected headings) so it is clear when parsing succeeded or fell back.
 - Stores orchestrator runs/events in `app/data`.
 - Supports pull mode routing (`api`, `playwright`, `auto`) through adapter contracts.
 - Workflow UI blocks run launch when required env keys are missing and points users to Settings.
@@ -26,16 +26,22 @@
 - Run launch now provides live visual state:
   - start button switches to in-progress state/color
   - run status badge updates by stage
-- Workflow now uses a simplified 3-step sequence (manuscript -> gap analysis -> run), with intent creation handled automatically when starting a run.
-- Backend activity log is now a persistent bottom dock so run progress remains visible from Workflow, Results, and Settings tabs.
+- Workflow is now split into step tabs (one step per page): `1 Manuscript` -> `2 Gap Analysis` -> `3 Strategy`, with intent creation handled automatically when starting a run.
+- Backend activity log is now a persistent bottom dock so run progress remains visible from all tabs.
 - Activity log now prints a run plan at launch and prefixes stage events with step progress (`N/Total`) so users can track where the run is in the plan.
 - Run monitor now includes a heartbeat indicator (pulsing dot + last backend check age) and periodic “still running” log lines during long stages.
+- Strategy tab now includes a `Live Activity` monitor that shows:
+  - current stage/status
+  - current action message
+  - pull/search metadata details when available
 - Automatically runs:
   - pull -> ingest -> llm fit
 - Exposes connection schema + `.env` save endpoints.
 - Provides tabbed UI:
-  - `Workflow`: manuscript selector + gap analysis + run launch
-  - `Results`: run timeline and retry
+  - `1 Manuscript`: manuscript selector/upload and path controls
+  - `2 Gap Analysis`: analysis trigger + gap layout output
+  - `3 Strategy`: pull mode/provider + run launch + live activity
+  - `Results`: collapsible runs and run-events panels
   - `Settings`: view/edit `.env` values, add API keys, and view free/closed APIs + university databases in use
   - `Settings` env table now shows value source (`process_env` vs `.env`) so Docker-injected runtime values are visible.
 

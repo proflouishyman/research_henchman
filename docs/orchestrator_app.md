@@ -48,17 +48,20 @@ while preserving existing Evidence Hub data contracts.
 - LLM stage invoked only after successful ingest when auto-chain enabled.
 
 ## Frontend surface
-- `Workflow`: guided sequence for manuscript intake -> gap analysis -> run launch.
-- Intent creation remains in backend contract but is auto-invoked by run start from the UI.
-- `Workflow` persists last-used manuscript and active tab in browser local storage.
-- `Workflow` includes explicit analysis status text:
+- Step tabs split workflow into one page per step:
+  - `1 Manuscript`
+  - `2 Gap Analysis`
+  - `3 Strategy`
+- Intent creation remains in backend contract but is auto-invoked by run start from `3 Strategy`.
+- UI persists last-used manuscript and active tab in browser local storage.
+- Gap analysis view includes explicit analysis status text:
   - running indicator
   - already-analyzed/cached-map indicator
-- App includes a persistent bottom run-log dock (`Live Run Log`) that streams run events across tabs.
+- App includes a persistent bottom run-log dock (`Live Run Log`) that streams run events across tabs and shows a visible log heartbeat status.
 - Run log now announces the resolved run plan at launch and reports each stage with plan position (`N/Total`).
 - Run monitor includes heartbeat feedback (pulsing live dot + “last check” age) and periodic long-stage heartbeat entries in the backend log.
-- `Workflow` run launch button and run-status badge update visually while run is active.
-- `Results`: run list + event timeline + retry.
+- `3 Strategy` includes `Live Activity` fields for current stage, action, and pull/search detail metadata.
+- `Results`: collapsible run list + run-events timeline + retry.
 - `Settings`: inspect `.env` values and add/update keys (including API keys).
 - `Settings` env-value grid includes source field (`process_env` or `.env`).
 - `Settings` also lists:

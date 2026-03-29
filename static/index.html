@@ -98,18 +98,23 @@
 
     .hidden { display: none; }
 
-    .workflow-layout,
+    .plan-layout,
+    .strategy-layout,
     .results-layout,
     .settings-layout {
       display: grid;
       gap: var(--space-3);
     }
 
-    .workflow-layout {
+    .plan-layout,
+    .strategy-layout {
       grid-template-columns: 380px minmax(0, 1fr);
     }
 
-    .results-layout,
+    .results-layout {
+      grid-template-columns: 1fr;
+    }
+
     .settings-layout {
       grid-template-columns: 1fr 1fr;
     }
@@ -587,11 +592,15 @@
     }
 
     .log-dock-body {
-      max-height: 180px;
+      max-height: 240px;
       overflow: auto;
       font-family: var(--font-mono);
       font-size: 11px;
       background: #fffdfa;
+    }
+
+    .results-section-body {
+      padding: 10px;
     }
 
     .log-dock.collapsed .log-dock-body {
@@ -603,7 +612,8 @@
     }
 
     @media (max-width: 1180px) {
-      .workflow-layout {
+      .plan-layout,
+      .strategy-layout {
         grid-template-columns: 1fr;
       }
 
@@ -660,110 +670,63 @@
     <div class="topbar">
       <div>
         <h1>Research Orchestrator</h1>
-        <div class="subtitle">One flow: choose manuscript, inspect evidence gaps, pick strategy, launch research run, follow results.</div>
+        <div class="subtitle">Plan manuscript intake, set strategy, run research, and inspect outcomes without crowding one page.</div>
       </div>
       <div class="tabs" role="tablist" aria-label="App tabs">
-        <button class="tab-btn active" data-tab="workflow" title="Open the guided manuscript-to-run workflow.">Workflow</button>
+        <button class="tab-btn active" data-tab="manuscript" title="Step 1: choose manuscript source and file.">1 Manuscript</button>
+        <button class="tab-btn" data-tab="analysis" title="Step 2: generate and inspect gap analysis.">2 Gap Analysis</button>
+        <button class="tab-btn" data-tab="strategy" title="Step 3: choose pull strategy and launch runs.">3 Strategy</button>
         <button class="tab-btn" data-tab="results" title="Review run status, events, and retry options.">Results</button>
         <button class="tab-btn" data-tab="settings" title="Inspect and edit .env values, API keys, and source catalogs.">Settings</button>
       </div>
     </div>
 
-    <div id="tab-workflow" class="workflow-layout">
+    <div id="tab-manuscript" class="plan-layout">
       <section class="pane">
-        <h2>Guided Workflow</h2>
+        <h2>Step 1: Manuscript Intake</h2>
+        <div class="workflow-progress muted" id="manuscript_status_text">Start by selecting or uploading a manuscript.</div>
 
-        <div class="step-rail" aria-label="Workflow progress">
-          <div id="wf-step-1" class="step-pill active">1. Manuscript</div>
-          <div id="wf-step-2" class="step-pill">2. Gap Analysis</div>
-          <div id="wf-step-3" class="step-pill">3. Run</div>
+        <label for="manuscript_file_input">Upload Manuscript From Computer</label>
+        <div class="row">
+          <input id="manuscript_file_input" type="file" accept=".docx,.md,.txt,.pdf" title="Choose a manuscript file from your computer to upload into the app." />
+          <button id="upload_manuscript_btn" title="Upload the selected local file and add it to manuscript options.">Upload</button>
         </div>
 
-        <div class="workflow-progress muted" id="workflow_progress_text">Start by selecting or uploading a manuscript.</div>
-
-        <div class="section">
-          <div class="section-title">Step 1. Choose Manuscript</div>
-
-          <label for="manuscript_file_input">Upload Manuscript From Computer</label>
-          <div class="row">
-            <input id="manuscript_file_input" type="file" accept=".docx,.md,.txt,.pdf" title="Choose a manuscript file from your computer to upload into the app." />
-            <button id="upload_manuscript_btn" title="Upload the selected local file and add it to manuscript options.">Upload</button>
+        <div class="row">
+          <div>
+            <label for="manuscript_select">Select Manuscript</label>
+            <select id="manuscript_select"></select>
           </div>
-
-          <div class="row">
-            <div>
-              <label for="manuscript_select">Select Manuscript</label>
-              <select id="manuscript_select"></select>
-            </div>
-            <div class="tiny-col">
-              <label>&nbsp;</label>
-              <button id="refresh_manuscripts_btn" title="Reload manuscript options from workspace and uploaded files.">↻</button>
-            </div>
+          <div class="tiny-col">
+            <label>&nbsp;</label>
+            <button id="refresh_manuscripts_btn" title="Reload manuscript options from workspace and uploaded files.">↻</button>
           </div>
-
-          <details>
-            <summary>Advanced Options</summary>
-            <label for="custom_manuscript_path" style="margin-top:10px;">Custom Manuscript Path (Optional)</label>
-            <input id="custom_manuscript_path" placeholder="/absolute/path/to/manuscript.docx" />
-            <label for="search_plan_path">Search Plan Path (Optional)</label>
-            <input id="search_plan_path" placeholder="codex/evidence_hub/data/pull_backlog_by_gap.csv" />
-
-            <label for="pull_mode">Pull Mode</label>
-            <select id="pull_mode">
-              <option value="auto">auto</option>
-              <option value="api">api</option>
-              <option value="playwright">playwright</option>
-            </select>
-
-            <label for="pull_provider">Pull Provider</label>
-            <input id="pull_provider" value="ebscohost" />
-
-            <div class="row" style="margin-top:8px;">
-              <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
-                <input type="radio" name="strategy_mode" value="automatic" checked style="width:auto; margin:0;" />
-                Automatic research sweep
-              </label>
-              <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
-                <input type="radio" name="strategy_mode" value="narrow" style="width:auto; margin:0;" />
-                Narrow question
-              </label>
-            </div>
-
-            <label for="narrow_question">Narrow Research Question</label>
-            <textarea id="narrow_question" placeholder="Example: Find sources only on Amazon warehouse injury rates in chapter 4." disabled></textarea>
-
-            <label for="target_gap_id">Target Gap (for narrow mode)</label>
-            <select id="target_gap_id"></select>
-          </details>
-
-          <div class="code" id="current_manuscript_path">manuscript path: not selected</div>
         </div>
 
-        <div class="section">
-          <div class="section-title">Step 2. Analyze Gaps</div>
-          <button class="primary-btn" id="load_gaps_btn" title="Read the selected manuscript and generate or load chapter gap analysis.">Analyze Manuscript</button>
-          <div id="analysis_status" class="muted">No analysis run yet.</div>
-        </div>
+        <details>
+          <summary>Advanced Options</summary>
+          <label for="custom_manuscript_path" style="margin-top:10px;">Custom Manuscript Path (Optional)</label>
+          <input id="custom_manuscript_path" placeholder="/absolute/path/to/manuscript.docx" />
+          <label for="search_plan_path">Search Plan Path (Optional)</label>
+          <input id="search_plan_path" placeholder="codex/evidence_hub/data/pull_backlog_by_gap.csv" />
+        </details>
 
-        <div class="section">
-          <div class="section-title">Step 3. Start Research Run</div>
-          <button class="primary-btn" id="start_run_btn" title="Start a new orchestrated research run using current strategy and provider.">Start Research Run</button>
-          <div class="indicator-row">
-            <span id="run_live_status" class="status">idle</span>
-            <span id="run_heartbeat_dot" class="heartbeat-dot idle" title="Polling heartbeat from backend run monitor."></span>
-            <span id="run_heartbeat_text" class="muted">idle</span>
-            <span class="muted">Run monitor</span>
-          </div>
-          <button id="open_results_btn" class="link-btn" title="Jump to the Results tab to monitor run progress and events.">View Results</button>
-        </div>
+        <div class="code" id="current_manuscript_path">manuscript path: not selected</div>
+        <button id="open_analysis_btn" class="link-btn" title="Open the Gap Analysis tab for this manuscript.">Go To Gap Analysis</button>
+      </section>
+    </div>
 
-        <div id="intent_status" class="muted"></div>
-        <div id="run_status" class="muted"></div>
+    <div id="tab-analysis" class="plan-layout hidden">
+      <section class="pane">
+        <h2>Step 2: Gap Analysis</h2>
+        <button class="primary-btn" id="load_gaps_btn" title="Read the selected manuscript and generate or load chapter gap analysis.">Analyze Manuscript</button>
+        <div id="analysis_status" class="muted">No analysis run yet.</div>
+        <button id="open_strategy_btn" class="link-btn" title="Continue to Strategy tab to configure pull settings and launch the run.">Continue To Strategy</button>
       </section>
 
       <section class="pane">
-        <h2>Gap Analysis</h2>
-        <div id="gap_summary" class="muted">Run Step 2 to populate gap layout for the selected manuscript.</div>
+        <h2>Gap Analysis Output</h2>
+        <div id="gap_summary" class="muted">Run analysis to populate chapter gap layout for the selected manuscript.</div>
         <div id="read_status" class="event" style="margin-top:10px;">
           <div><strong>Manuscript Read Status</strong></div>
           <div class="muted">No extraction details yet.</div>
@@ -772,23 +735,90 @@
       </section>
     </div>
 
-    <div id="tab-results" class="results-layout hidden">
+    <div id="tab-strategy" class="strategy-layout hidden">
       <section class="pane">
-        <h2>Runs</h2>
-        <div class="row">
-          <button id="refresh_runs_btn" title="Refresh the list of orchestrator runs.">Refresh Runs</button>
-          <button id="retry_run_btn" title="Retry the selected run from failed or completed state.">Retry Selected Run</button>
+        <h2>Strategy</h2>
+        <label for="pull_mode">Pull Mode</label>
+        <select id="pull_mode">
+          <option value="auto">auto</option>
+          <option value="api">api</option>
+          <option value="playwright">playwright</option>
+        </select>
+
+        <label for="pull_provider">Pull Provider</label>
+        <input id="pull_provider" value="ebscohost" />
+
+        <div class="row" style="margin-top:8px;">
+          <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
+            <input type="radio" name="strategy_mode" value="automatic" checked style="width:auto; margin:0;" />
+            Automatic research sweep
+          </label>
+          <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
+            <input type="radio" name="strategy_mode" value="narrow" style="width:auto; margin:0;" />
+            Narrow question
+          </label>
         </div>
-        <div id="runs_list" class="list"></div>
+
+        <label for="narrow_question">Narrow Research Question</label>
+        <textarea id="narrow_question" placeholder="Example: Find sources only on Amazon warehouse injury rates in chapter 4." disabled></textarea>
+
+        <label for="target_gap_id">Target Gap (for narrow mode)</label>
+        <select id="target_gap_id"></select>
+
+        <button class="primary-btn" id="start_run_btn" title="Start a new orchestrated research run using current strategy and provider.">Start Research Run</button>
+        <div class="indicator-row">
+          <span id="run_live_status" class="status">idle</span>
+          <span id="run_heartbeat_dot" class="heartbeat-dot idle" title="Polling heartbeat from backend run monitor."></span>
+          <span id="run_heartbeat_text" class="muted">idle</span>
+          <span class="muted">Run monitor</span>
+        </div>
+        <button id="open_results_btn" class="link-btn" title="Jump to the Results tab to monitor run progress and events.">View Results</button>
+        <button id="open_analysis_from_strategy_btn" class="link-btn" title="Return to Gap Analysis tab to inspect or refresh gaps.">Back To Gap Analysis</button>
+        <div id="intent_status" class="muted"></div>
+        <div id="run_status" class="muted"></div>
       </section>
 
       <section class="pane">
-        <h2>Run Events</h2>
-        <div class="row">
-          <input id="events_run_id" placeholder="run_xxx" />
-          <button id="load_events_btn" title="Load timeline events for the entered run ID.">Load Events</button>
+        <h2>Live Activity</h2>
+        <div class="event">
+          <div><strong>Current Stage</strong></div>
+          <div id="activity_stage" class="code">idle</div>
         </div>
-        <div id="events_list" class="list"></div>
+        <div class="event">
+          <div><strong>Current Action</strong></div>
+          <div id="activity_action" class="muted">No run events yet.</div>
+        </div>
+        <div class="event">
+          <div><strong>Pull/Search Detail</strong></div>
+          <div id="activity_pull_detail" class="code">No pull metadata yet.</div>
+        </div>
+      </section>
+    </div>
+
+    <div id="tab-results" class="results-layout hidden">
+      <section class="pane">
+        <h2>Results</h2>
+        <details id="results_runs_panel" open>
+          <summary>Runs</summary>
+          <div class="results-section-body">
+            <div class="row">
+              <button id="refresh_runs_btn" title="Refresh the list of orchestrator runs.">Refresh Runs</button>
+              <button id="retry_run_btn" title="Retry the selected run from failed or completed state.">Retry Selected Run</button>
+            </div>
+            <div id="runs_list" class="list" style="max-height: 34vh;"></div>
+          </div>
+        </details>
+
+        <details id="results_events_panel">
+          <summary>Run Events</summary>
+          <div class="results-section-body">
+            <div class="row">
+              <input id="events_run_id" placeholder="run_xxx" />
+              <button id="load_events_btn" title="Load timeline events for the entered run ID.">Load Events</button>
+            </div>
+            <div id="events_list" class="list" style="max-height: 34vh;"></div>
+          </div>
+        </details>
       </section>
     </div>
 
@@ -864,6 +894,7 @@
       <div class="log-dock-title">
         <span>Live Run Log</span>
         <span id="dock_run_stage" class="status">idle</span>
+        <span id="dock_log_heartbeat" class="status">no events yet</span>
       </div>
       <div class="log-dock-actions">
         <button id="dock_view_results_btn" class="dock-btn" title="Open Results tab">Results</button>
@@ -876,7 +907,7 @@
 
   <script>
     const q = (id) => document.getElementById(id);
-    const TABS = ["workflow", "results", "settings"];
+    const TABS = ["manuscript", "analysis", "strategy", "results", "settings"];
     const TERMINAL_STATUSES = new Set(["completed", "failed", "partial_completed"]);
     const HEARTBEAT_STALE_MS = 9000;
     const HEARTBEAT_LOG_INTERVAL_MS = 15000;
@@ -889,6 +920,8 @@
       pullProvider: "orchestrator.pull_provider",
       selectedRunId: "orchestrator.selected_run_id",
       logDockCollapsed: "orchestrator.log_dock_collapsed",
+      resultsRunsOpen: "orchestrator.results_runs_open",
+      resultsEventsOpen: "orchestrator.results_events_open",
     };
     const state = {
       manuscripts: [],
@@ -898,11 +931,13 @@
       runMonitorTimer: null,
       seenRunEventKeys: new Set(),
       seenRunErrors: new Set(),
-      activeTab: "workflow",
+      activeTab: "manuscript",
       health: null,
       runPlans: {},
       loggedRunPlans: new Set(),
       monitorTickerTimer: null,
+      logTickerTimer: null,
+      lastLogMs: 0,
       monitorState: {
         mode: "idle",
         lastSuccessMs: 0,
@@ -957,6 +992,37 @@
         root.removeChild(root.firstChild);
       }
       root.scrollTop = root.scrollHeight;
+      state.lastLogMs = Date.now();
+      renderLogHeartbeat();
+    }
+
+    function renderLogHeartbeat() {
+      const node = q("dock_log_heartbeat");
+      if (!node) return;
+      const now = Date.now();
+      const mode = state.monitorState?.mode || "idle";
+      const ageSec = state.lastLogMs ? Math.max(0, Math.floor((now - state.lastLogMs) / 1000)) : null;
+      node.className = "status";
+      if (ageSec === null) {
+        node.textContent = mode === "live" ? "waiting for events" : "no events yet";
+        return;
+      }
+      if (mode === "live" && ageSec <= 6) {
+        node.classList.add("ok");
+        node.textContent = `updating • ${ageSec}s`;
+        return;
+      }
+      if (mode === "live") {
+        node.classList.add("started");
+        node.textContent = `active • ${ageSec}s`;
+        return;
+      }
+      node.textContent = `last event • ${ageSec}s`;
+    }
+
+    function startLogHeartbeatTicker() {
+      if (state.logTickerTimer) clearInterval(state.logTickerTimer);
+      state.logTickerTimer = setInterval(renderLogHeartbeat, 1000);
     }
 
     function bindAction(id, eventName, handler) {
@@ -1019,8 +1085,10 @@
       state.monitorState.detail = detail || mode;
       if (mode === "live") {
         state.monitorState.lastSuccessMs = Date.now();
+        applyLogDockCollapsed(false);
       }
       renderHeartbeat();
+      renderLogHeartbeat();
     }
 
     function renderHeartbeat() {
@@ -1120,6 +1188,36 @@
       return `${idx + 1}/${plan.length}`;
     }
 
+    function activityDetailFromMeta(meta) {
+      if (!meta || typeof meta !== "object") return "";
+      const priorities = [
+        meta.query,
+        meta.search_query,
+        meta.search_plan_path,
+        meta.pull_command,
+        meta.command,
+        meta.provider,
+        meta.run_dir,
+      ].filter((v) => typeof v === "string" && v.trim());
+      if (priorities.length) return priorities.join(" | ");
+      try {
+        const raw = JSON.stringify(meta);
+        return raw.length > 340 ? `${raw.slice(0, 340)}...` : raw;
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function setActivityStatus(runOut, latestEvent = null) {
+      const stage = String(runOut?.stage || "idle");
+      const status = String(runOut?.status || "idle");
+      const eventMsg = latestEvent?.message || runOut?.error || "No run events yet.";
+      const detail = activityDetailFromMeta(latestEvent?.meta || runOut?.payload || {});
+      setText("activity_stage", `${stage}/${status}`);
+      setText("activity_action", eventMsg);
+      setText("activity_pull_detail", detail || "No pull metadata yet.");
+    }
+
     function currentManuscriptPath() {
       const custom = q("custom_manuscript_path");
       const select = q("manuscript_select");
@@ -1136,29 +1234,16 @@
       savePref(STORAGE_KEYS.pullProvider, q("pull_provider")?.value.trim() || "ebscohost");
     }
 
-    // Keep workflow status explicit so users always know where they are in the flow.
+    // Keep manuscript/strategy status explicit so users always know what to do next.
     function updateWorkflowProgress() {
       const hasManuscript = !!currentManuscriptPath();
       const hasGaps = state.gaps.length > 0;
       const hasRun = !!state.selectedRunId;
-      const steps = [
-        ["wf-step-1", hasManuscript],
-        ["wf-step-2", hasGaps],
-        ["wf-step-3", hasRun],
-      ];
-      steps.forEach(([id, done], idx) => {
-        const el = q(id);
-        if (!el) return;
-        el.classList.toggle("done", done);
-        const prevDone = idx === 0 ? false : steps[idx - 1][1];
-        el.classList.toggle("active", !done && (idx === 0 || prevDone));
-      });
-
       let message = "Start by selecting or uploading a manuscript.";
       if (hasManuscript && !hasGaps) message = "Manuscript selected. Run gap analysis next.";
-      if (hasGaps && !hasRun) message = "Gap map ready. Choose strategy and start a run.";
-      if (hasRun) message = `Run selected (${state.selectedRunId}). Open Results to monitor progress.`;
-      setText("workflow_progress_text", message);
+      if (hasGaps && !hasRun) message = "Gap map ready. Open Strategy to launch research.";
+      if (hasRun) message = `Run selected (${state.selectedRunId}). Open Results or watch the live log.`;
+      setText("manuscript_status_text", message);
       setText("current_manuscript_path", `manuscript path: ${currentManuscriptPath() || "not selected"}`);
     }
 
@@ -1178,7 +1263,7 @@
     }
 
     function showTab(name) {
-      const tabName = TABS.includes(name) ? name : "workflow";
+      const tabName = TABS.includes(name) ? name : "manuscript";
       state.activeTab = tabName;
       savePref(STORAGE_KEYS.activeTab, tabName);
       document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -1429,6 +1514,9 @@
       const stage = String(runOut.stage || "");
       const stepLabel = stepProgressLabel(runId, stage);
       setRunIndicator(runStatus, stepLabel ? `${stepLabel} ${stage}` : (stage || runId));
+      const eventList = eventsOut.events || [];
+      const latestEvent = eventList.length ? eventList[eventList.length - 1] : null;
+      setActivityStatus(runOut, latestEvent);
       if (runOut.error) {
         const errKey = `${runId}|${runOut.error}`;
         if (!state.seenRunErrors.has(errKey)) {
@@ -1438,7 +1526,7 @@
       }
 
       let newEvents = 0;
-      (eventsOut.events || []).forEach((evt) => {
+      eventList.forEach((evt) => {
         const key = `${evt.ts_utc}|${evt.stage}|${evt.status}|${evt.message}`;
         if (state.seenRunEventKeys.has(key)) return;
         state.seenRunEventKeys.add(key);
@@ -1453,6 +1541,9 @@
           kind
         );
       });
+      if ((q("events_run_id")?.value.trim() || "") === runId) {
+        renderEventsList(eventList);
+      }
 
       if (!TERMINAL_STATUSES.has(runStatus)) {
         const now = Date.now();
@@ -1482,6 +1573,7 @@
       if (!runId) return;
       stopRunMonitor();
       startHeartbeatTicker();
+      applyLogDockCollapsed(false);
       setMonitorState("live", "connecting");
       state.selectedRunId = runId;
       savePref(STORAGE_KEYS.selectedRunId, runId);
@@ -1508,6 +1600,9 @@
     async function startRun() {
       setButtonBusy("start_run_btn", true, "Starting Run...", "Start Research Run");
       setRunIndicator("started", "preflight");
+      setText("activity_stage", "starting/preflight");
+      setText("activity_action", "Preparing run payload and validating settings.");
+      setText("activity_pull_detail", "Pending pull/search metadata.");
       let runLaunched = false;
       try {
         if (!state.intentId) {
@@ -1592,6 +1687,7 @@
           state.selectedRunId = run.run_id;
           savePref(STORAGE_KEYS.selectedRunId, run.run_id);
           if (q("events_run_id")) q("events_run_id").value = run.run_id;
+          if (q("results_events_panel")) q("results_events_panel").open = true;
           loadEvents().catch((err) => setText("run_status", `Error: ${err.message}`));
           startRunMonitor(run.run_id, false);
           updateWorkflowProgress();
@@ -1605,14 +1701,11 @@
       }
     }
 
-    async function loadEvents() {
-      const runId = q("events_run_id")?.value.trim() || "";
-      if (!runId) return;
-      const out = await api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/events?limit=500`);
+    function renderEventsList(events) {
       const root = q("events_list");
       if (!root) return;
       root.innerHTML = "";
-      (out.events || []).forEach((evt) => {
+      (events || []).forEach((evt) => {
         const div = document.createElement("div");
         const statusClass = evt.status === "completed" ? "ok" : evt.status === "failed" ? "failed" : "started";
         div.className = `event ${statusClass}`;
@@ -1620,10 +1713,20 @@
           <div><strong>${evt.stage}</strong> <span class="status ${statusClass}">${evt.status}</span></div>
           <div class="muted">${evt.ts_utc}</div>
           <div>${evt.message}</div>
-          <div class="code">${JSON.stringify(evt.meta || {})}</div>
+          <details style="margin-top:8px;">
+            <summary style="text-transform:none; font-size:11px; letter-spacing:0;">event meta</summary>
+            <div class="code">${JSON.stringify(evt.meta || {})}</div>
+          </details>
         `;
         root.appendChild(div);
       });
+    }
+
+    async function loadEvents() {
+      const runId = q("events_run_id")?.value.trim() || "";
+      if (!runId) return;
+      const out = await api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/events?limit=500`);
+      renderEventsList(out.events || []);
     }
 
     async function retryRun() {
@@ -1724,10 +1827,13 @@
 
     function wireEvents() {
       document.querySelectorAll(".tab-btn").forEach((btn) => {
-        btn.addEventListener("click", () => showTab(btn.dataset.tab || "workflow"));
+        btn.addEventListener("click", () => showTab(btn.dataset.tab || "manuscript"));
       });
 
+      bindAction("open_analysis_btn", "click", async () => showTab("analysis"));
+      bindAction("open_strategy_btn", "click", async () => showTab("strategy"));
       bindAction("open_results_btn", "click", async () => showTab("results"));
+      bindAction("open_analysis_from_strategy_btn", "click", async () => showTab("analysis"));
       bindAction("dock_view_results_btn", "click", async () => showTab("results"));
       bindAction("toggle_log_dock_btn", "click", async () => {
         const dock = q("log_dock");
@@ -1736,6 +1842,8 @@
       bindAction("clear_log_btn", "click", async () => {
         const root = q("backend_log");
         if (root) root.innerHTML = "";
+        state.lastLogMs = 0;
+        renderLogHeartbeat();
       });
 
       bindAction("refresh_manuscripts_btn", "click", async () => {
@@ -1824,6 +1932,19 @@
       bindAction("settings_provider", "change", async () => {
         await loadRecommendedFields();
       });
+
+      const runsPanel = q("results_runs_panel");
+      if (runsPanel) {
+        runsPanel.addEventListener("toggle", () => {
+          savePref(STORAGE_KEYS.resultsRunsOpen, runsPanel.open ? "1" : "0");
+        });
+      }
+      const eventsPanel = q("results_events_panel");
+      if (eventsPanel) {
+        eventsPanel.addEventListener("toggle", () => {
+          savePref(STORAGE_KEYS.resultsEventsOpen, eventsPanel.open ? "1" : "0");
+        });
+      }
     }
 
     function restoreUiState() {
@@ -1836,22 +1957,28 @@
       }
       const storedProvider = loadPref(STORAGE_KEYS.pullProvider, "");
       if (q("pull_provider") && storedProvider) q("pull_provider").value = storedProvider;
-      const storedTab = loadPref(STORAGE_KEYS.activeTab, "workflow");
-      state.activeTab = TABS.includes(storedTab) ? storedTab : "workflow";
+      const storedTab = loadPref(STORAGE_KEYS.activeTab, "manuscript");
+      state.activeTab = TABS.includes(storedTab) ? storedTab : "manuscript";
       const savedRun = loadPref(STORAGE_KEYS.selectedRunId, "");
       if (savedRun) {
         state.selectedRunId = savedRun;
         if (q("events_run_id")) q("events_run_id").value = savedRun;
       }
       applyLogDockCollapsed(loadPref(STORAGE_KEYS.logDockCollapsed, "0") === "1", false);
+      const runsPanel = q("results_runs_panel");
+      if (runsPanel) runsPanel.open = loadPref(STORAGE_KEYS.resultsRunsOpen, "1") === "1";
+      const eventsPanel = q("results_events_panel");
+      if (eventsPanel) eventsPanel.open = loadPref(STORAGE_KEYS.resultsEventsOpen, "0") === "1";
     }
 
     async function boot() {
       wireEvents();
       restoreUiState();
+      startLogHeartbeatTicker();
       setRunIndicator("idle");
       setMonitorState("idle", "idle");
       renderHeartbeat();
+      renderLogHeartbeat();
       appendLog("UI booted. Loading manuscripts, runs, settings.");
       try { await loadHealth(); } catch (err) { appendLog(`Health load failed: ${err.message}`, "error"); }
       try { await loadManuscripts(); } catch (err) { setText("intent_status", `Error: ${err.message}`); appendLog(err.message, "error"); }

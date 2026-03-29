@@ -30,6 +30,7 @@
 - Backend activity log is now a persistent bottom dock so run progress remains visible from all tabs.
 - Activity log now prints a run plan at launch and prefixes stage events with step progress (`N/Total`) so users can track where the run is in the plan.
 - Run monitor now includes a heartbeat indicator (pulsing dot + last backend check age) and periodic “still running” log lines during long stages.
+- Live log rows now include structured metadata from stage events (for example pull mode/provider, pull command, run directory, and pull stats/fallback notes) so API/pull behavior is visible during execution.
 - Strategy tab now includes a `Live Activity` monitor that shows:
   - current stage/status
   - current action message

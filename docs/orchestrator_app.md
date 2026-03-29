@@ -59,6 +59,7 @@ while preserving existing Evidence Hub data contracts.
   - already-analyzed/cached-map indicator
 - App includes a persistent bottom run-log dock (`Live Run Log`) that streams run events across tabs and shows a visible log heartbeat status.
 - Run log now announces the resolved run plan at launch and reports each stage with plan position (`N/Total`).
+- Run log now appends structured event metadata inline (pull mode/provider, pull command, run directory, artifact type, and available pull stats/fallback details).
 - Run monitor includes heartbeat feedback (pulsing live dot + “last check” age) and periodic long-stage heartbeat entries in the backend log.
 - `3 Strategy` includes `Live Activity` fields for current stage, action, and pull/search detail metadata.
 - `Results`: collapsible run list + run-events timeline + retry.

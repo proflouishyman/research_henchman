@@ -1188,21 +1188,47 @@
       return `${idx + 1}/${plan.length}`;
     }
 
-    function activityDetailFromMeta(meta) {
+    function _clip(value, limit = 180) {
+      const txt = String(value || "").trim();
+      if (!txt) return "";
+      return txt.length > limit ? `${txt.slice(0, limit)}...` : txt;
+    }
+
+    // Build stable, readable metadata text for both activity panel and live log rows.
+    function summarizeEventMeta(meta) {
       if (!meta || typeof meta !== "object") return "";
-      const priorities = [
-        meta.query,
-        meta.search_query,
-        meta.search_plan_path,
-        meta.pull_command,
-        meta.command,
-        meta.provider,
-        meta.run_dir,
-      ].filter((v) => typeof v === "string" && v.trim());
-      if (priorities.length) return priorities.join(" | ");
+      const entries = [];
+      const add = (key, value) => {
+        const clipped = _clip(value);
+        if (!clipped) return;
+        entries.push(`${key}=${clipped}`);
+      };
+
+      add("pull_mode", meta.pull_mode);
+      add("pull_provider", meta.pull_provider);
+      add("provider", meta.provider);
+      add("query", meta.query || meta.search_query);
+      add("search_plan", meta.search_plan_path);
+      add("command", meta.pull_command || meta.command);
+      add("run_id", meta.run_id);
+      add("run_dir", meta.run_dir);
+      add("artifact_type", meta.artifact_type);
+
+      if (meta.stats && typeof meta.stats === "object") {
+        const stats = meta.stats;
+        add("api_calls", stats.api_calls || stats.call_count || stats.request_count);
+        add("fallback", stats.fallback);
+        add("stdout", stats.stdout_tail);
+      } else {
+        add("stdout", meta.stdout_tail);
+      }
+      add("stderr", meta.stderr_tail);
+
+      if (entries.length) return entries.join(" | ");
       try {
         const raw = JSON.stringify(meta);
-        return raw.length > 340 ? `${raw.slice(0, 340)}...` : raw;
+        if (!raw || raw === "{}") return "";
+        return _clip(raw, 360);
       } catch (_) {
         return "";
       }
@@ -1212,10 +1238,13 @@
       const stage = String(runOut?.stage || "idle");
       const status = String(runOut?.status || "idle");
       const eventMsg = latestEvent?.message || runOut?.error || "No run events yet.";
-      const detail = activityDetailFromMeta(latestEvent?.meta || runOut?.payload || {});
+      const detail =
+        summarizeEventMeta(latestEvent?.meta || {}) ||
+        summarizeEventMeta(runOut?.payload || {}) ||
+        "No pull metadata yet.";
       setText("activity_stage", `${stage}/${status}`);
       setText("activity_action", eventMsg);
-      setText("activity_pull_detail", detail || "No pull metadata yet.");
+      setText("activity_pull_detail", detail);
     }
 
     function currentManuscriptPath() {
@@ -1536,8 +1565,9 @@
         }
         const kind = evt.status === "failed" ? "error" : evt.status === "completed" ? "ok" : "info";
         const evtStep = stepProgressLabel(runId, evt.stage);
+        const metaSummary = summarizeEventMeta(evt.meta || {});
         appendLog(
-          `[${runId}] ${evtStep ? `${evtStep} ` : ""}${evt.stage}/${evt.status}: ${evt.message}`,
+          `[${runId}] ${evtStep ? `${evtStep} ` : ""}${evt.stage}/${evt.status}: ${evt.message}${metaSummary ? ` | ${metaSummary}` : ""}`,
           kind
         );
       });
@@ -1708,11 +1738,13 @@
       (events || []).forEach((evt) => {
         const div = document.createElement("div");
         const statusClass = evt.status === "completed" ? "ok" : evt.status === "failed" ? "failed" : "started";
+        const metaSummary = summarizeEventMeta(evt.meta || {});
         div.className = `event ${statusClass}`;
         div.innerHTML = `
           <div><strong>${evt.stage}</strong> <span class="status ${statusClass}">${evt.status}</span></div>
           <div class="muted">${evt.ts_utc}</div>
           <div>${evt.message}</div>
+          <div class="code">${metaSummary || "no structured metadata"}</div>
           <details style="margin-top:8px;">
             <summary style="text-transform:none; font-size:11px; letter-spacing:0;">event meta</summary>
             <div class="code">${JSON.stringify(evt.meta || {})}</div>

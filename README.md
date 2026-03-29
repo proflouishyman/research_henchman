@@ -60,6 +60,17 @@ uvicorn app.main:app --reload --port 8876
 Open:
 - http://127.0.0.1:8876
 
+## Tests
+From repository root:
+
+```bash
+python3 -m pytest app/tests/test_orchestrator_e2e.py -q
+```
+
+What this verifies:
+- `.docx` manuscript text is read and gap analysis is generated.
+- Full orchestrator stage chain runs (`pull -> ingest -> llm_fit`) and emits stage events with metadata.
+
 ## Docker
 From `app/` directory:
 

@@ -91,3 +91,15 @@ while preserving existing Evidence Hub data contracts.
 ```bash
 uvicorn app.main:app --reload --port 8876
 ```
+
+## Automated Verification
+Run the end-to-end pytest suite from repository root:
+
+```bash
+python3 -m pytest app/tests/test_orchestrator_e2e.py -q
+```
+
+Coverage:
+- manuscript `.docx` parsing + generated gap layout
+- run creation and full stage flow (`validating_config -> planning -> pulling -> ingesting -> llm_processing`)
+- stage-event metadata assertions and downstream stage execution markers

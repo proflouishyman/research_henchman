@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from html import unescape as html_unescape
 from pathlib import Path
 from typing import Any, Dict, List
@@ -52,6 +53,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+RUN_CREATE_LOCK = threading.Lock()
+ACTIVE_RUN_STATUSES = {
+    "queued",
+    "validating_config",
+    "planning",
+    "pulling",
+    "pulling_completed",
+    "ingesting",
+    "llm_processing",
+}
 
 
 SOURCE_CATALOG: Dict[str, List[Dict[str, str]]] = {
@@ -100,6 +112,83 @@ def _settings() -> OrchestratorSettings:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
+
+
+def _parse_iso_utc(ts: str) -> datetime | None:
+    """Parse ISO timestamp into timezone-aware datetime for watchdog logic."""
+    raw = str(ts or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _stale_run_cutoff_seconds(settings: OrchestratorSettings) -> int:
+    """Compute stale-run cutoff from stage timeout settings.
+
+    Invariant:
+    - Cutoff is always higher than expected ingest/llm stage timeout so active
+      long-running work is not marked stale prematurely.
+    """
+    ingest_ceiling = int(settings.ingest_timeout_seconds) + 300
+    llm_ceiling = int(settings.llm_timeout_seconds) * 20 + 300
+    return max(600, ingest_ceiling, llm_ceiling)
+
+
+def _reconcile_stale_runs(settings: OrchestratorSettings, scan_limit: int = 400) -> int:
+    """Mark stale active runs as failed so they do not block new runs forever."""
+    cutoff_seconds = _stale_run_cutoff_seconds(settings)
+    now = datetime.now(timezone.utc)
+    changed = 0
+    for rec in store.list_runs(limit=max(1, scan_limit)):
+        status = str(rec.get("status", "")).strip()
+        if status not in ACTIVE_RUN_STATUSES:
+            continue
+        run_id = str(rec.get("run_id", "")).strip()
+        if not run_id:
+            continue
+        updated = _parse_iso_utc(str(rec.get("updated_at", "")))
+        if not updated:
+            continue
+        age_seconds = int((now - updated).total_seconds())
+        if age_seconds < cutoff_seconds:
+            continue
+        detail = (
+            f"stale_run_watchdog: marked failed after {age_seconds}s without terminal state "
+            f"(cutoff={cutoff_seconds}s)"
+        )
+        store.upsert_run(
+            {
+                "run_id": run_id,
+                "status": "failed",
+                "stage": "failed",
+                "updated_at": now_utc(),
+                "error": detail,
+            }
+        )
+        emit_event(
+            store,
+            run_id=run_id,
+            stage="failed",
+            status="failed",
+            message=detail,
+            meta={"reason": "stale_run_watchdog", "age_seconds": age_seconds, "cutoff_seconds": cutoff_seconds},
+        )
+        changed += 1
+    return changed
+
+
+def _latest_active_run(scan_limit: int = 120) -> Dict[str, Any] | None:
+    """Return the newest active run record, if any."""
+    for rec in store.list_runs(limit=max(1, scan_limit)):
+        if str(rec.get("status", "")).strip() in ACTIVE_RUN_STATUSES:
+            return rec
+    return None
 
 
 def _search_plan_preview(workspace: Path, path_value: str, max_rows: int = 5) -> Dict[str, Any]:
@@ -954,30 +1043,44 @@ def api_create_run(inp: RunCreateInput) -> Dict[str, Any]:
         if not intent:
             raise HTTPException(status_code=404, detail="intent not found")
 
-    run_id = _new_id("run")
-    rec = {
-        "run_id": run_id,
-        "status": "queued",
-        "stage": "queued",
-        "payload": inp.model_dump(),
-        "created_at": now_utc(),
-        "updated_at": now_utc(),
-        "result": {},
-        "error": None,
-    }
-    store.upsert_run(rec)
-    emit_event(store, run_id=run_id, stage="queued", status="queued", message="Run queued")
-    _start_background_run(run_id)
-    return rec
+    with RUN_CREATE_LOCK:
+        settings = _settings()
+        _reconcile_stale_runs(settings)
+        if not bool(inp.force):
+            existing = _latest_active_run()
+            if existing:
+                reused = dict(existing)
+                reused["reused_active_run"] = True
+                reused["message"] = "Active run already in progress; reused existing run."
+                return reused
+
+        run_id = _new_id("run")
+        rec = {
+            "run_id": run_id,
+            "status": "queued",
+            "stage": "queued",
+            "payload": inp.model_dump(),
+            "created_at": now_utc(),
+            "updated_at": now_utc(),
+            "result": {},
+            "error": None,
+            "reused_active_run": False,
+        }
+        store.upsert_run(rec)
+        emit_event(store, run_id=run_id, stage="queued", status="queued", message="Run queued")
+        _start_background_run(run_id)
+        return rec
 
 
 @app.get("/api/orchestrator/runs")
 def api_list_runs(limit: int = 30) -> Dict[str, Any]:
+    _reconcile_stale_runs(_settings())
     return {"runs": store.list_runs(limit=limit)}
 
 
 @app.get("/api/orchestrator/runs/{run_id}")
 def api_get_run(run_id: str) -> Dict[str, Any]:
+    _reconcile_stale_runs(_settings())
     rec = store.get_run(run_id)
     if not rec:
         raise HTTPException(status_code=404, detail="run not found")

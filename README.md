@@ -37,6 +37,10 @@
   - pull/search metadata details when available
 - Automatically runs:
   - pull -> ingest -> llm fit
+- Prevents duplicate concurrent runs by default:
+  - new run requests reuse the currently active run unless `force=true`.
+- Includes stale-run watchdog:
+  - active runs older than timeout-based cutoff are auto-marked failed so they do not block new runs indefinitely.
 - Exposes connection schema + `.env` save endpoints.
 - Provides tabbed UI:
   - `1 Manuscript`: manuscript selector/upload and path controls
@@ -70,6 +74,7 @@ python3 -m pytest app/tests/test_orchestrator_e2e.py -q
 What this verifies:
 - `.docx` manuscript text is read and gap analysis is generated.
 - Full orchestrator stage chain runs (`pull -> ingest -> llm_fit`) and emits stage events with metadata.
+- Run-creation guard reuses an active run and stale-run watchdog marks orphaned active runs as failed.
 
 ## Docker
 From `app/` directory:

@@ -6,6 +6,7 @@ import json
 import sys
 import textwrap
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -133,8 +134,11 @@ def _configure_workspace_env(workspace: Path, monkeypatch) -> None:
     (workspace / ".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
 
 
-def _sync_background_runner(monkeypatch) -> None:
-    """Run orchestrator pipeline synchronously so API tests are deterministic."""
+def _sync_background_runner(monkeypatch, run_inline: bool = True) -> None:
+    """Control background execution style for deterministic API tests."""
+    if not run_inline:
+        monkeypatch.setattr(orchestrator_main, "_start_background_run", lambda run_id: None)
+        return
 
     def _run_inline(run_id: str) -> None:
         orchestrator_main.run_orchestration(orchestrator_main.store, orchestrator_main._settings(), run_id=run_id)
@@ -142,7 +146,7 @@ def _sync_background_runner(monkeypatch) -> None:
     monkeypatch.setattr(orchestrator_main, "_start_background_run", _run_inline)
 
 
-def _setup_test_client(tmp_path: Path, monkeypatch) -> tuple[TestClient, Path]:
+def _setup_test_client(tmp_path: Path, monkeypatch, run_inline: bool = True) -> tuple[TestClient, Path]:
     """Build isolated workspace/store paths and a patched FastAPI test client."""
     workspace = tmp_path / "workspace"
     (workspace / "Manuscript").mkdir(parents=True, exist_ok=True)
@@ -158,7 +162,7 @@ def _setup_test_client(tmp_path: Path, monkeypatch) -> tuple[TestClient, Path]:
     monkeypatch.setattr(orchestrator_main, "store", OrchestratorStore(test_data_dir))
     monkeypatch.setattr(orchestrator_main, "UPLOAD_DIR", uploads_dir)
     monkeypatch.setattr(orchestrator_main, "GAP_MAP_DIR", gap_dir)
-    _sync_background_runner(monkeypatch)
+    _sync_background_runner(monkeypatch, run_inline=run_inline)
     return TestClient(orchestrator_main.app), workspace
 
 
@@ -286,3 +290,87 @@ def test_run_pipeline_executes_pull_ingest_and_llm_with_event_metadata(tmp_path,
     llm_text = (stage_dir / "llm.txt").read_text(encoding="utf-8")
     assert "model=qwen2.5:32b" in llm_text
     assert "gap=AUTO-01-G1" in llm_text
+
+
+def test_create_run_reuses_existing_active_run(tmp_path, monkeypatch) -> None:
+    """Run creation should reuse active run when force is false."""
+    client, _ = _setup_test_client(tmp_path, monkeypatch, run_inline=False)
+
+    first = client.post(
+        "/api/orchestrator/runs",
+        json={
+            "intent_id": "",
+            "pull_mode": "api",
+            "pull_provider": "ebscohost",
+            "artifact_type": "external_packet",
+            "gap_id": "",
+            "force": False,
+        },
+    )
+    assert first.status_code == 200
+    first_run = first.json()
+    assert first_run["status"] == "queued"
+    assert first_run["reused_active_run"] is False
+
+    second = client.post(
+        "/api/orchestrator/runs",
+        json={
+            "intent_id": "",
+            "pull_mode": "api",
+            "pull_provider": "ebscohost",
+            "artifact_type": "external_packet",
+            "gap_id": "",
+            "force": False,
+        },
+    )
+    assert second.status_code == 200
+    second_run = second.json()
+    assert second_run["run_id"] == first_run["run_id"]
+    assert second_run["reused_active_run"] is True
+
+    runs = client.get("/api/orchestrator/runs").json()["runs"]
+    assert len(runs) == 1
+
+
+def test_stale_run_watchdog_marks_orphan_before_new_run(tmp_path, monkeypatch) -> None:
+    """Stale active run should be marked failed and not block a new run."""
+    client, _ = _setup_test_client(tmp_path, monkeypatch, run_inline=False)
+    stale_run_id = "run_stale_123"
+    stale_ts = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(timespec="seconds")
+    orchestrator_main.store.upsert_run(
+        {
+            "run_id": stale_run_id,
+            "status": "ingesting",
+            "stage": "ingesting",
+            "payload": {},
+            "created_at": stale_ts,
+            "updated_at": stale_ts,
+            "result": {},
+            "error": None,
+        }
+    )
+
+    created = client.post(
+        "/api/orchestrator/runs",
+        json={
+            "intent_id": "",
+            "pull_mode": "api",
+            "pull_provider": "ebscohost",
+            "artifact_type": "external_packet",
+            "gap_id": "",
+            "force": False,
+        },
+    )
+    assert created.status_code == 200
+    new_run = created.json()
+    assert new_run["run_id"] != stale_run_id
+    assert new_run["reused_active_run"] is False
+
+    stale = client.get(f"/api/orchestrator/runs/{stale_run_id}")
+    assert stale.status_code == 200
+    stale_payload = stale.json()
+    assert stale_payload["status"] == "failed"
+    assert "stale_run_watchdog" in str(stale_payload.get("error", ""))
+
+    stale_events = client.get(f"/api/orchestrator/runs/{stale_run_id}/events").json().get("events", [])
+    assert any(evt.get("meta", {}).get("reason") == "stale_run_watchdog" for evt in stale_events)

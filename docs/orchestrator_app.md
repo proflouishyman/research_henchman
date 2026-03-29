@@ -46,6 +46,8 @@ while preserving existing Evidence Hub data contracts.
 - Structured stage events and run-state persistence.
 - Idempotent downstream ingestion relies on existing Evidence Hub dedupe contracts.
 - LLM stage invoked only after successful ingest when auto-chain enabled.
+- Run creation now enforces a single active-run policy by default (new requests reuse active run unless `force=true`).
+- Stale active runs are auto-reconciled to `failed` by a watchdog using timeout-derived cutoffs, preventing indefinite `ingesting`/`llm_processing` blockage.
 
 ## Frontend surface
 - Step tabs split workflow into one page per step:

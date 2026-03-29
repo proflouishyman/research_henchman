@@ -48,6 +48,7 @@ while preserving existing Evidence Hub data contracts.
 - LLM stage invoked only after successful ingest when auto-chain enabled.
 - Run creation now enforces a single active-run policy by default (new requests reuse active run unless `force=true`).
 - Stale active runs are auto-reconciled to `failed` by a watchdog using timeout-derived cutoffs, preventing indefinite `ingesting`/`llm_processing` blockage.
+- Ingest stage now skips automatically when the pulled artifact `run_id` already exists in `codex/evidence_hub/data/ingest_runs.json` (override with `force=true`).
 
 ## Frontend surface
 - Step tabs split workflow into one page per step:

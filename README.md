@@ -41,6 +41,8 @@
   - new run requests reuse the currently active run unless `force=true`.
 - Includes stale-run watchdog:
   - active runs older than timeout-based cutoff are auto-marked failed so they do not block new runs indefinitely.
+- Avoids repeat ingest work for already-ingested artifacts:
+  - if `codex/evidence_hub/data/ingest_runs.json` already contains the pulled `run_id`, ingest stage is skipped (unless `force=true`).
 - Exposes connection schema + `.env` save endpoints.
 - Provides tabbed UI:
   - `1 Manuscript`: manuscript selector/upload and path controls

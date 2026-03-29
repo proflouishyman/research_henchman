@@ -374,3 +374,55 @@ def test_stale_run_watchdog_marks_orphan_before_new_run(tmp_path, monkeypatch) -
 
     stale_events = client.get(f"/api/orchestrator/runs/{stale_run_id}/events").json().get("events", [])
     assert any(evt.get("meta", {}).get("reason") == "stale_run_watchdog" for evt in stale_events)
+
+
+def test_ingest_stage_skips_when_artifact_run_already_ingested(tmp_path, monkeypatch) -> None:
+    """Pipeline should skip ingest stage when ingest registry already contains artifact run_id."""
+    client, workspace = _setup_test_client(tmp_path, monkeypatch, run_inline=True)
+    ingest_registry = workspace / "codex" / "evidence_hub" / "data" / "ingest_runs.json"
+    ingest_registry.parent.mkdir(parents=True, exist_ok=True)
+    ingest_registry.write_text(
+        json.dumps(
+            {
+                "test_run_001": {
+                    "run_id": "test_run_001",
+                    "provider": "ebscohost",
+                    "run_dir": str(workspace / "tmp_artifacts" / "test_run_001"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "manifest_rows": 10,
+                    "result_rows": 10,
+                    "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    run_resp = client.post(
+        "/api/orchestrator/runs",
+        json={
+            "intent_id": "",
+            "pull_mode": "api",
+            "pull_provider": "ebscohost",
+            "artifact_type": "external_packet",
+            "gap_id": "",
+            "force": False,
+        },
+    )
+    assert run_resp.status_code == 200
+    run_id = run_resp.json()["run_id"]
+
+    run_state = client.get(f"/api/orchestrator/runs/{run_id}")
+    assert run_state.status_code == 200
+    run_payload = run_state.json()
+    assert run_payload["status"] == "completed"
+
+    events = client.get(f"/api/orchestrator/runs/{run_id}/events").json().get("events", [])
+    ingest_events = [evt for evt in events if evt.get("stage") == "ingesting"]
+    assert any(evt.get("status") == "skipped" for evt in ingest_events)
+    skip_evt = next(evt for evt in ingest_events if evt.get("status") == "skipped")
+    assert skip_evt.get("meta", {}).get("reason") == "already_ingested"
+
+    # Ingest script marker is absent because stage was skipped.
+    assert not (workspace / "stage_markers" / "ingest.txt").exists()

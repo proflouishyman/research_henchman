@@ -26,8 +26,12 @@
 - Run launch now provides live visual state:
   - start button switches to in-progress state/color
   - run status badge updates by stage
+- Primary CTA buttons are now visually consistent across workflow pages:
+  - same dark-green accent
+  - anchored in a consistent bottom position within each step pane.
 - Workflow is now split into step tabs (one step per page): `1 Manuscript` -> `2 Gap Analysis` -> `3 Strategy`, with intent creation handled automatically when starting a run.
 - Backend activity log is now a persistent bottom dock so run progress remains visible from all tabs.
+- Live log dock defaults to collapsed on page load and can be expanded on demand.
 - Activity log now prints a run plan at launch and prefixes stage events with step progress (`N/Total`) so users can track where the run is in the plan.
 - Run monitor now includes a heartbeat indicator (pulsing dot + last backend check age) and periodic “still running” log lines during long stages.
 - Live log rows now include structured metadata from stage events (for example pull mode/provider, pull command, run directory, and pull stats/fallback notes) so API/pull behavior is visible during execution.

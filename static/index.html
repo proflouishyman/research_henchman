@@ -486,6 +486,30 @@
       background: #fff;
       padding: 8px 10px;
       font-size: 12px;
+      transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+    }
+
+    .strategy-item.state-done {
+      background: #f3faf5;
+      border-color: #aac8b4;
+    }
+
+    .strategy-item.state-failed {
+      background: #fff4f4;
+      border-color: #d8b2b2;
+    }
+
+    .strategy-item.state-active {
+      background: #eef8f2;
+      border-color: #79b092;
+      box-shadow: 0 0 0 0 rgba(31, 95, 71, 0.24);
+      animation: activeStepPulse 2.2s ease-in-out infinite;
+    }
+
+    @keyframes activeStepPulse {
+      0% { box-shadow: 0 0 0 0 rgba(31, 95, 71, 0.22); }
+      50% { box-shadow: 0 0 0 7px rgba(31, 95, 71, 0.06); }
+      100% { box-shadow: 0 0 0 0 rgba(31, 95, 71, 0.22); }
     }
 
     .strategy-item-header {
@@ -1468,7 +1492,7 @@
           checklist.forEach((item) => {
             const status = strategyCheckStatus(item.stage, runStage, runStatus, checklist);
             const row = document.createElement("div");
-            row.className = "strategy-item";
+            row.className = `strategy-item state-${status}`;
             row.innerHTML = `
               <div class="strategy-item-header">
                 <div class="strategy-item-title">${item.label || item.stage}</div>

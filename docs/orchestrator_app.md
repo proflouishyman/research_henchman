@@ -73,6 +73,7 @@ while preserving existing Evidence Hub data contracts.
   - source targets
   - planned query list
   - stage checklist with live check-off.
+  - active checklist row highlighting with slow pulse so the current stage is visually obvious during execution.
 - Run launch from `3 Strategy` no longer auto-navigates to `Results`; users remain on Strategy by default.
 - Primary action buttons use a consistent dark-green accent and consistent bottom-anchored placement in workflow step panes.
 - `Results`: collapsible run list + run-events timeline + retry.

@@ -461,6 +461,70 @@
       margin-bottom: 10px;
     }
 
+    .strategy-items {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .strategy-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+
+    .strategy-item-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .strategy-item-title {
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    .strategy-item-meta {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .strategy-check {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      font-size: 11px;
+      background: #f7efe2;
+      color: var(--muted);
+      flex: 0 0 18px;
+    }
+
+    .strategy-check.done {
+      border-color: #aac8b4;
+      color: var(--ok);
+      background: #ebf5ef;
+    }
+
+    .strategy-check.active {
+      border-color: #d6c097;
+      color: var(--warn);
+      background: #faf0df;
+    }
+
+    .strategy-check.failed {
+      border-color: #d8b2b2;
+      color: var(--error);
+      background: #fbeeee;
+    }
+
     .heartbeat-dot {
       width: 10px;
       height: 10px;
@@ -764,6 +828,8 @@
 
         <label for="target_gap_id">Target Gap (for narrow mode)</label>
         <select id="target_gap_id"></select>
+        <button id="refresh_strategy_btn" title="Generate a high-level strategy brief with planned sources and query list.">Generate Strategy Brief</button>
+        <div id="strategy_status" class="muted">Generate strategy brief to preview sources and query plan.</div>
 
         <button class="primary-btn" id="start_run_btn" title="Start a new orchestrated research run using current strategy and provider.">Start Research Run</button>
         <div class="indicator-row">
@@ -779,7 +845,25 @@
       </section>
 
       <section class="pane">
-        <h2>Live Activity</h2>
+        <h2>Strategy Brief</h2>
+        <div class="event">
+          <div><strong>High-Level Strategy</strong> <span id="strategy_summary_meta" class="status">pending</span></div>
+          <div id="strategy_summary" class="muted">No strategy summary yet.</div>
+        </div>
+        <div class="event">
+          <div><strong>Sources To Pull</strong></div>
+          <div id="strategy_sources" class="strategy-items muted">No sources yet.</div>
+        </div>
+        <div class="event">
+          <div><strong>Planned Queries</strong></div>
+          <div id="strategy_queries" class="strategy-items muted">No queries yet.</div>
+        </div>
+        <div class="event">
+          <div><strong>Execution Checklist</strong></div>
+          <div id="strategy_checklist" class="strategy-items muted">No checklist yet.</div>
+        </div>
+
+        <h2 style="margin-top:16px;">Live Activity</h2>
         <div class="event">
           <div><strong>Current Stage</strong></div>
           <div id="activity_stage" class="code">idle</div>
@@ -935,6 +1019,8 @@
       health: null,
       runPlans: {},
       loggedRunPlans: new Set(),
+      strategyPreview: null,
+      runProgress: { runId: "", stage: "idle", status: "idle" },
       monitorTickerTimer: null,
       logTickerTimer: null,
       lastLogMs: 0,
@@ -1247,6 +1333,166 @@
       setText("activity_pull_detail", detail);
     }
 
+    function selectedStrategyMode() {
+      return document.querySelector("input[name='strategy_mode']:checked")?.value || "automatic";
+    }
+
+    function strategyPreviewPayload() {
+      return {
+        manuscript_path: currentManuscriptPath(),
+        pull_mode: q("pull_mode")?.value || "auto",
+        pull_provider: q("pull_provider")?.value.trim() || "ebscohost",
+        strategy_mode: selectedStrategyMode(),
+        narrow_question: q("narrow_question")?.value.trim() || "",
+        target_gap_id: q("target_gap_id")?.value || "",
+      };
+    }
+
+    function stageOrderIndex(stageName, checklist) {
+      const idx = (checklist || []).findIndex((item) => item.stage === stageName);
+      return idx < 0 ? -1 : idx;
+    }
+
+    function strategyCheckStatus(itemStage, runStage, runStatus, checklist) {
+      const activeStatuses = new Set(["queued", "validating_config", "planning", "pulling", "ingesting", "llm_processing", "pulling_completed"]);
+      if (!runStage || !runStatus || !activeStatuses.has(runStatus) && !TERMINAL_STATUSES.has(runStatus)) {
+        return "pending";
+      }
+      const itemIdx = stageOrderIndex(itemStage, checklist);
+      const runIdx = stageOrderIndex(runStage, checklist);
+      if (itemIdx < 0 || runIdx < 0) return "pending";
+      if (runStatus === "failed") {
+        if (itemIdx < runIdx) return "done";
+        if (itemIdx === runIdx) return "failed";
+        return "pending";
+      }
+      if (runStatus === "completed") return "done";
+      if (itemIdx < runIdx) return "done";
+      if (itemIdx === runIdx) return "active";
+      return "pending";
+    }
+
+    function renderStrategyPreview() {
+      const preview = state.strategyPreview || {};
+      const summaryMethod = preview.summary_method || "pending";
+      const summaryModel = preview.summary_model || "";
+      const summaryError = preview.summary_error || "";
+      const summaryMeta = summaryModel ? `${summaryMethod}:${summaryModel}` : summaryMethod;
+      setText("strategy_summary", preview.summary || "No strategy summary yet.");
+      setText("strategy_summary_meta", summaryMeta);
+      const summaryMetaNode = q("strategy_summary_meta");
+      if (summaryMetaNode) {
+        summaryMetaNode.className = "status";
+        if (summaryMethod === "ollama") summaryMetaNode.classList.add("ok");
+        else if (summaryMethod === "fallback") summaryMetaNode.classList.add("started");
+      }
+      if (summaryError) {
+        setText("strategy_status", `LLM summary fallback used (${summaryError}).`);
+      }
+
+      const runStage = state.runProgress.stage || "";
+      const runStatus = state.runProgress.status || "";
+      const checklist = preview.checklist || [];
+
+      const sourcesRoot = q("strategy_sources");
+      if (sourcesRoot) {
+        sourcesRoot.innerHTML = "";
+        const sourceItems = preview.sources || [];
+        if (!sourceItems.length) {
+          sourcesRoot.textContent = "No sources yet.";
+          sourcesRoot.classList.add("muted");
+        } else {
+          sourcesRoot.classList.remove("muted");
+          const sourceStatus = runStage === "pulling" ? "active" : (stageOrderIndex(runStage, checklist) > stageOrderIndex("pulling", checklist) || runStatus === "completed") ? "done" : runStatus === "failed" && runStage === "pulling" ? "failed" : "pending";
+          sourceItems.forEach((src) => {
+            const row = document.createElement("div");
+            row.className = "strategy-item";
+            row.innerHTML = `
+              <div class="strategy-item-header">
+                <div class="strategy-item-title">${src.name || "source"}</div>
+                <span class="strategy-check ${sourceStatus}">${sourceStatus === "done" ? "✓" : sourceStatus === "active" ? "…" : sourceStatus === "failed" ? "!" : "○"}</span>
+              </div>
+              <div class="strategy-item-meta">${src.provider || ""} • ${src.why || ""}</div>
+            `;
+            sourcesRoot.appendChild(row);
+          });
+        }
+      }
+
+      const queryRoot = q("strategy_queries");
+      if (queryRoot) {
+        queryRoot.innerHTML = "";
+        const queryItems = preview.queries || [];
+        if (!queryItems.length) {
+          queryRoot.textContent = "No queries yet.";
+          queryRoot.classList.add("muted");
+        } else {
+          queryRoot.classList.remove("muted");
+          const queryStatus = runStage === "pulling" ? "active" : (stageOrderIndex(runStage, checklist) > stageOrderIndex("pulling", checklist) || runStatus === "completed") ? "done" : runStatus === "failed" && runStage === "pulling" ? "failed" : "pending";
+          queryItems.forEach((item) => {
+            const row = document.createElement("div");
+            row.className = "strategy-item";
+            row.innerHTML = `
+              <div class="strategy-item-header">
+                <div class="strategy-item-title">${item.query_id || "Q"}${item.gap_id ? ` • ${item.gap_id}` : ""}</div>
+                <span class="strategy-check ${queryStatus}">${queryStatus === "done" ? "✓" : queryStatus === "active" ? "…" : queryStatus === "failed" ? "!" : "○"}</span>
+              </div>
+              <div>${item.text || ""}</div>
+              <div class="strategy-item-meta">${item.origin || "planned query"}</div>
+            `;
+            queryRoot.appendChild(row);
+          });
+        }
+      }
+
+      const checklistRoot = q("strategy_checklist");
+      if (checklistRoot) {
+        checklistRoot.innerHTML = "";
+        if (!checklist.length) {
+          checklistRoot.textContent = "No checklist yet.";
+          checklistRoot.classList.add("muted");
+        } else {
+          checklistRoot.classList.remove("muted");
+          checklist.forEach((item) => {
+            const status = strategyCheckStatus(item.stage, runStage, runStatus, checklist);
+            const row = document.createElement("div");
+            row.className = "strategy-item";
+            row.innerHTML = `
+              <div class="strategy-item-header">
+                <div class="strategy-item-title">${item.label || item.stage}</div>
+                <span class="strategy-check ${status}">${status === "done" ? "✓" : status === "active" ? "…" : status === "failed" ? "!" : "○"}</span>
+              </div>
+              <div class="strategy-item-meta">${item.stage}</div>
+            `;
+            checklistRoot.appendChild(row);
+          });
+        }
+      }
+    }
+
+    async function loadStrategyPreview() {
+      const manuscriptPath = currentManuscriptPath();
+      if (!manuscriptPath) {
+        setText("strategy_status", "Select a manuscript first.");
+        return;
+      }
+      setButtonBusy("refresh_strategy_btn", true, "Building Strategy...", "Generate Strategy Brief");
+      setText("strategy_status", "Building strategy preview...");
+      try {
+        const out = await api("/api/orchestrator/strategy/preview", "POST", strategyPreviewPayload());
+        state.strategyPreview = out || {};
+        renderStrategyPreview();
+        const method = out.summary_method || "fallback";
+        const model = out.summary_model ? ` (${out.summary_model})` : "";
+        setText(
+          "strategy_status",
+          `Strategy ready: ${out.sources?.length || 0} sources, ${out.queries?.length || 0} queries, ${out.checklist?.length || 0} checklist steps. Summary via ${method}${model}.`
+        );
+      } finally {
+        setButtonBusy("refresh_strategy_btn", false, "", "Generate Strategy Brief");
+      }
+    }
+
     function currentManuscriptPath() {
       const custom = q("custom_manuscript_path");
       const select = q("manuscript_select");
@@ -1277,6 +1523,10 @@
     }
 
     async function refreshTabData(name) {
+      if (name === "strategy") {
+        await loadStrategyPreview();
+        return;
+      }
       if (name === "results") {
         await loadRuns();
         if (q("events_run_id")?.value.trim()) {
@@ -1455,6 +1705,9 @@
         setButtonBusy("load_gaps_btn", false, "", "Analyze Manuscript");
         persistWorkflowInputs();
         updateWorkflowProgress();
+        if (state.activeTab === "strategy") {
+          await loadStrategyPreview();
+        }
       }
     }
 
@@ -1541,11 +1794,13 @@
 
       const runStatus = String(runOut.status || "unknown");
       const stage = String(runOut.stage || "");
+      state.runProgress = { runId, stage, status: runStatus };
       const stepLabel = stepProgressLabel(runId, stage);
       setRunIndicator(runStatus, stepLabel ? `${stepLabel} ${stage}` : (stage || runId));
       const eventList = eventsOut.events || [];
       const latestEvent = eventList.length ? eventList[eventList.length - 1] : null;
       setActivityStatus(runOut, latestEvent);
+      renderStrategyPreview();
       if (runOut.error) {
         const errKey = `${runId}|${runOut.error}`;
         if (!state.seenRunErrors.has(errKey)) {
@@ -1630,6 +1885,8 @@
     async function startRun() {
       setButtonBusy("start_run_btn", true, "Starting Run...", "Start Research Run");
       setRunIndicator("started", "preflight");
+      state.runProgress = { runId: "", stage: "starting", status: "started" };
+      renderStrategyPreview();
       setText("activity_stage", "starting/preflight");
       setText("activity_action", "Preparing run payload and validating settings.");
       setText("activity_pull_detail", "Pending pull/search metadata.");
@@ -1679,21 +1936,26 @@
         const run = await api("/api/orchestrator/runs", "POST", payload);
         runLaunched = true;
         state.selectedRunId = run.run_id;
+        state.runProgress = { runId: run.run_id, stage: run.stage || "queued", status: run.status || "queued" };
+        renderStrategyPreview();
         savePref(STORAGE_KEYS.selectedRunId, run.run_id);
         if (q("events_run_id")) q("events_run_id").value = run.run_id;
         ensureRunPlan(run.run_id, payload, true);
-        let strategyMsg = `Run started: ${run.run_id}`;
+        let strategyMsg = run.reused_active_run
+          ? `Active run reused: ${run.run_id}`
+          : `Run started: ${run.run_id}`;
         if (mode === "narrow" && narrowQ) strategyMsg += ` | narrow question: ${narrowQ}`;
         setText("run_status", strategyMsg);
         appendLog(strategyMsg, "ok");
         await loadRuns();
         startRunMonitor(run.run_id, true);
         updateWorkflowProgress();
-        showTab("results");
       } finally {
         if (!runLaunched) {
           setButtonBusy("start_run_btn", false, "", "Start Research Run");
           setMonitorState("idle", "idle");
+          state.runProgress = { runId: "", stage: "idle", status: "idle" };
+          renderStrategyPreview();
         }
       }
     }
@@ -1912,17 +2174,32 @@
 
       bindAction("pull_mode", "change", async () => {
         savePref(STORAGE_KEYS.pullMode, q("pull_mode")?.value || "auto");
+        await loadStrategyPreview();
       });
 
       bindAction("pull_provider", "change", async () => {
         savePref(STORAGE_KEYS.pullProvider, q("pull_provider")?.value.trim() || "ebscohost");
+        await loadStrategyPreview();
       });
 
       document.querySelectorAll("input[name='strategy_mode']").forEach((radio) => {
-        radio.addEventListener("change", () => {
+        radio.addEventListener("change", async () => {
           const narrow = document.querySelector("input[name='strategy_mode']:checked")?.value === "narrow";
           if (q("narrow_question")) q("narrow_question").disabled = !narrow;
+          await loadStrategyPreview();
         });
+      });
+
+      bindAction("target_gap_id", "change", async () => {
+        await loadStrategyPreview();
+      });
+
+      bindAction("narrow_question", "change", async () => {
+        await loadStrategyPreview();
+      });
+
+      bindAction("refresh_strategy_btn", "click", async () => {
+        await loadStrategyPreview();
       });
 
       bindAction("start_run_btn", "click", async () => {

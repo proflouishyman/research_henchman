@@ -29,7 +29,14 @@ from .config import (
     required_connection_fields,
     write_env_updates,
 )
-from .contracts import ConnectionSaveInput, ConnectionSchemaResponse, IntentCreateInput, RetryInput, RunCreateInput
+from .contracts import (
+    ConnectionSaveInput,
+    ConnectionSchemaResponse,
+    IntentCreateInput,
+    RetryInput,
+    RunCreateInput,
+    StrategyPreviewInput,
+)
 from .pipeline import emit_event, run_orchestration
 from .store import OrchestratorStore, now_utc
 
@@ -472,6 +479,232 @@ def _ollama_generate_json(
     return _parse_json_object(response_text)
 
 
+def _ollama_generate_text(
+    *,
+    base_url: str,
+    model: str,
+    prompt: str,
+    timeout_seconds: int,
+    temperature: float = 0.2,
+    num_ctx: int = 2048,
+) -> str:
+    """Generate plain-language strategy summary text with Ollama."""
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": temperature, "num_ctx": num_ctx},
+    }
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/api/generate",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+        body = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    return str(body.get("response", "")).strip()
+
+
+def _strategy_sources(provider: str) -> List[Dict[str, str]]:
+    """Map pull provider into a concise source list for strategy transparency."""
+    normalized = (provider or "ebscohost").strip().lower()
+    if normalized == "ebscohost":
+        return [
+            {"name": "Academic Search Ultimate", "provider": "EBSCOhost", "why": "broad scholarly coverage"},
+            {"name": "Regional Business News", "provider": "EBSCOhost", "why": "industry and firm context"},
+            {"name": "EconLit with Full Text", "provider": "EBSCOhost", "why": "economics and policy framing"},
+            {"name": "MasterFILE Premier", "provider": "EBSCOhost", "why": "historical periodicals and newspapers"},
+        ]
+    if normalized == "statista":
+        return [
+            {"name": "Statista", "provider": "Statista", "why": "curated market indicators and charts"},
+            {"name": "World Bank Indicators API", "provider": "Open API", "why": "macro comparator baselines"},
+        ]
+    return [
+        {"name": "Custom provider endpoint", "provider": normalized or "custom", "why": "user-supplied pull route"},
+        {"name": "World Bank Indicators API", "provider": "Open API", "why": "contextual macro controls"},
+    ]
+
+
+def _query_from_claim(claim_text: str, max_len: int = 180) -> str:
+    """Build compact query phrasing from a gap claim."""
+    cleaned = re.sub(r"\s+", " ", str(claim_text or "").strip())
+    if not cleaned:
+        return ""
+    out = cleaned
+    if out.lower().startswith("the manuscript"):
+        out = out[14:].strip()
+    if len(out) > max_len:
+        out = out[: max_len - 3].rstrip() + "..."
+    return out
+
+
+def _strategy_queries(
+    *,
+    gaps: List[Dict[str, Any]],
+    strategy_mode: str,
+    narrow_question: str,
+    target_gap_id: str,
+    limit: int = 8,
+) -> List[Dict[str, Any]]:
+    """Build user-visible source query list from selected strategy mode."""
+    mode = (strategy_mode or "automatic").strip().lower()
+    narrow = re.sub(r"\s+", " ", (narrow_question or "").strip())
+    target = (target_gap_id or "").strip()
+    rows: List[Dict[str, Any]] = []
+
+    if mode == "narrow" and narrow:
+        rows.append(
+            {
+                "query_id": "Q-01",
+                "text": narrow,
+                "origin": "narrow_question",
+                "gap_id": target,
+                "status": "pending",
+            }
+        )
+        if target:
+            target_gap = next((g for g in gaps if str(g.get("gap_id", "")) == target), None)
+            if target_gap:
+                claim_q = _query_from_claim(str(target_gap.get("claim_text", "")))
+                if claim_q and claim_q.lower() != narrow.lower():
+                    rows.append(
+                        {
+                            "query_id": "Q-02",
+                            "text": claim_q,
+                            "origin": "target_gap",
+                            "gap_id": target,
+                            "status": "pending",
+                        }
+                    )
+        return rows[:limit]
+
+    # Automatic strategy: sample across top gaps so users can inspect intended pull coverage.
+    for gap in gaps[:limit]:
+        gap_id = str(gap.get("gap_id", "")).strip()
+        claim_q = _query_from_claim(str(gap.get("claim_text", "")))
+        if not claim_q:
+            continue
+        rows.append(
+            {
+                "query_id": f"Q-{len(rows) + 1:02d}",
+                "text": claim_q,
+                "origin": "gap_claim",
+                "gap_id": gap_id,
+                "status": "pending",
+            }
+        )
+    return rows
+
+
+def _strategy_checklist(settings: OrchestratorSettings, pull_mode: str, pull_provider: str) -> List[Dict[str, str]]:
+    """Return ordered execution checklist used by Strategy tab check-off UI."""
+    items = [
+        {"stage": "validating_config", "label": "Validate settings and credentials", "status": "pending"},
+        {"stage": "planning", "label": "Resolve manuscript intent and query scope", "status": "pending"},
+        {"stage": "pulling", "label": f"Run source pulls ({pull_mode}/{pull_provider})", "status": "pending"},
+    ]
+    if settings.auto_ingest:
+        items.append({"stage": "ingesting", "label": "Ingest pulled artifacts into Evidence Hub", "status": "pending"})
+    if settings.auto_ingest and settings.auto_llm_fit:
+        items.append({"stage": "llm_processing", "label": "Run LLM fit enrichment", "status": "pending"})
+    items.append({"stage": "completed", "label": "Finalize and persist run outputs", "status": "pending"})
+    return items
+
+
+def _fallback_strategy_summary(
+    *,
+    strategy_mode: str,
+    pull_mode: str,
+    pull_provider: str,
+    chapter_count: int,
+    gap_count: int,
+    source_count: int,
+    query_count: int,
+) -> str:
+    """Create readable strategy summary when LLM summary is unavailable."""
+    mode_label = "automatic research sweep" if strategy_mode == "automatic" else "narrow question mode"
+    return (
+        f"This run uses {mode_label} with {pull_mode}/{pull_provider}. "
+        f"It targets {chapter_count} chapter groups and {gap_count} evidence gaps, "
+        f"pulling from {source_count} source channels with {query_count} planned query prompts "
+        "before ingestion and LLM fit."
+    )
+
+
+def _strategy_summary_text(
+    *,
+    strategy_mode: str,
+    pull_mode: str,
+    pull_provider: str,
+    chapter_count: int,
+    gap_count: int,
+    sources: List[Dict[str, str]],
+    queries: List[Dict[str, Any]],
+    narrow_question: str,
+) -> Dict[str, str]:
+    """Build high-level strategy explanation, using Ollama when available."""
+    fallback = _fallback_strategy_summary(
+        strategy_mode=strategy_mode,
+        pull_mode=pull_mode,
+        pull_provider=pull_provider,
+        chapter_count=chapter_count,
+        gap_count=gap_count,
+        source_count=len(sources),
+        query_count=len(queries),
+    )
+    if not _env_bool("ORCH_STRATEGY_SUMMARY_USE_OLLAMA", default=True):
+        return {"summary": fallback, "method": "fallback", "model": "", "error": ""}
+
+    base_url = os.getenv(
+        "ORCH_STRATEGY_SUMMARY_OLLAMA_BASE_URL",
+        os.getenv("ORCH_GAP_ANALYSIS_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+    ).strip()
+    preferred = os.getenv("ORCH_STRATEGY_SUMMARY_MODEL", os.getenv("ORCH_GAP_ANALYSIS_MODEL", "qwen2.5:32b")).strip()
+    timeout_seconds = int(os.getenv("ORCH_STRATEGY_SUMMARY_TIMEOUT_SECONDS", "45"))
+    llm_error = ""
+    try:
+        available = _ollama_list_models(base_url, timeout_seconds=timeout_seconds)
+        model = _pick_smart_model(available, preferred)
+        src_lines = [f"- {row.get('name')} ({row.get('provider')}): {row.get('why')}" for row in sources[:6]]
+        q_lines = [f"- {row.get('query_id')}: {row.get('text')}" for row in queries[:8]]
+        narrow_line = f"Narrow question: {narrow_question}" if narrow_question else "Narrow question: none"
+        prompt = (
+            "You are writing a concise strategy brief for a historian using a research orchestration app.\n"
+            "Write 3-5 plain-language sentences, no bullet points, that explain:\n"
+            "1) what the pull strategy is,\n"
+            "2) what source families are being searched,\n"
+            "3) how query scope maps to manuscript gaps,\n"
+            "4) what ingest + LLM stages do next.\n"
+            "Avoid hype. Be concrete.\n\n"
+            f"Strategy mode: {strategy_mode}\n"
+            f"Pull mode/provider: {pull_mode}/{pull_provider}\n"
+            f"Chapter groups: {chapter_count}\n"
+            f"Gap count: {gap_count}\n"
+            f"{narrow_line}\n"
+            f"Sources:\n{chr(10).join(src_lines)}\n"
+            f"Queries:\n{chr(10).join(q_lines)}\n"
+        )
+        summary = _ollama_generate_text(
+            base_url=base_url,
+            model=model,
+            prompt=prompt,
+            timeout_seconds=timeout_seconds,
+            temperature=0.2,
+            num_ctx=2048,
+        )
+        summary = re.sub(r"\s+", " ", summary).strip()
+        if not summary:
+            raise RuntimeError("empty_strategy_summary")
+        if len(summary) > 900:
+            summary = summary[:897].rstrip() + "..."
+        return {"summary": summary, "method": "ollama", "model": model, "error": ""}
+    except Exception as exc:
+        llm_error = f"{type(exc).__name__}: {exc}"
+        return {"summary": fallback, "method": "fallback", "model": "", "error": llm_error}
+
+
 def _split_sections(text: str) -> List[Dict[str, Any]]:
     """Split manuscript text into heading-oriented sections."""
     lines = [re.sub(r"\s+", " ", (line or "").strip()) for line in text.splitlines()]
@@ -890,6 +1123,55 @@ def api_gaps_layout(
 ) -> Dict[str, Any]:
     settings = _settings()
     return _gap_layout(settings.workspace, manuscript_path=manuscript_path, refresh=refresh)
+
+
+@app.post("/api/orchestrator/strategy/preview")
+def api_strategy_preview(inp: StrategyPreviewInput) -> Dict[str, Any]:
+    """Return strategy summary + source/query/checklist preview for Strategy tab."""
+    settings = _settings()
+    layout = _gap_layout(settings.workspace, manuscript_path=inp.manuscript_path, refresh=False)
+    gaps = layout.get("gaps", [])
+    if not isinstance(gaps, list):
+        gaps = []
+
+    strategy_mode = (inp.strategy_mode or "automatic").strip().lower()
+    pull_mode = (inp.pull_mode or settings.pull_mode).strip().lower()
+    pull_provider = (inp.pull_provider or settings.pull_provider).strip().lower()
+    narrow_question = re.sub(r"\s+", " ", (inp.narrow_question or "").strip())
+    target_gap_id = (inp.target_gap_id or "").strip()
+
+    queries = _strategy_queries(
+        gaps=gaps,
+        strategy_mode=strategy_mode,
+        narrow_question=narrow_question,
+        target_gap_id=target_gap_id,
+    )
+    sources = _strategy_sources(pull_provider)
+    summary = _strategy_summary_text(
+        strategy_mode=strategy_mode,
+        pull_mode=pull_mode,
+        pull_provider=pull_provider,
+        chapter_count=int(layout.get("chapter_count", 0) or 0),
+        gap_count=int(layout.get("gap_count", 0) or 0),
+        sources=sources,
+        queries=queries,
+        narrow_question=narrow_question,
+    )
+    return {
+        "strategy_mode": strategy_mode,
+        "pull_mode": pull_mode,
+        "pull_provider": pull_provider,
+        "manuscript_path": inp.manuscript_path,
+        "chapter_count": int(layout.get("chapter_count", 0) or 0),
+        "gap_count": int(layout.get("gap_count", 0) or 0),
+        "sources": sources,
+        "queries": queries,
+        "checklist": _strategy_checklist(settings, pull_mode, pull_provider),
+        "summary": summary.get("summary", ""),
+        "summary_method": summary.get("method", "fallback"),
+        "summary_model": summary.get("model", ""),
+        "summary_error": summary.get("error", ""),
+    }
 
 
 @app.post("/api/orchestrator/intents")

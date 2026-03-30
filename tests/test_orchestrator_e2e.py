@@ -426,3 +426,41 @@ def test_ingest_stage_skips_when_artifact_run_already_ingested(tmp_path, monkeyp
 
     # Ingest script marker is absent because stage was skipped.
     assert not (workspace / "stage_markers" / "ingest.txt").exists()
+
+
+def test_strategy_preview_returns_summary_sources_queries_and_checklist(tmp_path, monkeypatch) -> None:
+    """Strategy preview endpoint should expose inspectable run plan details for UI rendering."""
+    client, workspace = _setup_test_client(tmp_path, monkeypatch, run_inline=False)
+    manuscript_rel = "Manuscript/strategy_input.docx"
+    _write_minimal_docx(
+        workspace / manuscript_rel,
+        [
+            "Chapter One: Merchant",
+            "Claim about French and Spanish language mastery lacks citation.",
+            "Claim about smuggling prevalence lacks primary-source grounding.",
+        ],
+    )
+
+    # Ensure gap layout exists so strategy query extraction can map to generated gaps.
+    layout = client.get("/api/orchestrator/gaps/layout", params={"manuscript_path": manuscript_rel, "refresh": "true"})
+    assert layout.status_code == 200
+    assert layout.json().get("gap_count", 0) >= 1
+
+    preview = client.post(
+        "/api/orchestrator/strategy/preview",
+        json={
+            "manuscript_path": manuscript_rel,
+            "pull_mode": "auto",
+            "pull_provider": "ebscohost",
+            "strategy_mode": "automatic",
+            "narrow_question": "",
+            "target_gap_id": "",
+        },
+    )
+    assert preview.status_code == 200
+    out = preview.json()
+    assert out.get("summary")
+    assert out.get("summary_method") in {"fallback", "ollama"}
+    assert isinstance(out.get("sources"), list) and len(out["sources"]) >= 1
+    assert isinstance(out.get("queries"), list) and len(out["queries"]) >= 1
+    assert isinstance(out.get("checklist"), list) and len(out["checklist"]) >= 4

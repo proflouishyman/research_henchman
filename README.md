@@ -35,6 +35,12 @@
   - current stage/status
   - current action message
   - pull/search metadata details when available
+- Strategy tab now includes a `Strategy Brief` panel that shows:
+  - high-level run explanation (Ollama-generated when available; fallback summary otherwise)
+  - planned source targets
+  - planned query list
+  - execution checklist with live check-off as stages advance
+- Starting a run from Strategy no longer forces navigation to Results; users stay on Strategy and can watch checklist + live activity in place.
 - Automatically runs:
   - pull -> ingest -> llm fit
 - Prevents duplicate concurrent runs by default:
@@ -48,7 +54,7 @@
   - `1 Manuscript`: manuscript selector/upload and path controls
   - `2 Gap Analysis`: analysis trigger + gap layout output
   - `3 Strategy`: pull mode/provider + run launch + live activity
-  - `Results`: collapsible runs and run-events panels
+- `Results`: collapsible runs and run-events panels
   - `Settings`: view/edit `.env` values, add API keys, and view free/closed APIs + university databases in use
   - `Settings` env table now shows value source (`process_env` vs `.env`) so Docker-injected runtime values are visible.
 
@@ -131,4 +137,8 @@ Commands must print JSON artifact containing:
 - `ORCH_GAP_ANALYSIS_USE_OLLAMA`
 - `ORCH_GAP_ANALYSIS_MODEL`
 - `ORCH_GAP_ANALYSIS_OLLAMA_BASE_URL`
+- `ORCH_STRATEGY_SUMMARY_USE_OLLAMA`
+- `ORCH_STRATEGY_SUMMARY_MODEL`
+- `ORCH_STRATEGY_SUMMARY_OLLAMA_BASE_URL`
+- `ORCH_STRATEGY_SUMMARY_TIMEOUT_SECONDS`
 # research_henchman

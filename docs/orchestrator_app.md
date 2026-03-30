@@ -16,6 +16,7 @@ while preserving existing Evidence Hub data contracts.
 - `GET /api/orchestrator/manuscripts`
 - `POST /api/orchestrator/manuscripts/upload`
 - `GET /api/orchestrator/gaps/layout`
+- `POST /api/orchestrator/strategy/preview`
 - `POST /api/orchestrator/intents`
 - `GET /api/orchestrator/intents/{intent_id}`
 - `GET /api/orchestrator/connections/schema`
@@ -65,6 +66,12 @@ while preserving existing Evidence Hub data contracts.
 - Run log now appends structured event metadata inline (pull mode/provider, pull command, run directory, artifact type, and available pull stats/fallback details).
 - Run monitor includes heartbeat feedback (pulsing live dot + “last check” age) and periodic long-stage heartbeat entries in the backend log.
 - `3 Strategy` includes `Live Activity` fields for current stage, action, and pull/search detail metadata.
+- `3 Strategy` now also includes a strategy brief panel:
+  - high-level summary text (Ollama when available, fallback otherwise)
+  - source targets
+  - planned query list
+  - stage checklist with live check-off.
+- Run launch from `3 Strategy` no longer auto-navigates to `Results`; users remain on Strategy by default.
 - `Results`: collapsible run list + run-events timeline + retry.
 - `Settings`: inspect `.env` values and add/update keys (including API keys).
 - `Settings` env-value grid includes source field (`process_env` or `.env`).

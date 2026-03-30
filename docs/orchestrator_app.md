@@ -56,12 +56,14 @@ while preserving existing Evidence Hub data contracts.
   - `1 Manuscript`
   - `2 Gap Analysis`
   - `3 Strategy`
+  - `4 Results`
 - Intent creation remains in backend contract but is auto-invoked by run start from `3 Strategy`.
 - UI persists last-used manuscript and active tab in browser local storage.
 - Gap analysis view includes explicit analysis status text:
   - running indicator
   - already-analyzed/cached-map indicator
 - App includes a persistent bottom run-log dock (`Live Run Log`) that streams run events across tabs and shows a visible log heartbeat status.
+- Log dock defaults to collapsed on initial load (user can expand manually).
 - Run log now announces the resolved run plan at launch and reports each stage with plan position (`N/Total`).
 - Run log now appends structured event metadata inline (pull mode/provider, pull command, run directory, artifact type, and available pull stats/fallback details).
 - Run monitor includes heartbeat feedback (pulsing live dot + “last check” age) and periodic long-stage heartbeat entries in the backend log.
@@ -72,6 +74,7 @@ while preserving existing Evidence Hub data contracts.
   - planned query list
   - stage checklist with live check-off.
 - Run launch from `3 Strategy` no longer auto-navigates to `Results`; users remain on Strategy by default.
+- Primary action buttons use a consistent dark-green accent and consistent bottom-anchored placement in workflow step panes.
 - `Results`: collapsible run list + run-events timeline + retry.
 - `Settings`: inspect `.env` values and add/update keys (including API keys).
 - `Settings` env-value grid includes source field (`process_env` or `.env`).

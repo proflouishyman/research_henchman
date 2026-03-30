@@ -15,6 +15,9 @@
       --muted: #6f6558;
       --accent: #5e4f3a;
       --accent-soft: #ece2d3;
+      --cta: #1f5f47;
+      --cta-hover: #184736;
+      --cta-running: #2b6f54;
       --ok: #366c4d;
       --warn: #8c6827;
       --error: #983f3f;
@@ -128,6 +131,11 @@
       animation: paneIn 220ms ease;
     }
 
+    .pane-flow {
+      display: flex;
+      flex-direction: column;
+    }
+
     @keyframes paneIn {
       from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0); }
@@ -238,15 +246,20 @@
     }
 
     .primary-btn {
-      background: var(--accent);
+      background: var(--cta);
       color: #fff;
-      border-color: var(--accent);
+      border-color: var(--cta);
     }
 
-    .primary-btn:hover { background: #524532; }
+    .primary-btn:hover { background: var(--cta-hover); }
     .primary-btn.running {
-      background: #8a6d44;
-      border-color: #8a6d44;
+      background: var(--cta-running);
+      border-color: var(--cta-running);
+    }
+
+    .main-cta {
+      margin-top: auto;
+      margin-bottom: 8px;
     }
 
     .row {
@@ -740,13 +753,13 @@
         <button class="tab-btn active" data-tab="manuscript" title="Step 1: choose manuscript source and file.">1 Manuscript</button>
         <button class="tab-btn" data-tab="analysis" title="Step 2: generate and inspect gap analysis.">2 Gap Analysis</button>
         <button class="tab-btn" data-tab="strategy" title="Step 3: choose pull strategy and launch runs.">3 Strategy</button>
-        <button class="tab-btn" data-tab="results" title="Review run status, events, and retry options.">Results</button>
+        <button class="tab-btn" data-tab="results" title="Step 4: review run status, events, and retry options.">4 Results</button>
         <button class="tab-btn" data-tab="settings" title="Inspect and edit .env values, API keys, and source catalogs.">Settings</button>
       </div>
     </div>
 
     <div id="tab-manuscript" class="plan-layout">
-      <section class="pane">
+      <section class="pane pane-flow">
         <h2>Step 1: Manuscript Intake</h2>
         <div class="workflow-progress muted" id="manuscript_status_text">Start by selecting or uploading a manuscript.</div>
 
@@ -776,19 +789,19 @@
         </details>
 
         <div class="code" id="current_manuscript_path">manuscript path: not selected</div>
-        <button id="open_analysis_btn" class="link-btn" title="Open the Gap Analysis tab for this manuscript.">Go To Gap Analysis</button>
+        <button id="open_analysis_btn" class="primary-btn main-cta" title="Open the Gap Analysis tab for this manuscript.">Go To Gap Analysis</button>
       </section>
     </div>
 
     <div id="tab-analysis" class="plan-layout hidden">
-      <section class="pane">
+      <section class="pane pane-flow">
         <h2>Step 2: Gap Analysis</h2>
-        <button class="primary-btn" id="load_gaps_btn" title="Read the selected manuscript and generate or load chapter gap analysis.">Analyze Manuscript</button>
+        <button class="primary-btn main-cta" id="load_gaps_btn" title="Read the selected manuscript and generate or load chapter gap analysis.">Analyze Manuscript</button>
         <div id="analysis_status" class="muted">No analysis run yet.</div>
         <button id="open_strategy_btn" class="link-btn" title="Continue to Strategy tab to configure pull settings and launch the run.">Continue To Strategy</button>
       </section>
 
-      <section class="pane">
+      <section class="pane pane-flow">
         <h2>Gap Analysis Output</h2>
         <div id="gap_summary" class="muted">Run analysis to populate chapter gap layout for the selected manuscript.</div>
         <div id="read_status" class="event" style="margin-top:10px;">
@@ -831,7 +844,7 @@
         <button id="refresh_strategy_btn" title="Generate a high-level strategy brief with planned sources and query list.">Generate Strategy Brief</button>
         <div id="strategy_status" class="muted">Generate strategy brief to preview sources and query plan.</div>
 
-        <button class="primary-btn" id="start_run_btn" title="Start a new orchestrated research run using current strategy and provider.">Start Research Run</button>
+        <button class="primary-btn main-cta" id="start_run_btn" title="Start a new orchestrated research run using current strategy and provider.">Start Research Run</button>
         <div class="indicator-row">
           <span id="run_live_status" class="status">idle</span>
           <span id="run_heartbeat_dot" class="heartbeat-dot idle" title="Polling heartbeat from backend run monitor."></span>
@@ -1171,7 +1184,6 @@
       state.monitorState.detail = detail || mode;
       if (mode === "live") {
         state.monitorState.lastSuccessMs = Date.now();
-        applyLogDockCollapsed(false);
       }
       renderHeartbeat();
       renderLogHeartbeat();
@@ -1858,7 +1870,6 @@
       if (!runId) return;
       stopRunMonitor();
       startHeartbeatTicker();
-      applyLogDockCollapsed(false);
       setMonitorState("live", "connecting");
       state.selectedRunId = runId;
       savePref(STORAGE_KEYS.selectedRunId, runId);
@@ -2273,7 +2284,8 @@
         state.selectedRunId = savedRun;
         if (q("events_run_id")) q("events_run_id").value = savedRun;
       }
-      applyLogDockCollapsed(loadPref(STORAGE_KEYS.logDockCollapsed, "0") === "1", false);
+      // Always boot collapsed to reduce initial visual clutter.
+      applyLogDockCollapsed(true, false);
       const runsPanel = q("results_runs_panel");
       if (runsPanel) runsPanel.open = loadPref(STORAGE_KEYS.resultsRunsOpen, "1") === "1";
       const eventsPanel = q("results_events_panel");

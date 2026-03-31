@@ -43,7 +43,17 @@ class _FakeAdapter(PullAdapter):
 
 
 def test_build_source_availability_marks_missing_keys(settings_factory, monkeypatch) -> None:
-    settings = settings_factory(BLS_API_KEY="", BEA_USER_ID="", CENSUS_API_KEY="")
+    settings = settings_factory(
+        BLS_API_KEY="",
+        BLS_REGISTRATION_KEY="",
+        EBSCO_API_KEY="",
+        EBSCO_PROF="",
+        EBSCO_PWD="",
+        EBSCO_PROFILE_ID="",
+        EBSCO_PROFILE_PASSWORD="",
+        BEA_USER_ID="",
+        CENSUS_API_KEY="",
+    )
     monkeypatch.setattr(pull, "check_cdp_endpoint", lambda _url: "refused")
 
     availability = pull.build_source_availability(settings)
@@ -51,6 +61,32 @@ def test_build_source_availability_marks_missing_keys(settings_factory, monkeypa
     assert "world_bank" in availability.free_apis
     assert "bls" in availability.missing_keys
     assert availability.playwright_unavailable_reason
+
+
+def test_build_source_availability_accepts_bls_registration_key_alias(settings_factory, monkeypatch) -> None:
+    settings = settings_factory(BLS_API_KEY="", BLS_REGISTRATION_KEY="abc123")
+    monkeypatch.setattr(pull, "check_cdp_endpoint", lambda _url: "refused")
+
+    availability = pull.build_source_availability(settings)
+
+    assert "bls" in availability.keyed_apis
+    assert "bls" not in availability.missing_keys
+
+
+def test_build_source_availability_accepts_ebsco_profile_credentials(settings_factory, monkeypatch) -> None:
+    settings = settings_factory(
+        EBSCO_API_KEY="",
+        EBSCO_PROF="user@example.edu",
+        EBSCO_PWD="secret",
+        EBSCO_PROFILE_ID="",
+        EBSCO_PROFILE_PASSWORD="",
+    )
+    monkeypatch.setattr(pull, "check_cdp_endpoint", lambda _url: "refused")
+
+    availability = pull.build_source_availability(settings)
+
+    assert "ebsco_api" in availability.keyed_apis
+    assert "ebsco_api" not in availability.missing_keys
 
 
 def test_build_source_availability_uses_library_profile_playwright_sources(settings_factory, monkeypatch) -> None:

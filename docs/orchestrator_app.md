@@ -57,6 +57,7 @@ Environment controls all behavior (`app/config.py`):
 - pull/router: `ORCH_PULL_TIMEOUT_SECONDS`, `ORCH_PULL_OUTPUT_ROOT`, `ORCH_PLAYWRIGHT_CDP_URL`
 - library profile routing: `ORCH_LIBRARY_SYSTEM`, `ORCH_LIBRARY_PROFILES_PATH`, `ORCH_PLAYWRIGHT_EXTRA_SOURCES`
 - ingest/fit: `ORCH_AUTO_INGEST`, `ORCH_AUTO_LLM_FIT`, `ORCH_LLM_*`, `ORCH_OLLAMA_BASE_URL`
+- keyed credential aliases: `BLS_REGISTRATION_KEY` can substitute for `BLS_API_KEY`; EBSCO profile credentials (`EBSCO_PROF` + `EBSCO_PWD`, or `EBSCO_PROFILE_ID` + `EBSCO_PROFILE_PASSWORD`) can satisfy `ebsco_api` availability.
 
 ## Notes on adapters
 `SOURCE_REGISTRY` in `app/layers/pull.py` is the extension point.
@@ -81,6 +82,11 @@ Environment controls all behavior (`app/config.py`):
 ```bash
 uvicorn app.main:app --reload --port 8876
 ```
+
+## Docker runtime config
+- `docker-compose.yml` loads project-root `.env` (`../.env`) through `env_file`.
+- Container runtime keeps `ORCH_WORKSPACE=/workspace` and mounts repository root at `/workspace`.
+- Set `ORCH_PLAYWRIGHT_CDP_URL` in `.env` when needed; compose falls back to `http://host.docker.internal:9222`.
 
 ## Tests
 ```bash

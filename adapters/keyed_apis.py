@@ -19,6 +19,10 @@ class KeyedApiAdapter(PullAdapter):
 
     source_type = SourceType.KEYED_API
     env_key: str = ""
+    env_aliases: List[str] = []
+    # Optional OR-of-AND groups for credential shape support.
+    # Example: [["API_KEY"], ["USERNAME", "PASSWORD"]]
+    credential_sets: List[List[str]] = []
 
     def is_available(self, availability: SourceAvailability) -> bool:
         return self.source_id in availability.keyed_apis
@@ -29,9 +33,37 @@ class KeyedApiAdapter(PullAdapter):
             return f"{self.source_id}: missing env key {missing}"
         return ""
 
+    def credential_hint(self) -> str:
+        """Return human-readable credential requirement string."""
+
+        if self.credential_sets:
+            groups = ["+".join(group) for group in self.credential_sets if group]
+            return " OR ".join(groups)
+        keys = [self.env_key, *self.env_aliases]
+        keys = [key for key in keys if key]
+        return " | ".join(keys) if keys else self.env_key
+
+    def has_credentials(self) -> bool:
+        """Check whether this adapter has any valid credential form."""
+
+        if self.credential_sets:
+            for group in self.credential_sets:
+                if group and all(os.environ.get(key, "").strip() for key in group):
+                    return True
+            return False
+
+        for key in [self.env_key, *self.env_aliases]:
+            if key and os.environ.get(key, "").strip():
+                return True
+        return False
+
     @property
     def api_key(self) -> str:
-        return os.environ.get(self.env_key, "").strip()
+        for key in [self.env_key, *self.env_aliases]:
+            val = os.environ.get(key, "").strip()
+            if val:
+                return val
+        return ""
 
 
 class BlsAdapter(KeyedApiAdapter):
@@ -39,6 +71,7 @@ class BlsAdapter(KeyedApiAdapter):
 
     source_id = "bls"
     env_key = "BLS_API_KEY"
+    env_aliases = ["BLS_REGISTRATION_KEY"]
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
         try:
@@ -185,6 +218,12 @@ class EbscoApiAdapter(KeyedApiAdapter):
 
     source_id = "ebsco_api"
     env_key = "EBSCO_API_KEY"
+    # EBSCO deployments vary: API key or profile credentials.
+    credential_sets = [
+        ["EBSCO_API_KEY"],
+        ["EBSCO_PROF", "EBSCO_PWD"],
+        ["EBSCO_PROFILE_ID", "EBSCO_PROFILE_PASSWORD"],
+    ]
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
         try:

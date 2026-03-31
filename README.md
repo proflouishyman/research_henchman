@@ -68,6 +68,10 @@ For historical narrative gaps, routing prefers these scholarly/archive sources o
 
 `/api/orchestrator/sources/catalog` now reads `university_databases` from the active profile, including `categories`, `claim_kinds`, and `evidence_needs`. This replaces hardcoded university database lists so other institutions can adapt by editing profile JSON only.
 
+## Key alias support
+- BLS credentials accept either `BLS_API_KEY` or `BLS_REGISTRATION_KEY`.
+- EBSCO API routing accepts either `EBSCO_API_KEY` or profile credential pairs (`EBSCO_PROF` + `EBSCO_PWD`, or `EBSCO_PROFILE_ID` + `EBSCO_PROFILE_PASSWORD`).
+
 ## Run locally
 From repository root:
 
@@ -88,5 +92,7 @@ From `app/` directory:
 ```bash
 docker compose up --build -d
 ```
+
+Runtime config is loaded from project-root `.env` (`../.env` via `env_file`) plus `ORCH_WORKSPACE=/workspace` inside the container.
 
 Open: <http://localhost:8876>

@@ -1,0 +1,221 @@
+"""Keyed API adapters for orchestrator pulls."""
+
+from __future__ import annotations
+
+import json
+import os
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, List
+
+from .base import PullAdapter
+from .io_utils import write_json_records
+from ..contracts import PlannedGap, SourceAvailability, SourceResult, SourceType
+
+
+class KeyedApiAdapter(PullAdapter):
+    """Base class for APIs that require env-provided credentials."""
+
+    source_type = SourceType.KEYED_API
+    env_key: str = ""
+
+    def is_available(self, availability: SourceAvailability) -> bool:
+        return self.source_id in availability.keyed_apis
+
+    def validate(self, availability: SourceAvailability) -> str:
+        if self.source_id not in availability.keyed_apis:
+            missing = availability.missing_keys.get(self.source_id, self.env_key)
+            return f"{self.source_id}: missing env key {missing}"
+        return ""
+
+    @property
+    def api_key(self) -> str:
+        return os.environ.get(self.env_key, "").strip()
+
+
+class BlsAdapter(KeyedApiAdapter):
+    """BLS public data API v2."""
+
+    source_id = "bls"
+    env_key = "BLS_API_KEY"
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
+        try:
+            payload = {
+                "seriesid": ["CUUR0000SA0"],
+                "startyear": "2019",
+                "endyear": "2024",
+                "registrationkey": self.api_key,
+            }
+            req = urllib.request.Request(
+                "https://api.bls.gov/publicAPI/v2/timeseries/data/",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                body = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            rows: List[Dict[str, Any]] = []
+            for series in body.get("Results", {}).get("series", []):
+                for point in series.get("data", [])[:12]:
+                    rows.append(point)
+            root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
+            status = "completed" if rows else "partial"
+            return SourceResult(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                query=query,
+                gap_id=gap.gap_id,
+                document_count=len(rows),
+                run_dir=root,
+                artifact_type="json_records",
+                status=status,
+                stats={"records": len(rows), "endpoint": "bls_timeseries"},
+            )
+        except Exception as exc:
+            return SourceResult(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                query=query,
+                gap_id=gap.gap_id,
+                document_count=0,
+                run_dir=str(Path(run_dir) / gap.gap_id / self.source_id),
+                artifact_type="json_records",
+                status="failed",
+                error=str(exc)[:200],
+            )
+
+
+class BeaAdapter(KeyedApiAdapter):
+    """BEA API dataset metadata lookup."""
+
+    source_id = "bea"
+    env_key = "BEA_USER_ID"
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
+        try:
+            params = urllib.parse.urlencode(
+                {
+                    "UserID": self.api_key,
+                    "method": "GETDATASETLIST",
+                    "ResultFormat": "JSON",
+                }
+            )
+            url = f"https://apps.bea.gov/api/data/?{params}"
+            with urllib.request.urlopen(url, timeout=timeout_seconds) as resp:
+                body = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            rows = body.get("BEAAPI", {}).get("Results", {}).get("Dataset", [])
+            root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
+            status = "completed" if rows else "partial"
+            return SourceResult(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                query=query,
+                gap_id=gap.gap_id,
+                document_count=len(rows),
+                run_dir=root,
+                artifact_type="json_records",
+                status=status,
+                stats={"records": len(rows), "endpoint": "bea_dataset_list"},
+            )
+        except Exception as exc:
+            return SourceResult(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                query=query,
+                gap_id=gap.gap_id,
+                document_count=0,
+                run_dir=str(Path(run_dir) / gap.gap_id / self.source_id),
+                artifact_type="json_records",
+                status="failed",
+                error=str(exc)[:200],
+            )
+
+
+class CensusAdapter(KeyedApiAdapter):
+    """Census API basic variable lookup endpoint."""
+
+    source_id = "census"
+    env_key = "CENSUS_API_KEY"
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
+        try:
+            params = urllib.parse.urlencode({"key": self.api_key})
+            url = f"https://api.census.gov/data/timeseries/eits/mrts/variables.json?{params}"
+            with urllib.request.urlopen(url, timeout=timeout_seconds) as resp:
+                body = json.loads(resp.read().decode("utf-8", errors="ignore"))
+            variables = body.get("variables", {}) if isinstance(body, dict) else {}
+            rows = [{"name": k, **v} for k, v in list(variables.items())[:50] if isinstance(v, dict)]
+            root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
+            status = "completed" if rows else "partial"
+            return SourceResult(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                query=query,
+                gap_id=gap.gap_id,
+                document_count=len(rows),
+                run_dir=root,
+                artifact_type="json_records",
+                status=status,
+                stats={"records": len(rows), "endpoint": "census_mrts_variables"},
+            )
+        except Exception as exc:
+            return SourceResult(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                query=query,
+                gap_id=gap.gap_id,
+                document_count=0,
+                run_dir=str(Path(run_dir) / gap.gap_id / self.source_id),
+                artifact_type="json_records",
+                status="failed",
+                error=str(exc)[:200],
+            )
+
+
+class EbscoApiAdapter(KeyedApiAdapter):
+    """EBSCOhost API adapter placeholder.
+
+    Note:
+    - Full provider query translation is intentionally ticketed per-source.
+    - This adapter records a deterministic pull receipt so downstream stages can
+      proceed in architecture tests and local dry-runs.
+    """
+
+    source_id = "ebsco_api"
+    env_key = "EBSCO_API_KEY"
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
+        try:
+            rows = [
+                {
+                    "query": query,
+                    "note": "EBSCO API translation pending source-specific implementation",
+                    "gap_id": gap.gap_id,
+                }
+            ]
+            root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
+            return SourceResult(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                query=query,
+                gap_id=gap.gap_id,
+                document_count=1,
+                run_dir=root,
+                artifact_type="json_records",
+                status="partial",
+                stats={"records": 1, "placeholder": True},
+            )
+        except Exception as exc:
+            return SourceResult(
+                source_id=self.source_id,
+                source_type=self.source_type,
+                query=query,
+                gap_id=gap.gap_id,
+                document_count=0,
+                run_dir=str(Path(run_dir) / gap.gap_id / self.source_id),
+                artifact_type="json_records",
+                status="failed",
+                error=str(exc)[:200],
+            )

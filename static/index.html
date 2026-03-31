@@ -3,1078 +3,311 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Research Orchestrator</title>
+  <title>Research Orchestrator v2</title>
   <style>
     :root {
       --bg: #f3ede3;
-      --bg-soft: #faf6ef;
-      --panel: #fffdf9;
-      --line: #d9cebc;
-      --line-strong: #c9b99f;
-      --ink: #28231e;
-      --muted: #6f6558;
-      --accent: #5e4f3a;
-      --accent-soft: #ece2d3;
-      --cta: #1f5f47;
-      --cta-hover: #184736;
-      --cta-running: #2b6f54;
-      --ok: #366c4d;
-      --warn: #8c6827;
-      --error: #983f3f;
-      --radius-sm: 10px;
-      --radius-md: 14px;
-      --space-1: 6px;
-      --space-2: 10px;
-      --space-3: 14px;
-      --space-4: 18px;
-      --space-5: 24px;
-      --space-6: 32px;
+      --panel: #fffdf8;
+      --line: #d7cab6;
+      --ink: #2b2620;
+      --muted: #6c6154;
+      --cta: #185f45;
+      --cta-hover: #124733;
+      --ok-bg: #edf8f1;
+      --ok-line: #a4ccb4;
+      --warn-bg: #fff6e8;
+      --warn-line: #d8bf8d;
+      --err-bg: #fdf0f0;
+      --err-line: #dcb2b2;
+      --active-line: #6ea989;
+      --active-bg: #edf8f2;
+      --radius: 14px;
       --font-ui: "Space Grotesk", "Avenir Next", sans-serif;
-      --font-mono: "IBM Plex Mono", "Menlo", monospace;
+      --font-mono: "IBM Plex Mono", Menlo, monospace;
     }
 
     * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      color: var(--ink);
       font-family: var(--font-ui);
-      background: radial-gradient(900px 320px at 90% -15%, #eadfce, transparent 72%), var(--bg);
-      padding-bottom: 230px;
+      color: var(--ink);
+      background: radial-gradient(900px 320px at 88% -12%, #eadfcd, transparent 70%), var(--bg);
     }
 
     .shell {
-      max-width: 1360px;
+      max-width: 1240px;
       margin: 0 auto;
-      padding: var(--space-5);
-    }
-
-    .topbar {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: var(--space-4);
-      margin-bottom: var(--space-4);
+      padding: 24px;
     }
 
     h1 {
       margin: 0;
-      font-size: 36px;
+      font-size: 38px;
       line-height: 1;
-      letter-spacing: 0.01em;
-      font-weight: 700;
     }
 
     .subtitle {
+      margin-top: 10px;
       color: var(--muted);
-      font-size: 14px;
-      margin-top: 8px;
-      max-width: 640px;
-    }
-
-    .tabs {
-      display: flex;
-      gap: var(--space-1);
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: var(--space-1);
-      background: var(--panel);
-      align-self: center;
-    }
-
-    .tab-btn {
-      border: 0;
-      background: transparent;
-      color: var(--muted);
-      padding: 8px 14px;
-      border-radius: 999px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      margin: 0;
-    }
-
-    .tab-btn.active {
-      color: var(--ink);
-      background: var(--accent-soft);
-    }
-
-    .hidden { display: none !important; }
-
-    .plan-layout,
-    .strategy-layout,
-    .results-layout,
-    .settings-layout {
-      display: grid;
-      gap: var(--space-3);
-    }
-
-    .plan-layout,
-    .strategy-layout {
-      grid-template-columns: 380px minmax(0, 1fr);
-    }
-
-    .results-layout {
-      grid-template-columns: 1fr;
-    }
-
-    .settings-layout {
-      grid-template-columns: 1fr 1fr;
-    }
-
-    .pane {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: var(--space-4);
-      min-height: 72vh;
-      animation: paneIn 220ms ease;
-    }
-
-    .pane-flow {
-      display: flex;
-      flex-direction: column;
-    }
-
-    @keyframes paneIn {
-      from { opacity: 0; transform: translateY(8px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    .pane h2 {
-      margin: 0 0 var(--space-3);
-      font-size: 12px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-      font-weight: 700;
-    }
-
-    .section-title {
-      margin: 0 0 var(--space-2);
+      max-width: 760px;
       font-size: 15px;
-      font-weight: 700;
-      letter-spacing: 0.01em;
     }
 
-    .section {
-      border-top: 1px solid var(--line);
-      padding-top: var(--space-3);
-      margin-top: var(--space-3);
-    }
-
-    .section:first-of-type {
-      border-top: 0;
-      padding-top: 0;
-      margin-top: 0;
-    }
-
-    .step-rail {
+    .layout {
+      margin-top: 20px;
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: var(--space-1);
-      margin-bottom: var(--space-3);
+      grid-template-columns: 360px minmax(0, 1fr);
+      gap: 16px;
     }
 
-    .step-pill {
+    .panel {
+      background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 6px 8px;
-      font-size: 11px;
-      text-align: center;
+      border-radius: var(--radius);
+      padding: 16px;
+      min-height: 520px;
+    }
+
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
       color: var(--muted);
-      background: #faf4ea;
-      transition: all 180ms ease;
-    }
-
-    .step-pill.done {
-      border-color: #a6c9b3;
-      color: var(--ok);
-      background: #ecf6ef;
-      font-weight: 700;
-    }
-
-    .step-pill.active {
-      border-color: var(--line-strong);
-      color: var(--ink);
-      background: var(--accent-soft);
-      font-weight: 700;
     }
 
     label {
       display: block;
-      margin-bottom: 4px;
-      color: var(--muted);
+      margin: 8px 0 4px;
       font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.07em;
+      color: var(--muted);
       font-weight: 700;
     }
 
-    input,
-    select,
-    textarea,
-    button {
+    input, select, button {
       width: 100%;
       border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      background: var(--bg-soft);
-      color: var(--ink);
+      border-radius: 10px;
       padding: 10px;
       font: inherit;
       font-size: 13px;
-      margin-bottom: var(--space-2);
+      background: #fbf7ef;
+      color: var(--ink);
+      margin-bottom: 10px;
     }
 
-    textarea {
-      min-height: 84px;
-      resize: vertical;
-    }
+    button { cursor: pointer; font-weight: 700; }
+    button:hover { background: #eee2d1; }
 
-    button {
-      cursor: pointer;
-      background: #f0e4d1;
-      border-color: var(--line-strong);
-      font-weight: 700;
-      transition: background 140ms ease;
-    }
-
-    button:hover { background: #e6d8c2; }
-    button:disabled {
-      opacity: 0.7;
-      cursor: not-allowed;
-    }
-
-    .primary-btn {
+    .primary {
       background: var(--cta);
       color: #fff;
       border-color: var(--cta);
     }
 
-    .primary-btn:hover { background: var(--cta-hover); }
-    .primary-btn.running {
-      background: var(--cta-running);
-      border-color: var(--cta-running);
-    }
+    .primary:hover { background: var(--cta-hover); }
+    .primary.running { background: #2d7b5c; border-color: #2d7b5c; }
 
-    .main-cta {
-      margin-top: auto;
-      margin-bottom: 8px;
-    }
+    .muted { color: var(--muted); font-size: 12px; }
+    .status-line { margin: 4px 0 12px; font-size: 13px; color: var(--muted); }
 
-    .row {
-      display: flex;
-      gap: var(--space-2);
-    }
-
-    .row > * { flex: 1; }
-
-    .tiny-col {
-      flex: 0 0 118px;
-    }
-
-    .muted {
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .code {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      word-break: break-word;
-      color: #574b3d;
-    }
-
-    .status {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
+    .event-box {
       border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 2px 8px;
-      font-size: 11px;
-      text-transform: lowercase;
-      background: #f5ecdf;
-    }
-    .status.ok {
-      color: var(--ok);
-      border-color: #aac8b4;
-      background: #ebf5ef;
-    }
-    .status.started {
-      color: var(--warn);
-      border-color: #d6c097;
-      background: #faf0df;
-    }
-    .status.failed {
-      color: var(--error);
-      border-color: #d8b2b2;
-      background: #fbeeee;
-    }
-
-    .list {
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
+      border-left: 4px solid var(--line);
+      border-radius: 10px;
       background: #fff;
-      max-height: 62vh;
-      overflow: auto;
-      padding: var(--space-2);
+      padding: 10px;
+      margin-bottom: 10px;
     }
 
-    .event {
-      border-left: 3px solid var(--line);
+    .event-box.ok { border-left-color: #3b7a56; background: var(--ok-bg); }
+    .event-box.warn { border-left-color: #9a6e24; background: var(--warn-bg); }
+    .event-box.err { border-left-color: #9f4444; background: var(--err-bg); }
+
+    .stage-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+      margin-bottom: 14px;
+    }
+
+    .stage {
+      border: 1px solid var(--line);
+      border-radius: 10px;
       padding: 8px 10px;
-      margin-bottom: var(--space-2);
-      background: #fcfaf6;
-      border-radius: 0 8px 8px 0;
-    }
-
-    .event:last-child { margin-bottom: 0; }
-    .event.ok { border-left-color: var(--ok); }
-    .event.started { border-left-color: var(--warn); }
-    .event.failed { border-left-color: var(--error); }
-
-    .chapter {
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      margin-bottom: var(--space-2);
-      overflow: hidden;
       background: #fff;
-    }
-
-    .chapter > summary {
-      cursor: pointer;
-      padding: 9px 10px;
-      background: #f8f0e2;
       font-size: 13px;
-      font-weight: 700;
-      list-style: none;
-    }
-
-    .chapter > summary::-webkit-details-marker { display: none; }
-
-    .gap {
-      padding: 8px 10px;
-      border-top: 1px solid var(--line);
-      font-size: 12px;
-    }
-
-    .gap-id {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--muted);
-    }
-
-    .source-group {
-      margin-bottom: var(--space-2);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      background: #fff;
-      overflow: hidden;
-    }
-
-    .source-group h3 {
-      margin: 0;
-      padding: 8px 10px;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      color: var(--muted);
-      background: #f8f0e2;
-      border-bottom: 1px solid var(--line);
-    }
-
-    .source-row {
-      padding: 8px 10px;
-      border-bottom: 1px solid var(--line);
-      font-size: 12px;
-      background: #fcfaf6;
-    }
-
-    .source-row:last-child { border-bottom: 0; }
-
-    .source-title {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+    }
+
+    .stage.done { background: var(--ok-bg); border-color: var(--ok-line); }
+    .stage.failed { background: var(--err-bg); border-color: var(--err-line); }
+    .stage.active {
+      background: var(--active-bg);
+      border-color: var(--active-line);
+      box-shadow: 0 0 0 0 rgba(24, 95, 69, 0.24);
+      animation: pulseStage 2.2s ease-in-out infinite;
+    }
+
+    @keyframes pulseStage {
+      0% { box-shadow: 0 0 0 0 rgba(24, 95, 69, 0.24); }
+      50% { box-shadow: 0 0 0 8px rgba(24, 95, 69, 0.07); }
+      100% { box-shadow: 0 0 0 0 rgba(24, 95, 69, 0.24); }
     }
 
     .pill {
       border: 1px solid var(--line);
       border-radius: 999px;
-      padding: 1px 8px;
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      background: #f5ecdf;
-      color: var(--muted);
-    }
-
-    .pill.on { color: var(--ok); border-color: #aac8b4; background: #ebf5ef; }
-    .pill.off { color: var(--error); border-color: #d8b2b2; background: #fbeeee; }
-
-    details {
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      background: #fff;
-      margin-bottom: var(--space-2);
-      overflow: hidden;
-    }
-
-    details > summary {
-      cursor: pointer;
-      padding: 8px 10px;
-      background: #f8f0e2;
-      font-size: 12px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      font-weight: 700;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-    }
-
-    th,
-    td {
-      border-bottom: 1px solid var(--line);
-      text-align: left;
-      padding: 7px 6px;
-      vertical-align: top;
-    }
-
-    th {
+      padding: 2px 8px;
       font-size: 11px;
-      text-transform: uppercase;
       color: var(--muted);
-      letter-spacing: 0.07em;
-      position: sticky;
-      top: 0;
-      background: #fcfaf6;
+      background: #f7ecdc;
+      white-space: nowrap;
     }
 
-    .workflow-progress {
-      margin-top: var(--space-2);
-      margin-bottom: var(--space-2);
-      padding: 8px 10px;
-      background: #f9f2e7;
+    .plan-list {
       border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-    }
-
-    .indicator-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-top: 8px;
+      border-radius: 10px;
+      background: #fff;
+      max-height: 38vh;
+      overflow: auto;
+      padding: 8px;
       margin-bottom: 10px;
     }
 
-    .strategy-items {
-      display: grid;
-      gap: 8px;
-      margin-top: 8px;
-    }
-
-    .strategy-item {
+    .plan-gap {
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: #fff;
-      padding: 8px 10px;
-      font-size: 12px;
-      transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
-    }
-
-    .strategy-item.state-done {
-      background: #f3faf5;
-      border-color: #aac8b4;
-    }
-
-    .strategy-item.state-failed {
-      background: #fff4f4;
-      border-color: #d8b2b2;
-    }
-
-    .strategy-item.state-active {
-      background: #eef8f2;
-      border-color: #79b092;
-      box-shadow: 0 0 0 0 rgba(31, 95, 71, 0.24);
-      animation: activeStepPulse 2.2s ease-in-out infinite;
-    }
-
-    @keyframes activeStepPulse {
-      0% { box-shadow: 0 0 0 0 rgba(31, 95, 71, 0.22); }
-      50% { box-shadow: 0 0 0 7px rgba(31, 95, 71, 0.06); }
-      100% { box-shadow: 0 0 0 0 rgba(31, 95, 71, 0.22); }
-    }
-
-    .strategy-item-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 4px;
-    }
-
-    .strategy-item-title {
-      font-weight: 700;
+      padding: 8px;
+      margin-bottom: 8px;
+      background: #fcf9f2;
       font-size: 12px;
     }
 
-    .strategy-item-meta {
-      font-size: 11px;
-      color: var(--muted);
-    }
+    .plan-gap:last-child { margin-bottom: 0; }
 
-    .strategy-check {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 18px;
-      height: 18px;
-      border-radius: 999px;
+    .log-wrap {
       border: 1px solid var(--line);
-      font-size: 11px;
-      background: #f7efe2;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .log-head {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--line);
+      background: #f7ecdc;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
       color: var(--muted);
-      flex: 0 0 18px;
+      font-weight: 700;
     }
 
-    .strategy-check.done {
-      border-color: #aac8b4;
-      color: var(--ok);
-      background: #ebf5ef;
-    }
-
-    .strategy-check.active {
-      border-color: #d6c097;
-      color: var(--warn);
-      background: #faf0df;
-    }
-
-    .strategy-check.failed {
-      border-color: #d8b2b2;
-      color: var(--error);
-      background: #fbeeee;
-    }
-
-    .heartbeat-dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: #9f9383;
-      border: 1px solid #8b7d67;
-      flex: 0 0 10px;
-    }
-
-    .heartbeat-dot.live {
-      background: #2f8a5c;
-      border-color: #2f8a5c;
-      animation: hbPulse 1.1s ease-in-out infinite;
-      box-shadow: 0 0 0 0 rgba(47, 138, 92, 0.5);
-    }
-
-    .heartbeat-dot.stale {
-      background: #a0702a;
-      border-color: #a0702a;
-    }
-
-    .heartbeat-dot.error {
-      background: #983f3f;
-      border-color: #983f3f;
-    }
-
-    .heartbeat-dot.idle {
-      background: #9f9383;
-      border-color: #8b7d67;
-    }
-
-    @keyframes hbPulse {
-      0% { box-shadow: 0 0 0 0 rgba(47, 138, 92, 0.5); }
-      70% { box-shadow: 0 0 0 8px rgba(47, 138, 92, 0); }
-      100% { box-shadow: 0 0 0 0 rgba(47, 138, 92, 0); }
-    }
-
-    .log-panel {
-      max-height: 220px;
+    .log-body {
+      max-height: 30vh;
       overflow: auto;
       font-family: var(--font-mono);
       font-size: 11px;
       line-height: 1.45;
-      background: #fefcf8;
     }
 
     .log-line {
+      padding: 7px 10px;
       border-bottom: 1px solid var(--line);
-      padding: 6px 8px;
       white-space: pre-wrap;
       word-break: break-word;
     }
 
-    .log-line.error {
-      color: var(--error);
-      background: #fff6f6;
-    }
+    .log-line.ok { color: #2f6f4f; background: #f3faf6; }
+    .log-line.err { color: #8f3f3f; background: #fff6f6; }
 
-    .log-line.ok {
-      color: var(--ok);
-      background: #f4fbf6;
-    }
+    .hidden { display: none !important; }
 
-    .link-btn {
-      border: 0;
-      background: transparent;
-      padding: 2px 0;
-      margin: 0;
-      color: var(--accent);
-      text-align: left;
-      font-weight: 700;
-    }
-
-    .link-btn:hover {
-      text-decoration: underline;
-      background: transparent;
-    }
-
-    .log-dock {
-      position: fixed;
-      left: 14px;
-      right: 14px;
-      bottom: 12px;
-      z-index: 45;
-      border: 1px solid var(--line-strong);
-      border-radius: 14px;
-      background: #fffdfa;
-      box-shadow: 0 10px 28px rgba(40, 35, 30, 0.14);
-      overflow: hidden;
-    }
-
-    .log-dock-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--line);
-      background: #f4ead9;
-    }
-
-    .log-dock-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      font-weight: 800;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      color: #4f4438;
-    }
-
-    .log-dock-actions {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-    }
-
-    .dock-btn {
-      border: 1px solid var(--line);
-      background: #fffdf8;
-      color: var(--muted);
-      width: auto;
-      margin: 0;
-      padding: 6px 10px;
-      font-size: 11px;
-      border-radius: 999px;
-      font-weight: 700;
-    }
-
-    .log-dock-body {
-      max-height: 240px;
-      overflow: auto;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      background: #fffdfa;
-    }
-
-    .results-section-body {
-      padding: 10px;
-    }
-
-    .log-dock.collapsed .log-dock-body {
-      display: none;
-    }
-
-    .log-dock.collapsed {
-      box-shadow: 0 8px 20px rgba(40, 35, 30, 0.11);
-    }
-
-    @media (max-width: 1180px) {
-      .plan-layout,
-      .strategy-layout {
-        grid-template-columns: 1fr;
-      }
-
-      .results-layout,
-      .settings-layout {
-        grid-template-columns: 1fr;
-      }
-
-      .pane { min-height: auto; }
-      h1 { font-size: 30px; }
-      body { padding-bottom: 250px; }
-    }
-
-    @media (max-width: 760px) {
-      .topbar {
-        flex-direction: column;
-        align-items: flex-start;
-      }
-
-      .tabs {
-        align-self: stretch;
-      }
-
-      .step-rail {
-        grid-template-columns: 1fr 1fr;
-      }
-
-      .row {
-        flex-direction: column;
-      }
-
-      .tiny-col {
-        flex: 1;
-      }
-
-      .shell {
-        padding: var(--space-3);
-      }
-
-      .log-dock {
-        left: 8px;
-        right: 8px;
-        bottom: 8px;
-      }
-
-      .log-dock-body {
-        max-height: 34vh;
-      }
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr; }
+      .panel { min-height: auto; }
+      .shell { padding: 16px; }
+      h1 { font-size: 32px; }
     }
   </style>
 </head>
 <body>
   <div class="shell">
-    <div class="topbar">
-      <div>
-        <h1>Research Orchestrator</h1>
-        <div class="subtitle">Plan manuscript intake, set strategy, run research, and inspect outcomes without crowding one page.</div>
-      </div>
-      <div class="tabs" role="tablist" aria-label="App tabs">
-        <button class="tab-btn active" data-tab="manuscript" title="Step 1: choose manuscript source and file.">1 Manuscript</button>
-        <button class="tab-btn" data-tab="analysis" title="Step 2: generate and inspect gap analysis.">2 Gap Analysis</button>
-        <button class="tab-btn" data-tab="strategy" title="Step 3: choose pull strategy and launch runs.">3 Strategy</button>
-        <button class="tab-btn" data-tab="results" title="Step 4: review run status, events, and retry options.">4 Results</button>
-        <button class="tab-btn" data-tab="settings" title="Inspect and edit .env values, API keys, and source catalogs.">Settings</button>
-      </div>
-    </div>
+    <h1>Research Orchestrator</h1>
+    <div class="subtitle">Select manuscript, run once, inspect reflected plan, and watch the pipeline execute end-to-end with live structured events.</div>
 
-    <div id="tab-manuscript" class="plan-layout">
-      <section class="pane pane-flow">
-        <h2>Step 1: Manuscript Intake</h2>
-        <div class="workflow-progress muted" id="manuscript_status_text">Start by selecting or uploading a manuscript.</div>
+    <div class="layout">
+      <section class="panel">
+        <h2>Launch</h2>
+        <div id="launch_status" class="status-line">Choose a manuscript and start a run.</div>
 
-        <label for="manuscript_file_input">Upload Manuscript From Computer</label>
-        <div class="row">
-          <input id="manuscript_file_input" type="file" accept=".docx,.md,.txt,.pdf" title="Choose a manuscript file from your computer to upload into the app." />
-          <button id="upload_manuscript_btn" title="Upload the selected local file and add it to manuscript options.">Upload</button>
+        <label for="manuscript_select">Select Manuscript</label>
+        <select id="manuscript_select" title="Select a manuscript from workspace or uploaded files."></select>
+
+        <button id="refresh_manuscripts_btn" title="Reload manuscript options from disk.">Refresh Manuscripts</button>
+
+        <label for="manuscript_file_input">Upload Manuscript</label>
+        <input id="manuscript_file_input" type="file" accept=".docx,.md,.txt,.pdf" title="Choose a manuscript file from your computer." />
+        <button id="upload_manuscript_btn" title="Upload selected manuscript file to app storage.">Upload</button>
+
+        <button id="run_btn" class="primary" title="Start a full run: analyze, plan, pull, ingest, fit.">Run Research</button>
+
+        <div class="event-box" id="run_meta_box">
+          <div><strong>Current Run</strong></div>
+          <div id="run_meta" class="muted">No run started.</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Run Monitor</h2>
+
+        <div id="plan_box" class="event-box hidden">
+          <div><strong>Research Plan</strong></div>
+          <div id="plan_summary" class="muted">Waiting for plan...</div>
+          <div id="plan_stats" class="muted"></div>
+          <div id="plan_list" class="plan-list"></div>
         </div>
 
-        <div class="row">
-          <div>
-            <label for="manuscript_select">Select Manuscript</label>
-            <select id="manuscript_select"></select>
-          </div>
-          <div class="tiny-col">
-            <label>&nbsp;</label>
-            <button id="refresh_manuscripts_btn" title="Reload manuscript options from workspace and uploaded files.">↻</button>
-          </div>
+        <div class="event-box">
+          <div><strong>Pipeline Stages</strong></div>
+          <div class="stage-list" id="stage_list"></div>
+          <div id="stage_detail" class="muted">No stage activity yet.</div>
         </div>
 
-        <details>
-          <summary>Advanced Options</summary>
-          <label for="custom_manuscript_path" style="margin-top:10px;">Custom Manuscript Path (Optional)</label>
-          <input id="custom_manuscript_path" placeholder="/absolute/path/to/manuscript.docx" />
-          <label for="search_plan_path">Search Plan Path (Optional)</label>
-          <input id="search_plan_path" placeholder="codex/evidence_hub/data/pull_backlog_by_gap.csv" />
+        <details class="log-wrap" id="log_details">
+          <summary class="log-head">Live Log</summary>
+          <div class="log-body" id="log_body"></div>
         </details>
-
-        <div class="code" id="current_manuscript_path">manuscript path: not selected</div>
-        <button id="open_analysis_btn" class="primary-btn main-cta" title="Open the Gap Analysis tab for this manuscript.">Go To Gap Analysis</button>
-      </section>
-    </div>
-
-    <div id="tab-analysis" class="plan-layout hidden">
-      <section class="pane pane-flow">
-        <h2>Step 2: Gap Analysis</h2>
-        <button class="primary-btn main-cta" id="load_gaps_btn" title="Read the selected manuscript and generate or load chapter gap analysis.">Analyze Manuscript</button>
-        <div id="analysis_status" class="muted">No analysis run yet.</div>
-        <button id="open_strategy_btn" class="link-btn" title="Continue to Strategy tab to configure pull settings and launch the run.">Continue To Strategy</button>
-      </section>
-
-      <section class="pane pane-flow">
-        <h2>Gap Analysis Output</h2>
-        <div id="gap_summary" class="muted">Run analysis to populate chapter gap layout for the selected manuscript.</div>
-        <div id="read_status" class="event" style="margin-top:10px;">
-          <div><strong>Manuscript Read Status</strong></div>
-          <div class="muted">No extraction details yet.</div>
-        </div>
-        <div id="gap_layout" class="list" style="margin-top:10px;"></div>
-      </section>
-    </div>
-
-    <div id="tab-strategy" class="strategy-layout hidden">
-      <section class="pane">
-        <h2>Strategy</h2>
-        <label for="pull_mode">Pull Mode</label>
-        <select id="pull_mode">
-          <option value="auto">auto</option>
-          <option value="api">api</option>
-          <option value="playwright">playwright</option>
-        </select>
-
-        <label for="pull_provider">Pull Provider</label>
-        <input id="pull_provider" value="ebscohost" />
-
-        <div class="row" style="margin-top:8px;">
-          <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
-            <input type="radio" name="strategy_mode" value="automatic" checked style="width:auto; margin:0;" />
-            Automatic research sweep
-          </label>
-          <label style="display:flex; gap:8px; align-items:center; text-transform:none; font-size:13px; color:var(--ink);">
-            <input type="radio" name="strategy_mode" value="narrow" style="width:auto; margin:0;" />
-            Narrow question
-          </label>
-        </div>
-
-        <label for="narrow_question">Narrow Research Question</label>
-        <textarea id="narrow_question" placeholder="Example: Find sources only on Amazon warehouse injury rates in chapter 4." disabled></textarea>
-
-        <label for="target_gap_id">Target Gap (for narrow mode)</label>
-        <select id="target_gap_id"></select>
-        <button id="refresh_strategy_btn" title="Generate a high-level strategy brief with planned sources and query list.">Generate Strategy Brief</button>
-        <div id="strategy_status" class="muted">Generate strategy brief to preview sources and query plan.</div>
-
-        <button class="primary-btn main-cta" id="start_run_btn" title="Start a new orchestrated research run using current strategy and provider.">Start Research Run</button>
-        <div class="indicator-row">
-          <span id="run_live_status" class="status">idle</span>
-          <span id="run_heartbeat_dot" class="heartbeat-dot idle" title="Polling heartbeat from backend run monitor."></span>
-          <span id="run_heartbeat_text" class="muted">idle</span>
-          <span class="muted">Run monitor</span>
-        </div>
-        <button id="open_results_btn" class="link-btn" title="Jump to the Results tab to monitor run progress and events.">View Results</button>
-        <button id="open_analysis_from_strategy_btn" class="link-btn" title="Return to Gap Analysis tab to inspect or refresh gaps.">Back To Gap Analysis</button>
-        <div id="intent_status" class="muted"></div>
-        <div id="run_status" class="muted"></div>
-      </section>
-
-      <section class="pane">
-        <h2>Strategy Brief</h2>
-        <div class="event">
-          <div><strong>High-Level Strategy</strong> <span id="strategy_summary_meta" class="status">pending</span></div>
-          <div id="strategy_summary" class="muted">No strategy summary yet.</div>
-        </div>
-        <div class="event">
-          <div><strong>Sources To Pull</strong></div>
-          <div id="strategy_sources" class="strategy-items muted">No sources yet.</div>
-        </div>
-        <div class="event">
-          <div><strong>Planned Queries</strong></div>
-          <div id="strategy_queries" class="strategy-items muted">No queries yet.</div>
-        </div>
-        <div class="event">
-          <div><strong>Execution Checklist</strong></div>
-          <div id="strategy_checklist" class="strategy-items muted">No checklist yet.</div>
-        </div>
-
-        <h2 style="margin-top:16px;">Live Activity</h2>
-        <div class="event">
-          <div><strong>Current Stage</strong></div>
-          <div id="activity_stage" class="code">idle</div>
-        </div>
-        <div class="event">
-          <div><strong>Current Action</strong></div>
-          <div id="activity_action" class="muted">No run events yet.</div>
-        </div>
-        <div class="event">
-          <div><strong>Pull/Search Detail</strong></div>
-          <div id="activity_pull_detail" class="code">No pull metadata yet.</div>
-        </div>
-      </section>
-    </div>
-
-    <div id="tab-results" class="results-layout hidden">
-      <section class="pane">
-        <h2>Results</h2>
-        <details id="results_runs_panel" open>
-          <summary>Runs</summary>
-          <div class="results-section-body">
-            <div class="row">
-              <button id="refresh_runs_btn" title="Refresh the list of orchestrator runs.">Refresh Runs</button>
-              <button id="retry_run_btn" title="Retry the selected run from failed or completed state.">Retry Selected Run</button>
-            </div>
-            <div id="runs_list" class="list" style="max-height: 34vh;"></div>
-          </div>
-        </details>
-
-        <details id="results_events_panel">
-          <summary>Run Events</summary>
-          <div class="results-section-body">
-            <div class="row">
-              <input id="events_run_id" placeholder="run_xxx" />
-              <button id="load_events_btn" title="Load timeline events for the entered run ID.">Load Events</button>
-            </div>
-            <div id="events_list" class="list" style="max-height: 34vh;"></div>
-          </div>
-        </details>
-      </section>
-    </div>
-
-    <div id="tab-settings" class="settings-layout hidden">
-      <section class="pane">
-        <h2>Environment Values</h2>
-        <div class="row">
-          <button id="load_env_btn" title="Load current .env values from disk for review.">Load .env Values</button>
-          <button id="load_conn_schema_btn" title="Load recommended connection fields for current mode/provider.">Load Recommended Fields</button>
-        </div>
-        <button id="load_sources_btn" title="Refresh lists of free APIs, closed APIs, and university databases.">Refresh Source Catalog</button>
-
-        <div class="row">
-          <div>
-            <label for="settings_mode">Mode</label>
-            <select id="settings_mode">
-              <option value="auto">auto</option>
-              <option value="api">api</option>
-              <option value="playwright">playwright</option>
-            </select>
-          </div>
-          <div>
-            <label for="settings_provider">Provider</label>
-            <select id="settings_provider">
-              <option value="ebscohost">ebscohost</option>
-              <option value="statista">statista</option>
-              <option value="custom">custom</option>
-            </select>
-          </div>
-        </div>
-
-        <div id="settings_status" class="muted"></div>
-        <div class="list" style="margin-top:10px;">
-          <table>
-            <thead>
-              <tr><th>Key</th><th>Value</th><th>Type</th><th>Source</th></tr>
-            </thead>
-            <tbody id="env_values_tbody"></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="pane">
-        <h2>Data Sources In Use</h2>
-        <div class="source-group">
-          <h3>Free APIs</h3>
-          <div id="free_api_list"></div>
-        </div>
-        <div class="source-group">
-          <h3>Closed / Keyed APIs</h3>
-          <div id="closed_api_list"></div>
-        </div>
-        <div class="source-group">
-          <h3>University Databases</h3>
-          <div id="university_db_list"></div>
-        </div>
-
-        <h2>Add / Update Key</h2>
-        <label for="env_key">Env Key</label>
-        <input id="env_key" placeholder="ORCH_API_PULL_COMMAND" />
-        <label for="env_value">Env Value</label>
-        <textarea id="env_value" placeholder="python3 codex/scripts/your_puller.py --workspace {workspace}"></textarea>
-        <button id="save_env_btn" title="Write this key/value to .env and make it available to new runs.">Save Key To .env</button>
-
-        <h2 style="margin-top:16px;">Recommended Connection Fields</h2>
-        <div id="recommended_fields" class="list"></div>
       </section>
     </div>
   </div>
 
-  <section id="log_dock" class="log-dock" aria-label="Live backend log">
-    <div class="log-dock-header">
-      <div class="log-dock-title">
-        <span>Live Run Log</span>
-        <span id="dock_run_stage" class="status">idle</span>
-        <span id="dock_log_heartbeat" class="status">no events yet</span>
-      </div>
-      <div class="log-dock-actions">
-        <button id="dock_view_results_btn" class="dock-btn" title="Open Results tab">Results</button>
-        <button id="clear_log_btn" class="dock-btn" title="Clear only the on-screen activity log panel.">Clear</button>
-        <button id="toggle_log_dock_btn" class="dock-btn" title="Collapse or expand the live log dock.">Collapse</button>
-      </div>
-    </div>
-    <div id="backend_log" class="log-dock-body"></div>
-  </section>
-
   <script>
     const q = (id) => document.getElementById(id);
-    const TABS = ["manuscript", "analysis", "strategy", "results", "settings"];
-    const TERMINAL_STATUSES = new Set(["completed", "failed", "partial_completed"]);
-    const HEARTBEAT_STALE_MS = 9000;
-    const HEARTBEAT_LOG_INTERVAL_MS = 15000;
-    const STORAGE_KEYS = {
-      activeTab: "orchestrator.active_tab",
-      selectedManuscript: "orchestrator.selected_manuscript",
-      customManuscriptPath: "orchestrator.custom_manuscript_path",
-      searchPlanPath: "orchestrator.search_plan_path",
-      pullMode: "orchestrator.pull_mode",
-      pullProvider: "orchestrator.pull_provider",
-      selectedRunId: "orchestrator.selected_run_id",
-      logDockCollapsed: "orchestrator.log_dock_collapsed",
-      resultsRunsOpen: "orchestrator.results_runs_open",
-      resultsEventsOpen: "orchestrator.results_events_open",
-    };
+    const STORAGE_LAST_MANUSCRIPT = "orchestrator_v2_last_manuscript";
+    const STAGES = ["analyzing", "planning", "pulling", "ingesting", "fitting", "complete"];
+    const TERMINAL = new Set(["complete", "partial", "failed"]);
+
     const state = {
       manuscripts: [],
-      gaps: [],
-      intentId: "",
-      selectedRunId: "",
-      runMonitorTimer: null,
-      seenRunEventKeys: new Set(),
-      seenRunErrors: new Set(),
-      activeTab: "manuscript",
-      health: null,
-      runPlans: {},
-      loggedRunPlans: new Set(),
-      strategyPreview: null,
-      runProgress: { runId: "", stage: "idle", status: "idle" },
-      monitorTickerTimer: null,
-      logTickerTimer: null,
-      lastLogMs: 0,
-      monitorState: {
-        mode: "idle",
-        lastSuccessMs: 0,
-        detail: "idle",
-      },
-      runHeartbeatNotices: {},
+      activeRunId: "",
+      pollTimer: null,
+      eventsSeen: new Set(),
+      currentRun: null,
     };
 
     async function api(path, method = "GET", body = null) {
-      const res = await fetch(path, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: body ? JSON.stringify(body) : null,
-      });
+      const options = { method, headers: { "Content-Type": "application/json" } };
+      if (body) options.body = JSON.stringify(body);
+      const res = await fetch(path, options);
       if (!res.ok) {
         const text = await res.text();
         throw new Error(text || `HTTP ${res.status}`);
@@ -1082,1265 +315,254 @@
       return await res.json();
     }
 
-    function loadPref(key, fallback = "") {
-      try {
-        const value = localStorage.getItem(key);
-        return value === null ? fallback : value;
-      } catch (_) {
-        return fallback;
-      }
-    }
-
-    function savePref(key, value) {
-      try {
-        localStorage.setItem(key, value || "");
-      } catch (_) {}
-    }
-
     function setText(id, text) {
       const node = q(id);
-      if (!node) return;
-      node.textContent = text;
+      if (node) node.textContent = text || "";
     }
 
-    function appendLog(message, kind = "info") {
-      const root = q("backend_log");
-      if (!root) return;
-      const stamp = new Date().toLocaleTimeString();
-      const row = document.createElement("div");
-      row.className = `log-line ${kind === "error" ? "error" : kind === "ok" ? "ok" : ""}`;
-      row.textContent = `[${stamp}] ${message}`;
-      root.appendChild(row);
-      if (root.childElementCount > 300) {
-        root.removeChild(root.firstChild);
-      }
-      root.scrollTop = root.scrollHeight;
-      state.lastLogMs = Date.now();
-      renderLogHeartbeat();
-    }
-
-    function renderLogHeartbeat() {
-      const node = q("dock_log_heartbeat");
-      if (!node) return;
-      const now = Date.now();
-      const mode = state.monitorState?.mode || "idle";
-      const ageSec = state.lastLogMs ? Math.max(0, Math.floor((now - state.lastLogMs) / 1000)) : null;
-      node.className = "status";
-      if (ageSec === null) {
-        node.textContent = mode === "live" ? "waiting for events" : "no events yet";
-        return;
-      }
-      if (mode === "live" && ageSec <= 6) {
-        node.classList.add("ok");
-        node.textContent = `updating • ${ageSec}s`;
-        return;
-      }
-      if (mode === "live") {
-        node.classList.add("started");
-        node.textContent = `active • ${ageSec}s`;
-        return;
-      }
-      node.textContent = `last event • ${ageSec}s`;
-    }
-
-    function startLogHeartbeatTicker() {
-      if (state.logTickerTimer) clearInterval(state.logTickerTimer);
-      state.logTickerTimer = setInterval(renderLogHeartbeat, 1000);
-    }
-
-    function bindAction(id, eventName, handler) {
-      const el = q(id);
-      if (!el) {
-        appendLog(`UI wiring missing element: #${id}`, "error");
-        return;
-      }
-      el.addEventListener(eventName, (evt) => {
-        Promise.resolve(handler(evt)).catch((err) => {
-          appendLog(`Action failed (${id}): ${err.message || err}`, "error");
-        });
-      });
-    }
-
-    function setButtonBusy(id, busy, busyLabel, defaultLabel) {
-      const btn = q(id);
+    function setRunButtonBusy(busy) {
+      const btn = q("run_btn");
       if (!btn) return;
-      if (!btn.dataset.defaultLabel) {
-        btn.dataset.defaultLabel = defaultLabel || btn.textContent;
-      }
-      if (busy) {
-        btn.disabled = true;
-        btn.classList.add("running");
-        btn.textContent = busyLabel || btn.textContent;
-        return;
-      }
-      btn.disabled = false;
-      btn.classList.remove("running");
-      btn.textContent = btn.dataset.defaultLabel;
+      btn.disabled = busy;
+      btn.classList.toggle("running", busy);
+      btn.textContent = busy ? "Running..." : "Run Research";
     }
 
-    function setRunIndicator(status, detail = "") {
-      const node = q("run_live_status");
-      const norm = String(status || "idle").toLowerCase();
-      [node, q("dock_run_stage")].forEach((el) => {
-        if (!el) return;
-        el.className = "status";
-        if (norm === "completed") el.classList.add("ok");
-        else if (norm === "failed") el.classList.add("failed");
-        else if (norm !== "idle") el.classList.add("started");
-        el.textContent = detail ? `${norm}: ${detail}` : norm;
-      });
+    function appendLog(line, klass = "") {
+      const logBody = q("log_body");
+      if (!logBody) return;
+      const div = document.createElement("div");
+      div.className = `log-line ${klass}`.trim();
+      div.textContent = line;
+      logBody.appendChild(div);
+      logBody.scrollTop = logBody.scrollHeight;
     }
 
-    // Keep the global dock state explicit so logs remain available while preserving user preference.
-    function applyLogDockCollapsed(collapsed, persist = true) {
-      const dock = q("log_dock");
-      const toggle = q("toggle_log_dock_btn");
-      if (!dock) return;
-      dock.classList.toggle("collapsed", !!collapsed);
-      if (toggle) toggle.textContent = collapsed ? "Expand" : "Collapse";
-      if (persist) {
-        savePref(STORAGE_KEYS.logDockCollapsed, collapsed ? "1" : "0");
-      }
+    function summarizeEvent(evt) {
+      const ts = evt.ts_utc || "";
+      const stage = evt.stage || "stage";
+      const status = evt.status || "status";
+      const msg = evt.message || "";
+      return `[${ts}] ${stage}/${status}: ${msg}`;
     }
 
-    function setMonitorState(mode, detail = "") {
-      state.monitorState.mode = mode;
-      state.monitorState.detail = detail || mode;
-      if (mode === "live") {
-        state.monitorState.lastSuccessMs = Date.now();
-      }
-      renderHeartbeat();
-      renderLogHeartbeat();
-    }
+    function renderStages(run) {
+      const root = q("stage_list");
+      if (!root) return;
+      root.innerHTML = "";
 
-    function renderHeartbeat() {
-      const dot = q("run_heartbeat_dot");
-      const text = q("run_heartbeat_text");
-      if (!dot || !text) return;
-      const now = Date.now();
-      const lastSuccess = state.monitorState.lastSuccessMs || 0;
-      const ageMs = lastSuccess ? Math.max(0, now - lastSuccess) : 0;
-      const ageSec = Math.floor(ageMs / 1000);
+      const runStatus = String(run?.status || "queued");
+      const stage = String(runStatus);
 
-      let mode = state.monitorState.mode || "idle";
-      if (mode === "live" && ageMs > HEARTBEAT_STALE_MS) {
-        mode = "stale";
-      }
+      STAGES.forEach((name) => {
+        const row = document.createElement("div");
+        row.className = "stage";
+        const badge = document.createElement("span");
+        badge.className = "pill";
 
-      dot.className = `heartbeat-dot ${mode}`;
-      if (mode === "live") {
-        text.textContent = `live • checked ${ageSec}s ago`;
-      } else if (mode === "stale") {
-        text.textContent = `waiting • last check ${ageSec}s ago`;
-      } else if (mode === "error") {
-        text.textContent = state.monitorState.detail || "monitor error";
-      } else if (mode === "done") {
-        text.textContent = state.monitorState.detail || "run completed";
-      } else {
-        text.textContent = state.monitorState.detail || "idle";
-      }
-    }
+        const stageIndex = STAGES.indexOf(name);
+        const runIndex = STAGES.indexOf(stage);
 
-    function startHeartbeatTicker() {
-      if (state.monitorTickerTimer) {
-        clearInterval(state.monitorTickerTimer);
-      }
-      state.monitorTickerTimer = setInterval(renderHeartbeat, 1000);
-    }
-
-    function stopHeartbeatTicker() {
-      if (state.monitorTickerTimer) {
-        clearInterval(state.monitorTickerTimer);
-        state.monitorTickerTimer = null;
-      }
-    }
-
-    async function loadHealth() {
-      const out = await api("/api/orchestrator/health");
-      state.health = out || {};
-      return state.health;
-    }
-
-    function buildRunPlan(payload) {
-      const health = state.health || {};
-      const mode = String(payload?.pull_mode || q("pull_mode")?.value || "auto");
-      const provider = String(payload?.pull_provider || q("pull_provider")?.value || "ebscohost");
-      const autoIngest = health.auto_ingest !== false;
-      const autoLlmFit = health.auto_llm_fit !== false;
-      const plan = [
-        { stage: "validating_config", label: "Validate configuration and required settings" },
-        { stage: "planning", label: "Resolve intent and run parameters" },
-        { stage: "pulling", label: `Pull sources (${mode}/${provider})` },
-      ];
-      if (autoIngest) {
-        plan.push({ stage: "ingesting", label: "Ingest pulled artifacts" });
-      }
-      if (autoIngest && autoLlmFit) {
-        plan.push({ stage: "llm_processing", label: "Run LLM fit processing" });
-      }
-      plan.push({ stage: "completed", label: "Finalize run and persist outputs" });
-      return plan;
-    }
-
-    function ensureRunPlan(runId, payload, announce = false) {
-      if (!runId) return [];
-      if (!state.runPlans[runId]) {
-        state.runPlans[runId] = buildRunPlan(payload || {});
-      }
-      const plan = state.runPlans[runId];
-      if (announce && !state.loggedRunPlans.has(runId)) {
-        appendLog(`[${runId}] Plan loaded (${plan.length} steps):`, "ok");
-        plan.forEach((step, idx) => {
-          appendLog(`[${runId}] ${idx + 1}/${plan.length} ${step.label}`);
-        });
-        state.loggedRunPlans.add(runId);
-      }
-      return plan;
-    }
-
-    function stepProgressLabel(runId, stageName) {
-      const plan = state.runPlans[runId] || [];
-      if (!plan.length) return "";
-      const stage = String(stageName || "");
-      if (stage === "queued") {
-        return `0/${plan.length}`;
-      }
-      const idx = plan.findIndex((step) => step.stage === stage);
-      if (idx < 0) return `?/${plan.length}`;
-      return `${idx + 1}/${plan.length}`;
-    }
-
-    function _clip(value, limit = 180) {
-      const txt = String(value || "").trim();
-      if (!txt) return "";
-      return txt.length > limit ? `${txt.slice(0, limit)}...` : txt;
-    }
-
-    // Build stable, readable metadata text for both activity panel and live log rows.
-    function summarizeEventMeta(meta) {
-      if (!meta || typeof meta !== "object") return "";
-      const entries = [];
-      const add = (key, value) => {
-        const clipped = _clip(value);
-        if (!clipped) return;
-        entries.push(`${key}=${clipped}`);
-      };
-
-      add("pull_mode", meta.pull_mode);
-      add("pull_provider", meta.pull_provider);
-      add("provider", meta.provider);
-      add("query", meta.query || meta.search_query);
-      add("search_plan", meta.search_plan_path);
-      add("command", meta.pull_command || meta.command);
-      add("run_id", meta.run_id);
-      add("run_dir", meta.run_dir);
-      add("artifact_type", meta.artifact_type);
-
-      if (meta.stats && typeof meta.stats === "object") {
-        const stats = meta.stats;
-        add("api_calls", stats.api_calls || stats.call_count || stats.request_count);
-        add("fallback", stats.fallback);
-        add("stdout", stats.stdout_tail);
-      } else {
-        add("stdout", meta.stdout_tail);
-      }
-      add("stderr", meta.stderr_tail);
-
-      if (entries.length) return entries.join(" | ");
-      try {
-        const raw = JSON.stringify(meta);
-        if (!raw || raw === "{}") return "";
-        return _clip(raw, 360);
-      } catch (_) {
-        return "";
-      }
-    }
-
-    function setActivityStatus(runOut, latestEvent = null) {
-      const stage = String(runOut?.stage || "idle");
-      const status = String(runOut?.status || "idle");
-      const eventMsg = latestEvent?.message || runOut?.error || "No run events yet.";
-      const detail =
-        summarizeEventMeta(latestEvent?.meta || {}) ||
-        summarizeEventMeta(runOut?.payload || {}) ||
-        "No pull metadata yet.";
-      setText("activity_stage", `${stage}/${status}`);
-      setText("activity_action", eventMsg);
-      setText("activity_pull_detail", detail);
-    }
-
-    function selectedStrategyMode() {
-      return document.querySelector("input[name='strategy_mode']:checked")?.value || "automatic";
-    }
-
-    function strategyPreviewPayload() {
-      return {
-        manuscript_path: currentManuscriptPath(),
-        pull_mode: q("pull_mode")?.value || "auto",
-        pull_provider: q("pull_provider")?.value.trim() || "ebscohost",
-        strategy_mode: selectedStrategyMode(),
-        narrow_question: q("narrow_question")?.value.trim() || "",
-        target_gap_id: q("target_gap_id")?.value || "",
-      };
-    }
-
-    function stageOrderIndex(stageName, checklist) {
-      const idx = (checklist || []).findIndex((item) => item.stage === stageName);
-      return idx < 0 ? -1 : idx;
-    }
-
-    function strategyCheckStatus(itemStage, runStage, runStatus, checklist) {
-      const activeStatuses = new Set(["queued", "validating_config", "planning", "pulling", "ingesting", "llm_processing", "pulling_completed"]);
-      if (!runStage || !runStatus || !activeStatuses.has(runStatus) && !TERMINAL_STATUSES.has(runStatus)) {
-        return "pending";
-      }
-      const itemIdx = stageOrderIndex(itemStage, checklist);
-      const runIdx = stageOrderIndex(runStage, checklist);
-      if (itemIdx < 0 || runIdx < 0) return "pending";
-      if (runStatus === "failed") {
-        if (itemIdx < runIdx) return "done";
-        if (itemIdx === runIdx) return "failed";
-        return "pending";
-      }
-      if (runStatus === "completed") return "done";
-      if (itemIdx < runIdx) return "done";
-      if (itemIdx === runIdx) return "active";
-      return "pending";
-    }
-
-    function renderStrategyPreview() {
-      const preview = state.strategyPreview || {};
-      const summaryMethod = preview.summary_method || "pending";
-      const summaryModel = preview.summary_model || "";
-      const summaryError = preview.summary_error || "";
-      const summaryMeta = summaryModel ? `${summaryMethod}:${summaryModel}` : summaryMethod;
-      setText("strategy_summary", preview.summary || "No strategy summary yet.");
-      setText("strategy_summary_meta", summaryMeta);
-      const summaryMetaNode = q("strategy_summary_meta");
-      if (summaryMetaNode) {
-        summaryMetaNode.className = "status";
-        if (summaryMethod === "ollama") summaryMetaNode.classList.add("ok");
-        else if (summaryMethod === "fallback") summaryMetaNode.classList.add("started");
-      }
-      if (summaryError) {
-        setText("strategy_status", `LLM summary fallback used (${summaryError}).`);
-      }
-
-      const runStage = state.runProgress.stage || "";
-      const runStatus = state.runProgress.status || "";
-      const checklist = preview.checklist || [];
-
-      const sourcesRoot = q("strategy_sources");
-      if (sourcesRoot) {
-        sourcesRoot.innerHTML = "";
-        const sourceItems = preview.sources || [];
-        if (!sourceItems.length) {
-          sourcesRoot.textContent = "No sources yet.";
-          sourcesRoot.classList.add("muted");
+        if (runStatus === "failed" && name === stage) {
+          row.classList.add("failed");
+          badge.textContent = "failed";
+        } else if (runStatus === "complete" || runStatus === "partial") {
+          if (name === "complete") {
+            row.classList.add("done");
+            badge.textContent = runStatus;
+          } else {
+            row.classList.add("done");
+            badge.textContent = "done";
+          }
+        } else if (stageIndex >= 0 && runIndex >= 0) {
+          if (stageIndex < runIndex) {
+            row.classList.add("done");
+            badge.textContent = "done";
+          } else if (stageIndex === runIndex) {
+            row.classList.add("active");
+            badge.textContent = "active";
+          } else {
+            badge.textContent = "pending";
+          }
         } else {
-          sourcesRoot.classList.remove("muted");
-          const sourceStatus = runStage === "pulling" ? "active" : (stageOrderIndex(runStage, checklist) > stageOrderIndex("pulling", checklist) || runStatus === "completed") ? "done" : runStatus === "failed" && runStage === "pulling" ? "failed" : "pending";
-          sourceItems.forEach((src) => {
-            const row = document.createElement("div");
-            row.className = "strategy-item";
-            row.innerHTML = `
-              <div class="strategy-item-header">
-                <div class="strategy-item-title">${src.name || "source"}</div>
-                <span class="strategy-check ${sourceStatus}">${sourceStatus === "done" ? "✓" : sourceStatus === "active" ? "…" : sourceStatus === "failed" ? "!" : "○"}</span>
-              </div>
-              <div class="strategy-item-meta">${src.provider || ""} • ${src.why || ""}</div>
-            `;
-            sourcesRoot.appendChild(row);
-          });
+          badge.textContent = "pending";
         }
-      }
 
-      const queryRoot = q("strategy_queries");
-      if (queryRoot) {
-        queryRoot.innerHTML = "";
-        const queryItems = preview.queries || [];
-        if (!queryItems.length) {
-          queryRoot.textContent = "No queries yet.";
-          queryRoot.classList.add("muted");
-        } else {
-          queryRoot.classList.remove("muted");
-          const queryStatus = runStage === "pulling" ? "active" : (stageOrderIndex(runStage, checklist) > stageOrderIndex("pulling", checklist) || runStatus === "completed") ? "done" : runStatus === "failed" && runStage === "pulling" ? "failed" : "pending";
-          queryItems.forEach((item) => {
-            const row = document.createElement("div");
-            row.className = "strategy-item";
-            row.innerHTML = `
-              <div class="strategy-item-header">
-                <div class="strategy-item-title">${item.query_id || "Q"}${item.gap_id ? ` • ${item.gap_id}` : ""}</div>
-                <span class="strategy-check ${queryStatus}">${queryStatus === "done" ? "✓" : queryStatus === "active" ? "…" : queryStatus === "failed" ? "!" : "○"}</span>
-              </div>
-              <div>${item.text || ""}</div>
-              <div class="strategy-item-meta">${item.origin || "planned query"}</div>
-            `;
-            queryRoot.appendChild(row);
-          });
-        }
-      }
-
-      const checklistRoot = q("strategy_checklist");
-      if (checklistRoot) {
-        checklistRoot.innerHTML = "";
-        if (!checklist.length) {
-          checklistRoot.textContent = "No checklist yet.";
-          checklistRoot.classList.add("muted");
-        } else {
-          checklistRoot.classList.remove("muted");
-          checklist.forEach((item) => {
-            const status = strategyCheckStatus(item.stage, runStage, runStatus, checklist);
-            const row = document.createElement("div");
-            row.className = `strategy-item state-${status}`;
-            row.innerHTML = `
-              <div class="strategy-item-header">
-                <div class="strategy-item-title">${item.label || item.stage}</div>
-                <span class="strategy-check ${status}">${status === "done" ? "✓" : status === "active" ? "…" : status === "failed" ? "!" : "○"}</span>
-              </div>
-              <div class="strategy-item-meta">${item.stage}</div>
-            `;
-            checklistRoot.appendChild(row);
-          });
-        }
-      }
-    }
-
-    async function loadStrategyPreview() {
-      const manuscriptPath = currentManuscriptPath();
-      if (!manuscriptPath) {
-        setText("strategy_status", "Select a manuscript first.");
-        return;
-      }
-      setButtonBusy("refresh_strategy_btn", true, "Building Strategy...", "Generate Strategy Brief");
-      setText("strategy_status", "Building strategy preview...");
-      try {
-        const out = await api("/api/orchestrator/strategy/preview", "POST", strategyPreviewPayload());
-        state.strategyPreview = out || {};
-        renderStrategyPreview();
-        const method = out.summary_method || "fallback";
-        const model = out.summary_model ? ` (${out.summary_model})` : "";
-        setText(
-          "strategy_status",
-          `Strategy ready: ${out.sources?.length || 0} sources, ${out.queries?.length || 0} queries, ${out.checklist?.length || 0} checklist steps. Summary via ${method}${model}.`
-        );
-      } finally {
-        setButtonBusy("refresh_strategy_btn", false, "", "Generate Strategy Brief");
-      }
-    }
-
-    function currentManuscriptPath() {
-      const custom = q("custom_manuscript_path");
-      const select = q("manuscript_select");
-      const customPath = custom ? custom.value.trim() : "";
-      const selectedPath = select ? (select.value || "") : "";
-      return customPath || selectedPath;
-    }
-
-    function persistWorkflowInputs() {
-      savePref(STORAGE_KEYS.customManuscriptPath, q("custom_manuscript_path")?.value.trim() || "");
-      savePref(STORAGE_KEYS.searchPlanPath, q("search_plan_path")?.value.trim() || "");
-      savePref(STORAGE_KEYS.selectedManuscript, q("manuscript_select")?.value || "");
-      savePref(STORAGE_KEYS.pullMode, q("pull_mode")?.value || "auto");
-      savePref(STORAGE_KEYS.pullProvider, q("pull_provider")?.value.trim() || "ebscohost");
-    }
-
-    // Keep manuscript/strategy status explicit so users always know what to do next.
-    function updateWorkflowProgress() {
-      const hasManuscript = !!currentManuscriptPath();
-      const hasGaps = state.gaps.length > 0;
-      const hasRun = !!state.selectedRunId;
-      let message = "Start by selecting or uploading a manuscript.";
-      if (hasManuscript && !hasGaps) message = "Manuscript selected. Run gap analysis next.";
-      if (hasGaps && !hasRun) message = "Gap map ready. Open Strategy to launch research.";
-      if (hasRun) message = `Run selected (${state.selectedRunId}). Open Results or watch the live log.`;
-      setText("manuscript_status_text", message);
-      setText("current_manuscript_path", `manuscript path: ${currentManuscriptPath() || "not selected"}`);
-    }
-
-    async function refreshTabData(name) {
-      if (name === "strategy") {
-        await loadStrategyPreview();
-        return;
-      }
-      if (name === "results") {
-        await loadRuns();
-        if (q("events_run_id")?.value.trim()) {
-          await loadEvents();
-        }
-        return;
-      }
-      if (name === "settings") {
-        await loadEnvValues();
-        await loadRecommendedFields();
-        await loadSourceCatalog();
-      }
-    }
-
-    function showTab(name) {
-      const tabName = TABS.includes(name) ? name : "manuscript";
-      state.activeTab = tabName;
-      savePref(STORAGE_KEYS.activeTab, tabName);
-      document.querySelectorAll(".tab-btn").forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.tab === tabName);
+        row.innerHTML = `<span>${name}</span>`;
+        row.appendChild(badge);
+        root.appendChild(row);
       });
-      TABS.forEach((tab) => {
-        const panel = q(`tab-${tab}`);
-        if (panel) panel.classList.toggle("hidden", tab !== tabName);
-      });
-      refreshTabData(tabName).catch((err) => {
-        const target = tabName === "settings" ? "settings_status" : "run_status";
-        setText(target, `Error: ${err.message}`);
+
+      setText("stage_detail", run?.stage_detail || "No stage activity yet.");
+    }
+
+    function renderPlan(run) {
+      const plan = run?.research_plan;
+      const box = q("plan_box");
+      const list = q("plan_list");
+      if (!box || !list) return;
+
+      if (!plan || !Array.isArray(plan.gaps) || !plan.gaps.length) {
+        box.classList.add("hidden");
+        return;
+      }
+
+      box.classList.remove("hidden");
+      setText("plan_summary", plan.plan_summary || "");
+      const skipCount = plan.gaps.filter((g) => !!g.skip).length;
+      setText("plan_stats", `${plan.gaps.length} planned gaps · ${skipCount} skipped · ${plan.estimated_pull_count || 0} estimated pulls`);
+
+      list.innerHTML = "";
+      plan.gaps.forEach((gap) => {
+        const card = document.createElement("div");
+        card.className = "plan-gap";
+        const queries = Array.isArray(gap.search_queries) ? gap.search_queries.slice(0, 3) : [];
+        const sources = Array.isArray(gap.preferred_sources) ? gap.preferred_sources : [];
+        card.innerHTML = `
+          <div><strong>${gap.gap_id || "gap"}</strong> · ${gap.chapter || "chapter"} · ${gap.priority || "priority"}</div>
+          <div>${gap.claim_text || ""}</div>
+          <div class="muted">queries: ${queries.join(" | ") || "none"}</div>
+          <div class="muted">sources: ${sources.join(", ") || "auto"}</div>
+          <div class="muted">${gap.skip ? `skipped: ${gap.skip_reason || "no reason"}` : (gap.rationale || "")}</div>
+        `;
+        list.appendChild(card);
       });
     }
 
-    function analysisReasonText(reason, refresh) {
-      const map = {
-        canonical_add_to_cart_map: "Using canonical Add-to-Cart map (already curated).",
-        manuscript_sidecar_map: "Using manuscript sidecar gap map (analysis already supplied).",
-        existing_generated_map: "Analysis already ran for this manuscript. Loaded existing map.",
-        generated_missing_map: refresh ? "Analysis refreshed and saved for this manuscript." : "Analysis generated and saved for this manuscript.",
-        regenerated_placeholder_map: "Placeholder map detected and replaced with fresh analysis.",
-        regenerated_missing_metadata: "Legacy map lacked metadata and was regenerated.",
-        regenerated_analysis_upgrade: "Map upgraded to current analysis version.",
-        missing_manuscript_path: "No manuscript selected yet.",
-      };
-      return map[String(reason || "")] || `Gap layout loaded (${reason || "unspecified source"}).`;
+    function saveLastManuscript(path) {
+      if (!path) return;
+      localStorage.setItem(STORAGE_LAST_MANUSCRIPT, path);
+    }
+
+    function loadLastManuscript() {
+      return localStorage.getItem(STORAGE_LAST_MANUSCRIPT) || "";
     }
 
     function fillManuscripts() {
       const sel = q("manuscript_select");
       if (!sel) return;
-      const previous = sel.value;
-      const stored = loadPref(STORAGE_KEYS.selectedManuscript, "");
+      const prev = loadLastManuscript();
       sel.innerHTML = "";
-      state.manuscripts.forEach((m) => {
+      state.manuscripts.forEach((row) => {
         const opt = document.createElement("option");
-        opt.value = m.path;
-        const source = m.source === "uploaded" ? "uploaded" : "workspace";
-        opt.textContent = `${m.name} [${source}]`;
+        opt.value = row.path;
+        opt.textContent = `${row.name} [${row.source === "uploaded" ? "uploaded" : "workspace"}]`;
         sel.appendChild(opt);
       });
-      const available = new Set(state.manuscripts.map((m) => m.path));
-      const preferred = [previous, stored].find((path) => path && available.has(path)) || (state.manuscripts[0]?.path || "");
-      if (preferred) {
-        sel.value = preferred;
-        savePref(STORAGE_KEYS.selectedManuscript, preferred);
+      if (prev && state.manuscripts.some((m) => m.path === prev)) {
+        sel.value = prev;
       }
-    }
-
-    function fillGapSelect() {
-      const sel = q("target_gap_id");
-      if (!sel) return;
-      sel.innerHTML = "";
-      const none = document.createElement("option");
-      none.value = "";
-      none.textContent = "(optional)";
-      sel.appendChild(none);
-      state.gaps.forEach((g) => {
-        const opt = document.createElement("option");
-        opt.value = g.gap_id;
-        opt.textContent = `${g.gap_id} — ${g.chapter}`;
-        sel.appendChild(opt);
-      });
-    }
-
-    function renderReadStatus(out) {
-      const root = q("read_status");
-      if (!root) return;
-      const extraction = out.extraction || {};
-      const status = extraction.status || "unknown";
-      const charCount = extraction.char_count || 0;
-      const lineCount = extraction.line_count || 0;
-      const detected = extraction.chapter_candidates_detected || 0;
-      const sectionCount = extraction.section_count || 0;
-      const todoCount = extraction.todo_markers_detected || 0;
-      const method = extraction.analysis_method || "unknown";
-      const model = extraction.analysis_model || "";
-      const llmError = extraction.llm_error || "";
-      const message = extraction.message || out.reason || "No extraction metadata.";
-      const preview = (extraction.chapter_candidates_preview || []).slice(0, 5);
-      root.innerHTML = `
-        <div>
-          <strong>Manuscript Read Status</strong>
-          <span class="status">${status}</span>
-        </div>
-        <div class="muted">${message}</div>
-        <div class="code">chars: ${charCount} | lines: ${lineCount} | sections: ${sectionCount} | chapter candidates: ${detected} | todo markers: ${todoCount}</div>
-        <div class="code">analysis: ${method}${model ? ` | model: ${model}` : ""}${llmError ? " | fallback active" : ""}</div>
-        <div class="code" style="color: var(--warn);">${llmError ? `llm error: ${llmError}` : ""}</div>
-        <div class="code">${preview.length ? `headings: ${preview.join(" | ")}` : ""}</div>
-      `;
+      if (!sel.value && state.manuscripts.length) {
+        sel.value = state.manuscripts[0].path;
+      }
+      saveLastManuscript(sel.value || "");
     }
 
     async function loadManuscripts() {
       const out = await api("/api/orchestrator/manuscripts");
       state.manuscripts = out.manuscripts || [];
       fillManuscripts();
-      if (!state.manuscripts.length) {
-        setText("intent_status", "No manuscript files found in Manuscript/.");
-      }
-      persistWorkflowInputs();
-      updateWorkflowProgress();
-    }
-
-    async function loadGapLayout(forceRefresh = false) {
-      const manuscriptPath = currentManuscriptPath();
-      if (!manuscriptPath) {
-        setText("gap_summary", "Select or upload a manuscript, then run analysis.");
-        setText("analysis_status", "No manuscript selected.");
-        state.gaps = [];
-        fillGapSelect();
-        updateWorkflowProgress();
-        return;
-      }
-
-      setButtonBusy("load_gaps_btn", true, forceRefresh ? "Refreshing Analysis..." : "Analyzing Manuscript...");
-      setText("analysis_status", forceRefresh ? "Refreshing analysis..." : "Checking existing analysis...");
-      appendLog(`Gap analysis requested for ${manuscriptPath} (refresh=${forceRefresh})`);
-      try {
-        const out = await api(
-          `/api/orchestrator/gaps/layout?manuscript_path=${encodeURIComponent(manuscriptPath)}&refresh=${forceRefresh ? "true" : "false"}`
-        );
-        state.gaps = out.gaps || [];
-        fillGapSelect();
-        renderReadStatus(out);
-        const generatedLabel = out.generated ? " | auto-generated map" : "";
-        setText(
-          "gap_summary",
-          `${out.chapter_count || 0} chapters, ${out.gap_count || 0} total gaps (source: ${out.source || "n/a"}${generatedLabel})`
-        );
-        const reasonLabel = analysisReasonText(out.reason, forceRefresh);
-        setText("analysis_status", reasonLabel);
-        appendLog(reasonLabel, out.reason === "existing_generated_map" ? "ok" : "info");
-
-        const root = q("gap_layout");
-        if (root) {
-          root.innerHTML = "";
-          (out.chapters || []).forEach((ch) => {
-            const details = document.createElement("details");
-            details.className = "chapter";
-            details.open = false;
-            const summary = document.createElement("summary");
-            summary.textContent = `${ch.chapter} (${ch.gap_count})`;
-            details.appendChild(summary);
-            (ch.gaps || []).forEach((g) => {
-              const div = document.createElement("div");
-              div.className = "gap";
-              div.innerHTML = `
-                <div class="gap-id">${g.gap_id}</div>
-                <div>${g.claim_text || ""}</div>
-                <div class="muted">linked docs: ${g.current_linked_docs || 0} | priority: ${g.priority || "n/a"} | target: ${g.target_total_docs || 0}</div>
-              `;
-              details.appendChild(div);
-            });
-            root.appendChild(details);
-          });
-        }
-      } finally {
-        setButtonBusy("load_gaps_btn", false, "", "Analyze Manuscript");
-        persistWorkflowInputs();
-        updateWorkflowProgress();
-        if (state.activeTab === "strategy") {
-          await loadStrategyPreview();
-        }
-      }
-    }
-
-    async function createIntent() {
-      const manuscriptPath = currentManuscriptPath();
-      const searchPlanPath = q("search_plan_path")?.value.trim() || "";
-      if (!manuscriptPath) {
-        setText("intent_status", "Select or upload a manuscript first (or provide a custom path).");
-        return;
-      }
-      appendLog(`Creating intent for manuscript: ${manuscriptPath}`);
-      const out = await api("/api/orchestrator/intents", "POST", {
-        input_mode: searchPlanPath ? "both" : "manuscript",
-        manuscript_path: manuscriptPath,
-        search_plan_path: searchPlanPath,
-        gap_ids: [],
-        max_queries: 100,
-      });
-      state.intentId = out.intent_id;
-      setText("intent_status", `Intent created: ${state.intentId}`);
-      appendLog(`Intent created: ${state.intentId}`, "ok");
-      updateWorkflowProgress();
+      setText("launch_status", state.manuscripts.length ? "Ready to run." : "No manuscript files found.");
     }
 
     async function uploadManuscript() {
-      const fileInput = q("manuscript_file_input");
-      if (!fileInput || !fileInput.files || !fileInput.files.length) {
-        setText("intent_status", "Choose a file first.");
+      const input = q("manuscript_file_input");
+      if (!input || !input.files || !input.files.length) {
+        setText("launch_status", "Choose a file to upload first.");
         return;
       }
-      const fileName = fileInput.files[0].name;
-      appendLog(`Uploading manuscript: ${fileName}`);
+
       const form = new FormData();
-      form.append("file", fileInput.files[0]);
-      const res = await fetch("/api/orchestrator/manuscripts/upload", {
-        method: "POST",
-        body: form,
-      });
+      form.append("file", input.files[0]);
+      const res = await fetch("/api/orchestrator/manuscripts/upload", { method: "POST", body: form });
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || `HTTP ${res.status}`);
+        setText("launch_status", `Upload failed (${res.status}).`);
+        return;
       }
-      const out = await res.json();
-      setText("intent_status", `Uploaded: ${out.name}`);
+      setText("launch_status", "Upload complete.");
+      input.value = "";
       await loadManuscripts();
-      if (q("manuscript_select")) q("manuscript_select").value = out.stored_path;
-      if (q("custom_manuscript_path")) q("custom_manuscript_path").value = "";
-      savePref(STORAGE_KEYS.selectedManuscript, out.stored_path || "");
-      savePref(STORAGE_KEYS.customManuscriptPath, "");
-      fileInput.value = "";
-      appendLog(`Upload complete: ${out.name}`, "ok");
-      await loadGapLayout(true);
-    }
-
-    // Run preflight uses server contract fields so UI and backend required-key rules stay in sync.
-    async function missingRequiredEnvKeys(mode, provider) {
-      const [schema, values] = await Promise.all([
-        api(`/api/orchestrator/connections/schema?mode=${encodeURIComponent(mode)}&provider=${encodeURIComponent(provider)}`),
-        api("/api/orchestrator/connections/values?mask_secrets=false"),
-      ]);
-      const valueMap = new Map((values.values || []).map((row) => [row.key, String(row.value || "").trim()]));
-      return (schema.fields || [])
-        .filter((field) => field.required)
-        .map((field) => field.key)
-        .filter((key) => !valueMap.get(key));
-    }
-
-    function stopRunMonitor() {
-      if (state.runMonitorTimer) {
-        clearInterval(state.runMonitorTimer);
-        state.runMonitorTimer = null;
-      }
-      stopHeartbeatTicker();
-    }
-
-    async function pollRun(runId) {
-      if (!runId) return;
-      const [runOut, eventsOut] = await Promise.all([
-        api(`/api/orchestrator/runs/${encodeURIComponent(runId)}`),
-        api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/events?limit=500`),
-      ]);
-      setMonitorState("live", "live");
-      ensureRunPlan(runId, runOut.payload || {}, true);
-
-      const runStatus = String(runOut.status || "unknown");
-      const stage = String(runOut.stage || "");
-      state.runProgress = { runId, stage, status: runStatus };
-      const stepLabel = stepProgressLabel(runId, stage);
-      setRunIndicator(runStatus, stepLabel ? `${stepLabel} ${stage}` : (stage || runId));
-      const eventList = eventsOut.events || [];
-      const latestEvent = eventList.length ? eventList[eventList.length - 1] : null;
-      setActivityStatus(runOut, latestEvent);
-      renderStrategyPreview();
-      if (runOut.error) {
-        const errKey = `${runId}|${runOut.error}`;
-        if (!state.seenRunErrors.has(errKey)) {
-          appendLog(`[${runId}] ${runOut.error}`, "error");
-          state.seenRunErrors.add(errKey);
-        }
-      }
-
-      let newEvents = 0;
-      eventList.forEach((evt) => {
-        const key = `${evt.ts_utc}|${evt.stage}|${evt.status}|${evt.message}`;
-        if (state.seenRunEventKeys.has(key)) return;
-        state.seenRunEventKeys.add(key);
-        newEvents += 1;
-        if (state.seenRunEventKeys.size > 2000) {
-          state.seenRunEventKeys.clear();
-        }
-        const kind = evt.status === "failed" ? "error" : evt.status === "completed" ? "ok" : "info";
-        const evtStep = stepProgressLabel(runId, evt.stage);
-        const metaSummary = summarizeEventMeta(evt.meta || {});
-        appendLog(
-          `[${runId}] ${evtStep ? `${evtStep} ` : ""}${evt.stage}/${evt.status}: ${evt.message}${metaSummary ? ` | ${metaSummary}` : ""}`,
-          kind
-        );
-      });
-      if ((q("events_run_id")?.value.trim() || "") === runId) {
-        renderEventsList(eventList);
-      }
-
-      if (!TERMINAL_STATUSES.has(runStatus)) {
-        const now = Date.now();
-        const notice = state.runHeartbeatNotices[runId] || { stage: "", lastNoticeMs: 0 };
-        if (notice.stage !== stage || newEvents > 0) {
-          state.runHeartbeatNotices[runId] = { stage, lastNoticeMs: now };
-        } else if (now - notice.lastNoticeMs >= HEARTBEAT_LOG_INTERVAL_MS) {
-          appendLog(`[${runId}] heartbeat: still ${stage}; backend checks are alive`);
-          state.runHeartbeatNotices[runId] = { stage, lastNoticeMs: now };
-        }
-      }
-
-      if (TERMINAL_STATUSES.has(runStatus)) {
-        stopRunMonitor();
-        setButtonBusy("start_run_btn", false, "", "Start Research Run");
-        if (runStatus === "completed") {
-          setMonitorState("done", "run completed");
-        } else if (runStatus === "failed") {
-          setMonitorState("error", "run failed");
-        } else {
-          setMonitorState("done", runStatus);
-        }
-      }
-    }
-
-    function startRunMonitor(runId, markBusy = false) {
-      if (!runId) return;
-      stopRunMonitor();
-      startHeartbeatTicker();
-      setMonitorState("live", "connecting");
-      state.selectedRunId = runId;
-      savePref(STORAGE_KEYS.selectedRunId, runId);
-      state.seenRunEventKeys = new Set();
-      state.seenRunErrors = new Set();
-      state.runHeartbeatNotices[runId] = { stage: "", lastNoticeMs: Date.now() };
-      if (q("events_run_id")) q("events_run_id").value = runId;
-      if (markBusy) {
-        setButtonBusy("start_run_btn", true, "Run In Progress...", "Start Research Run");
-      }
-      pollRun(runId).catch((err) => {
-        setMonitorState("error", "poll error");
-        appendLog(`Run monitor error (${runId}): ${err.message}`, "error");
-      });
-      state.runMonitorTimer = setInterval(() => {
-        pollRun(runId).catch((err) => {
-          setMonitorState("error", "poll error");
-          appendLog(`Run monitor error (${runId}): ${err.message}`, "error");
-        });
-      }, 3500);
-      updateWorkflowProgress();
     }
 
     async function startRun() {
-      setButtonBusy("start_run_btn", true, "Starting Run...", "Start Research Run");
-      setRunIndicator("started", "preflight");
-      state.runProgress = { runId: "", stage: "starting", status: "started" };
-      renderStrategyPreview();
-      setText("activity_stage", "starting/preflight");
-      setText("activity_action", "Preparing run payload and validating settings.");
-      setText("activity_pull_detail", "Pending pull/search metadata.");
-      let runLaunched = false;
+      const sel = q("manuscript_select");
+      const manuscriptPath = sel ? String(sel.value || "") : "";
+      if (!manuscriptPath) {
+        setText("launch_status", "Select a manuscript first.");
+        return;
+      }
+
+      saveLastManuscript(manuscriptPath);
+      setRunButtonBusy(true);
+      setText("launch_status", "Starting run...");
       try {
-        if (!state.intentId) {
-          await createIntent();
-        }
-        const provider = (q("pull_provider")?.value.trim() || "ebscohost");
-        const pullMode = q("pull_mode")?.value || "auto";
-        savePref(STORAGE_KEYS.pullMode, pullMode);
-        savePref(STORAGE_KEYS.pullProvider, provider);
-        const missing = await missingRequiredEnvKeys(pullMode, provider);
-        if (missing.length) {
-          const msg = `Missing required settings: ${missing.join(", ")}. Update Settings first.`;
-          setText("run_status", msg);
-          appendLog(msg, "error");
-          if (q("settings_mode")) q("settings_mode").value = pullMode;
-          const providerOpt = Array.from(q("settings_provider")?.options || []).map((o) => o.value);
-          if (q("settings_provider")) q("settings_provider").value = providerOpt.includes(provider) ? provider : "custom";
-          await loadRecommendedFields();
-          await loadEnvValues();
-          showTab("settings");
-          setRunIndicator("failed", "missing settings");
-          setMonitorState("error", "missing settings");
-          return;
-        }
-        const mode = document.querySelector("input[name='strategy_mode']:checked")?.value || "automatic";
-        const narrowQ = q("narrow_question")?.value.trim() || "";
-        const targetGap = q("target_gap_id")?.value || "";
-        if (!state.health) {
-          try { await loadHealth(); } catch (_) {}
-        }
-        const payload = {
-          intent_id: state.intentId,
-          pull_mode: pullMode,
-          pull_provider: provider,
-          existing_run_id: "",
-          existing_run_dir: "",
-          artifact_type: "ebsco_manifest_pair",
-          gap_id: mode === "narrow" ? (targetGap || "") : "",
-          force: false,
-        };
-        const planPreview = buildRunPlan(payload);
-        appendLog(`Starting run with mode=${pullMode}, provider=${provider}`);
-        appendLog(`Run plan preview (${planPreview.length} steps). Awaiting run id...`);
-        const run = await api("/api/orchestrator/runs", "POST", payload);
-        runLaunched = true;
-        state.selectedRunId = run.run_id;
-        state.runProgress = { runId: run.run_id, stage: run.stage || "queued", status: run.status || "queued" };
-        renderStrategyPreview();
-        savePref(STORAGE_KEYS.selectedRunId, run.run_id);
-        if (q("events_run_id")) q("events_run_id").value = run.run_id;
-        ensureRunPlan(run.run_id, payload, true);
-        let strategyMsg = run.reused_active_run
-          ? `Active run reused: ${run.run_id}`
-          : `Run started: ${run.run_id}`;
-        if (mode === "narrow" && narrowQ) strategyMsg += ` | narrow question: ${narrowQ}`;
-        setText("run_status", strategyMsg);
-        appendLog(strategyMsg, "ok");
-        await loadRuns();
-        startRunMonitor(run.run_id, true);
-        updateWorkflowProgress();
+        const out = await api("/api/orchestrator/runs", "POST", { manuscript_path: manuscriptPath, force: false, pull_timeout_seconds: 60 });
+        state.activeRunId = out.run_id;
+        state.currentRun = out;
+        setText("run_meta", `${out.run_id} · ${out.status || "queued"}`);
+        appendLog(`[${new Date().toLocaleTimeString()}] run queued: ${out.run_id}`, "ok");
+        await pollRun();
+        startPolling();
+      } catch (err) {
+        setText("launch_status", `Run start failed: ${err.message}`);
       } finally {
-        if (!runLaunched) {
-          setButtonBusy("start_run_btn", false, "", "Start Research Run");
-          setMonitorState("idle", "idle");
-          state.runProgress = { runId: "", stage: "idle", status: "idle" };
-          renderStrategyPreview();
-        }
+        setRunButtonBusy(false);
       }
     }
 
-    async function loadRuns() {
-      const out = await api("/api/orchestrator/runs?limit=50");
-      const root = q("runs_list");
-      if (!root) return;
-      root.innerHTML = "";
-      const runs = out.runs || [];
-      runs.forEach((run) => {
-        const div = document.createElement("div");
-        const statusClass = run.status === "completed" ? "ok" : run.status === "failed" ? "failed" : "started";
-        div.className = `event ${statusClass}`;
-        div.innerHTML = `
-          <div><strong>${run.run_id}</strong> <span class="status ${statusClass}">${run.status}</span></div>
-          <div class="muted">${run.stage} | updated: ${run.updated_at || run.created_at}</div>
-          <div class="code">${(run.error || "").slice(0, 220)}</div>
-        `;
-        div.onclick = () => {
-          state.selectedRunId = run.run_id;
-          savePref(STORAGE_KEYS.selectedRunId, run.run_id);
-          if (q("events_run_id")) q("events_run_id").value = run.run_id;
-          if (q("results_events_panel")) q("results_events_panel").open = true;
-          loadEvents().catch((err) => setText("run_status", `Error: ${err.message}`));
-          startRunMonitor(run.run_id, false);
-          updateWorkflowProgress();
-        };
-        root.appendChild(div);
+    function startPolling() {
+      if (state.pollTimer) clearInterval(state.pollTimer);
+      state.pollTimer = setInterval(() => {
+        pollRun().catch((err) => setText("launch_status", `Polling error: ${err.message}`));
+      }, 3000);
+    }
+
+    async function pollRun() {
+      if (!state.activeRunId) return;
+      const run = await api(`/api/orchestrator/runs/${state.activeRunId}`);
+      const evt = await api(`/api/orchestrator/runs/${state.activeRunId}/events?limit=500`);
+      state.currentRun = run;
+
+      setText("run_meta", `${run.run_id} · ${run.status} · ${run.stage_detail || ""}`);
+      renderStages(run);
+      renderPlan(run);
+
+      (evt.events || []).forEach((row) => {
+        if (state.eventsSeen.has(row.event_id)) return;
+        state.eventsSeen.add(row.event_id);
+        const klass = row.status === "failed" ? "err" : (row.status === "completed" ? "ok" : "");
+        appendLog(summarizeEvent(row), klass);
       });
 
-      if (!state.selectedRunId && runs.length) {
-        state.selectedRunId = runs[0].run_id;
-        savePref(STORAGE_KEYS.selectedRunId, runs[0].run_id);
+      if (TERMINAL.has(String(run.status || ""))) {
+        setText("launch_status", `Run finished with status: ${run.status}`);
       }
     }
 
-    function renderEventsList(events) {
-      const root = q("events_list");
-      if (!root) return;
-      root.innerHTML = "";
-      (events || []).forEach((evt) => {
-        const div = document.createElement("div");
-        const statusClass = evt.status === "completed" ? "ok" : evt.status === "failed" ? "failed" : "started";
-        const metaSummary = summarizeEventMeta(evt.meta || {});
-        div.className = `event ${statusClass}`;
-        div.innerHTML = `
-          <div><strong>${evt.stage}</strong> <span class="status ${statusClass}">${evt.status}</span></div>
-          <div class="muted">${evt.ts_utc}</div>
-          <div>${evt.message}</div>
-          <div class="code">${metaSummary || "no structured metadata"}</div>
-          <details style="margin-top:8px;">
-            <summary style="text-transform:none; font-size:11px; letter-spacing:0;">event meta</summary>
-            <div class="code">${JSON.stringify(evt.meta || {})}</div>
-          </details>
-        `;
-        root.appendChild(div);
-      });
+    function bindEvents() {
+      q("refresh_manuscripts_btn")?.addEventListener("click", () => loadManuscripts().catch((err) => setText("launch_status", err.message)));
+      q("upload_manuscript_btn")?.addEventListener("click", () => uploadManuscript().catch((err) => setText("launch_status", err.message)));
+      q("run_btn")?.addEventListener("click", () => startRun().catch((err) => setText("launch_status", err.message)));
+      q("manuscript_select")?.addEventListener("change", (evt) => saveLastManuscript(String(evt.target.value || "")));
     }
 
-    async function loadEvents() {
-      const runId = q("events_run_id")?.value.trim() || "";
-      if (!runId) return;
-      const out = await api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/events?limit=500`);
-      renderEventsList(out.events || []);
-    }
-
-    async function retryRun() {
-      const runId = q("events_run_id")?.value.trim() || "";
-      if (!runId) {
-        setText("run_status", "Enter/select a run ID first.");
-        return;
-      }
-      appendLog(`Retry requested for ${runId}`);
-      await api(`/api/orchestrator/runs/${encodeURIComponent(runId)}/retry`, "POST", { force: false });
-      setText("run_status", `Retry queued for ${runId}`);
-      appendLog(`Retry queued for ${runId}`, "ok");
-      state.loggedRunPlans.delete(runId);
-      await loadRuns();
-      startRunMonitor(runId, true);
-      await loadEvents();
-    }
-
-    async function loadEnvValues() {
-      const out = await api("/api/orchestrator/connections/values?mask_secrets=true");
-      setText("settings_status", `Loaded ${out.values.length} keys from ${out.env_path}`);
-      const tbody = q("env_values_tbody");
-      if (!tbody) return;
-      tbody.innerHTML = "";
-      out.values.forEach((row) => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td class="code">${row.key}</td>
-          <td class="code">${row.value || ""}</td>
-          <td>${row.is_secret ? "secret" : "plain"}</td>
-          <td>${row.source || "n/a"}</td>
-        `;
-        tbody.appendChild(tr);
-      });
-    }
-
-    async function loadRecommendedFields() {
-      const mode = q("settings_mode")?.value || "auto";
-      const provider = q("settings_provider")?.value || "ebscohost";
-      const out = await api(`/api/orchestrator/connections/schema?mode=${encodeURIComponent(mode)}&provider=${encodeURIComponent(provider)}`);
-      const root = q("recommended_fields");
-      if (!root) return;
-      root.innerHTML = "";
-      out.fields.forEach((f) => {
-        const div = document.createElement("div");
-        div.className = "event";
-        div.innerHTML = `
-          <div><strong>${f.key}</strong> <span class="status">${f.required ? "required" : "optional"}</span></div>
-          <div class="muted">${f.label}</div>
-        `;
-        root.appendChild(div);
-      });
-    }
-
-    function renderSourceList(rootId, rows, kind) {
-      const root = q(rootId);
-      if (!root) return;
-      root.innerHTML = "";
-      (rows || []).forEach((row) => {
-        const div = document.createElement("div");
-        div.className = "source-row";
-        const status = row.configured === true ? "configured" : row.configured === false ? "missing key" : kind;
-        const pillClass = row.configured === true ? "pill on" : row.configured === false ? "pill off" : "pill";
-        const notes = row.notes || row.provider || "";
-        const envInfo = row.env_key ? `env: ${row.env_key}` : "";
-        div.innerHTML = `
-          <div class="source-title">
-            <strong>${row.name}</strong>
-            <span class="${pillClass}">${status}</span>
-          </div>
-          <div class="muted">${notes}</div>
-          <div class="code">${envInfo}</div>
-        `;
-        root.appendChild(div);
-      });
-    }
-
-    async function loadSourceCatalog() {
-      const out = await api("/api/orchestrator/sources/catalog");
-      renderSourceList("free_api_list", out.free_apis || [], "free");
-      renderSourceList("closed_api_list", out.closed_apis || [], "closed");
-      renderSourceList("university_db_list", out.university_databases || [], "university");
-    }
-
-    async function saveEnvKey() {
-      const key = q("env_key")?.value.trim() || "";
-      const value = q("env_value")?.value || "";
-      if (!key) {
-        setText("settings_status", "Enter a key.");
-        return;
-      }
-      await api("/api/orchestrator/connections/save", "POST", { updates: { [key]: value } });
-      setText("settings_status", `Saved ${key} to .env`);
-      if (q("env_value")) q("env_value").value = "";
-      appendLog(`Saved env key ${key}`, "ok");
-      await loadEnvValues();
-    }
-
-    function wireEvents() {
-      document.querySelectorAll(".tab-btn").forEach((btn) => {
-        btn.addEventListener("click", () => showTab(btn.dataset.tab || "manuscript"));
-      });
-
-      bindAction("open_analysis_btn", "click", async () => showTab("analysis"));
-      bindAction("open_strategy_btn", "click", async () => showTab("strategy"));
-      bindAction("open_results_btn", "click", async () => showTab("results"));
-      bindAction("open_analysis_from_strategy_btn", "click", async () => showTab("analysis"));
-      bindAction("dock_view_results_btn", "click", async () => showTab("results"));
-      bindAction("toggle_log_dock_btn", "click", async () => {
-        const dock = q("log_dock");
-        applyLogDockCollapsed(!(dock && dock.classList.contains("collapsed")));
-      });
-      bindAction("clear_log_btn", "click", async () => {
-        const root = q("backend_log");
-        if (root) root.innerHTML = "";
-        state.lastLogMs = 0;
-        renderLogHeartbeat();
-      });
-
-      bindAction("refresh_manuscripts_btn", "click", async () => {
-        await loadManuscripts();
-        await loadGapLayout(true);
-      });
-
-      bindAction("upload_manuscript_btn", "click", async () => {
-        await uploadManuscript();
-      });
-
-      bindAction("load_gaps_btn", "click", async () => {
-        await loadGapLayout(false);
-      });
-
-      bindAction("manuscript_select", "change", async () => {
-        state.intentId = "";
-        savePref(STORAGE_KEYS.selectedManuscript, q("manuscript_select")?.value || "");
-        savePref(STORAGE_KEYS.customManuscriptPath, "");
-        if (q("custom_manuscript_path")) q("custom_manuscript_path").value = "";
-        await loadGapLayout(false);
-      });
-
-      bindAction("custom_manuscript_path", "change", async () => {
-        state.intentId = "";
-        savePref(STORAGE_KEYS.customManuscriptPath, q("custom_manuscript_path")?.value.trim() || "");
-        await loadGapLayout(false);
-      });
-
-      bindAction("search_plan_path", "change", async () => {
-        savePref(STORAGE_KEYS.searchPlanPath, q("search_plan_path")?.value.trim() || "");
-        updateWorkflowProgress();
-      });
-
-      bindAction("pull_mode", "change", async () => {
-        savePref(STORAGE_KEYS.pullMode, q("pull_mode")?.value || "auto");
-        await loadStrategyPreview();
-      });
-
-      bindAction("pull_provider", "change", async () => {
-        savePref(STORAGE_KEYS.pullProvider, q("pull_provider")?.value.trim() || "ebscohost");
-        await loadStrategyPreview();
-      });
-
-      document.querySelectorAll("input[name='strategy_mode']").forEach((radio) => {
-        radio.addEventListener("change", async () => {
-          const narrow = document.querySelector("input[name='strategy_mode']:checked")?.value === "narrow";
-          if (q("narrow_question")) q("narrow_question").disabled = !narrow;
-          await loadStrategyPreview();
-        });
-      });
-
-      bindAction("target_gap_id", "change", async () => {
-        await loadStrategyPreview();
-      });
-
-      bindAction("narrow_question", "change", async () => {
-        await loadStrategyPreview();
-      });
-
-      bindAction("refresh_strategy_btn", "click", async () => {
-        await loadStrategyPreview();
-      });
-
-      bindAction("start_run_btn", "click", async () => {
-        await startRun();
-      });
-
-      bindAction("refresh_runs_btn", "click", async () => {
-        await loadRuns();
-      });
-
-      bindAction("load_events_btn", "click", async () => {
-        await loadEvents();
-      });
-
-      bindAction("retry_run_btn", "click", async () => {
-        await retryRun();
-      });
-
-      bindAction("load_env_btn", "click", async () => {
-        await loadEnvValues();
-      });
-
-      bindAction("load_conn_schema_btn", "click", async () => {
-        await loadRecommendedFields();
-      });
-
-      bindAction("load_sources_btn", "click", async () => {
-        await loadSourceCatalog();
-      });
-
-      bindAction("save_env_btn", "click", async () => {
-        await saveEnvKey();
-      });
-
-      bindAction("settings_mode", "change", async () => {
-        await loadRecommendedFields();
-      });
-
-      bindAction("settings_provider", "change", async () => {
-        await loadRecommendedFields();
-      });
-
-      const runsPanel = q("results_runs_panel");
-      if (runsPanel) {
-        runsPanel.addEventListener("toggle", () => {
-          savePref(STORAGE_KEYS.resultsRunsOpen, runsPanel.open ? "1" : "0");
-        });
-      }
-      const eventsPanel = q("results_events_panel");
-      if (eventsPanel) {
-        eventsPanel.addEventListener("toggle", () => {
-          savePref(STORAGE_KEYS.resultsEventsOpen, eventsPanel.open ? "1" : "0");
-        });
+    async function init() {
+      bindEvents();
+      await loadManuscripts();
+      const runs = await api("/api/orchestrator/runs?limit=1");
+      const first = Array.isArray(runs.runs) && runs.runs.length ? runs.runs[0] : null;
+      if (first && !TERMINAL.has(String(first.status || ""))) {
+        state.activeRunId = first.run_id;
+        appendLog(`[${new Date().toLocaleTimeString()}] resumed active run: ${first.run_id}`, "ok");
+        await pollRun();
+        startPolling();
       }
     }
 
-    function restoreUiState() {
-      if (q("custom_manuscript_path")) q("custom_manuscript_path").value = loadPref(STORAGE_KEYS.customManuscriptPath, "");
-      if (q("search_plan_path")) q("search_plan_path").value = loadPref(STORAGE_KEYS.searchPlanPath, "");
-      const storedPullMode = loadPref(STORAGE_KEYS.pullMode, "");
-      const pullModeSelect = q("pull_mode");
-      if (pullModeSelect && storedPullMode && Array.from(pullModeSelect.options).some((o) => o.value === storedPullMode)) {
-        pullModeSelect.value = storedPullMode;
-      }
-      const storedProvider = loadPref(STORAGE_KEYS.pullProvider, "");
-      if (q("pull_provider") && storedProvider) q("pull_provider").value = storedProvider;
-      const storedTab = loadPref(STORAGE_KEYS.activeTab, "manuscript");
-      state.activeTab = TABS.includes(storedTab) ? storedTab : "manuscript";
-      const savedRun = loadPref(STORAGE_KEYS.selectedRunId, "");
-      if (savedRun) {
-        state.selectedRunId = savedRun;
-        if (q("events_run_id")) q("events_run_id").value = savedRun;
-      }
-      // Always boot collapsed to reduce initial visual clutter.
-      applyLogDockCollapsed(true, false);
-      const runsPanel = q("results_runs_panel");
-      if (runsPanel) runsPanel.open = loadPref(STORAGE_KEYS.resultsRunsOpen, "1") === "1";
-      const eventsPanel = q("results_events_panel");
-      if (eventsPanel) eventsPanel.open = loadPref(STORAGE_KEYS.resultsEventsOpen, "0") === "1";
-    }
-
-    async function boot() {
-      wireEvents();
-      restoreUiState();
-      startLogHeartbeatTicker();
-      setRunIndicator("idle");
-      setMonitorState("idle", "idle");
-      renderHeartbeat();
-      renderLogHeartbeat();
-      appendLog("UI booted. Loading manuscripts, runs, settings.");
-      try { await loadHealth(); } catch (err) { appendLog(`Health load failed: ${err.message}`, "error"); }
-      try { await loadManuscripts(); } catch (err) { setText("intent_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
-      try { await loadGapLayout(false); } catch (err) { setText("gap_summary", `Error: ${err.message}`); appendLog(err.message, "error"); }
-      try { await loadRuns(); } catch (err) { setText("run_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
-      try { await loadEnvValues(); } catch (err) { setText("settings_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
-      try { await loadRecommendedFields(); } catch (err) { setText("settings_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
-      try { await loadSourceCatalog(); } catch (err) { setText("settings_status", `Error: ${err.message}`); appendLog(err.message, "error"); }
-      const savedRun = loadPref(STORAGE_KEYS.selectedRunId, "");
-      if (savedRun) {
-        startRunMonitor(savedRun, false);
-      }
-      updateWorkflowProgress();
-      showTab(state.activeTab);
-    }
-
-    boot();
+    init().catch((err) => {
+      setText("launch_status", `Initialization failed: ${err.message}`);
+      appendLog(`init failed: ${err.message}`, "err");
+    });
   </script>
 </body>
 </html>

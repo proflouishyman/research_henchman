@@ -109,3 +109,23 @@ def test_rank_sources_prefers_scholarly_for_historical_claims() -> None:
 
     assert ranked
     assert ranked[0] == "ebsco_api"
+
+
+def test_rank_sources_prefers_jstor_family_over_macro_for_history() -> None:
+    availability = SourceAvailability(
+        free_apis=["world_bank", "fred"],
+        keyed_apis=[],
+        playwright_sources=["jstor", "project_muse"],
+    )
+
+    ranked = pull.rank_sources_for_claim(
+        ClaimKind.HISTORICAL_NARRATIVE,
+        EvidenceNeed.SCHOLARLY_SECONDARY,
+        availability,
+        source_types=[SourceType.PLAYWRIGHT, SourceType.FREE_API],
+        max_sources=4,
+    )
+
+    assert ranked
+    assert ranked[0] in {"jstor", "project_muse"}
+    assert "world_bank" not in ranked[:2]

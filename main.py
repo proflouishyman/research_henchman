@@ -50,14 +50,25 @@ ACTIVE_RUN_STATUSES = {
 }
 
 
+# JHU sources:
+# - Search Tools page lists JSTOR and Project MUSE as humanities recommendations.
+# - JHU history guides/snippets reference historical newspaper and primary-source databases.
 UNIVERSITY_DATABASES = [
-    "Academic Search Ultimate",
-    "Regional Business News",
-    "EconLit with Full Text",
-    "Business Source Complete",
-    "JSTOR",
-    "Project MUSE",
-    "Statista",
+    {"name": "JSTOR", "source_id": "jstor", "url": "https://databases.library.jhu.edu"},
+    {"name": "Project MUSE", "source_id": "project_muse", "url": "https://databases.library.jhu.edu"},
+    {"name": "EBSCOhost", "source_id": "ebscohost", "url": "https://databases.library.jhu.edu"},
+    {
+        "name": "ProQuest Historical Newspapers",
+        "source_id": "proquest_historical_newspapers",
+        "url": "https://databases.library.jhu.edu",
+    },
+    {
+        "name": "America's Historical Newspapers",
+        "source_id": "americas_historical_newspapers",
+        "url": "https://databases.library.jhu.edu",
+    },
+    {"name": "Gale Primary Sources", "source_id": "gale_primary_sources", "url": "https://databases.library.jhu.edu"},
+    {"name": "Statista", "source_id": "statista", "url": "https://databases.library.jhu.edu"},
 ]
 
 
@@ -514,7 +525,7 @@ def api_sources_catalog() -> Dict[str, Any]:
         "free_apis": sorted(free, key=lambda row: row["source_id"]),
         "closed_apis": sorted(keyed, key=lambda row: row["source_id"]),
         "playwright_sources": sorted(playwright, key=lambda row: row["source_id"]),
-        "university_databases": [{"name": name, "provider": "library"} for name in UNIVERSITY_DATABASES],
+        "university_databases": [{**row, "provider": "library"} for row in UNIVERSITY_DATABASES],
     }
 
 

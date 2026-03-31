@@ -27,18 +27,14 @@ class PlaywrightAdapter(PullAdapter):
             return f"{self.source_id}: not in active browser session list"
         return ""
 
+    def _placeholder_result(self, gap: PlannedGap, query: str, run_dir: str, note: str) -> SourceResult:
+        """Return deterministic placeholder row until source-specific browser flows are implemented."""
 
-class EbscohostPlaywrightAdapter(PlaywrightAdapter):
-    """EBSCOhost browser adapter placeholder implementation."""
-
-    source_id = "ebscohost"
-
-    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
         try:
             rows = [
                 {
                     "query": query,
-                    "note": "Playwright execution delegated to authenticated browser workflow",
+                    "note": note,
                     "source_id": self.source_id,
                     "gap_id": gap.gap_id,
                 }
@@ -67,6 +63,20 @@ class EbscohostPlaywrightAdapter(PlaywrightAdapter):
                 status="failed",
                 error=str(exc)[:200],
             )
+
+
+class EbscohostPlaywrightAdapter(PlaywrightAdapter):
+    """EBSCOhost browser adapter placeholder implementation."""
+
+    source_id = "ebscohost"
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
+        return self._placeholder_result(
+            gap,
+            query,
+            run_dir,
+            note="Playwright execution delegated to authenticated EBSCOhost workflow",
+        )
 
 
 class StatistaPlaywrightAdapter(PlaywrightAdapter):
@@ -75,39 +85,82 @@ class StatistaPlaywrightAdapter(PlaywrightAdapter):
     source_id = "statista"
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        try:
-            rows = [
-                {
-                    "query": query,
-                    "note": "Statista Playwright retrieval pending source-specific ticket",
-                    "source_id": self.source_id,
-                    "gap_id": gap.gap_id,
-                }
-            ]
-            root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
-            return SourceResult(
-                source_id=self.source_id,
-                source_type=self.source_type,
-                query=query,
-                gap_id=gap.gap_id,
-                document_count=1,
-                run_dir=root,
-                artifact_type="json_records",
-                status="partial",
-                stats={"placeholder": True, "records": 1},
-            )
-        except Exception as exc:
-            return SourceResult(
-                source_id=self.source_id,
-                source_type=self.source_type,
-                query=query,
-                gap_id=gap.gap_id,
-                document_count=0,
-                run_dir=str(Path(run_dir) / gap.gap_id / self.source_id),
-                artifact_type="json_records",
-                status="failed",
-                error=str(exc)[:200],
-            )
+        return self._placeholder_result(
+            gap,
+            query,
+            run_dir,
+            note="Statista Playwright retrieval pending source-specific workflow",
+        )
+
+
+class JstorPlaywrightAdapter(PlaywrightAdapter):
+    """JSTOR browser adapter placeholder implementation."""
+
+    source_id = "jstor"
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
+        return self._placeholder_result(
+            gap,
+            query,
+            run_dir,
+            note="JSTOR Playwright retrieval pending source-specific workflow",
+        )
+
+
+class ProjectMusePlaywrightAdapter(PlaywrightAdapter):
+    """Project MUSE browser adapter placeholder implementation."""
+
+    source_id = "project_muse"
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
+        return self._placeholder_result(
+            gap,
+            query,
+            run_dir,
+            note="Project MUSE Playwright retrieval pending source-specific workflow",
+        )
+
+
+class ProquestHistoricalNewsPlaywrightAdapter(PlaywrightAdapter):
+    """ProQuest Historical Newspapers browser adapter placeholder implementation."""
+
+    source_id = "proquest_historical_newspapers"
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
+        return self._placeholder_result(
+            gap,
+            query,
+            run_dir,
+            note="ProQuest Historical Newspapers Playwright retrieval pending source-specific workflow",
+        )
+
+
+class AmericasHistoricalNewsPlaywrightAdapter(PlaywrightAdapter):
+    """America's Historical Newspapers browser adapter placeholder implementation."""
+
+    source_id = "americas_historical_newspapers"
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
+        return self._placeholder_result(
+            gap,
+            query,
+            run_dir,
+            note="America's Historical Newspapers Playwright retrieval pending source-specific workflow",
+        )
+
+
+class GalePrimarySourcesPlaywrightAdapter(PlaywrightAdapter):
+    """Gale Primary Sources browser adapter placeholder implementation."""
+
+    source_id = "gale_primary_sources"
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
+        return self._placeholder_result(
+            gap,
+            query,
+            run_dir,
+            note="Gale Primary Sources Playwright retrieval pending source-specific workflow",
+        )
 
 
 def check_cdp_endpoint(cdp_url: str, timeout_seconds: int = 5) -> str:

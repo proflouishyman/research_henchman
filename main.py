@@ -8,8 +8,11 @@ import json
 import os
 import re
 import threading
+import urllib.error
+import urllib.request
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from html import unescape as html_unescape
 from pathlib import Path
 from typing import Any, Dict, List
@@ -26,7 +29,14 @@ from .config import (
     required_connection_fields,
     write_env_updates,
 )
-from .contracts import ConnectionSaveInput, ConnectionSchemaResponse, IntentCreateInput, RetryInput, RunCreateInput
+from .contracts import (
+    ConnectionSaveInput,
+    ConnectionSchemaResponse,
+    IntentCreateInput,
+    RetryInput,
+    RunCreateInput,
+    StrategyPreviewInput,
+)
 from .pipeline import emit_event, run_orchestration
 from .store import OrchestratorStore, now_utc
 
@@ -38,6 +48,7 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 GAP_MAP_DIR = DATA_DIR / "gap_maps"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 GAP_MAP_DIR.mkdir(parents=True, exist_ok=True)
+ANALYSIS_VERSION = 2
 
 store = OrchestratorStore(DATA_DIR)
 app = FastAPI(title="Interactive Research Orchestrator", version="0.1.0")
@@ -49,6 +60,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+RUN_CREATE_LOCK = threading.Lock()
+ACTIVE_RUN_STATUSES = {
+    "queued",
+    "validating_config",
+    "planning",
+    "pulling",
+    "pulling_completed",
+    "ingesting",
+    "llm_processing",
+}
 
 
 SOURCE_CATALOG: Dict[str, List[Dict[str, str]]] = {
@@ -97,6 +119,83 @@ def _settings() -> OrchestratorSettings:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
+
+
+def _parse_iso_utc(ts: str) -> datetime | None:
+    """Parse ISO timestamp into timezone-aware datetime for watchdog logic."""
+    raw = str(ts or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _stale_run_cutoff_seconds(settings: OrchestratorSettings) -> int:
+    """Compute stale-run cutoff from stage timeout settings.
+
+    Invariant:
+    - Cutoff is always higher than expected ingest/llm stage timeout so active
+      long-running work is not marked stale prematurely.
+    """
+    ingest_ceiling = int(settings.ingest_timeout_seconds) + 300
+    llm_ceiling = int(settings.llm_timeout_seconds) * 20 + 300
+    return max(600, ingest_ceiling, llm_ceiling)
+
+
+def _reconcile_stale_runs(settings: OrchestratorSettings, scan_limit: int = 400) -> int:
+    """Mark stale active runs as failed so they do not block new runs forever."""
+    cutoff_seconds = _stale_run_cutoff_seconds(settings)
+    now = datetime.now(timezone.utc)
+    changed = 0
+    for rec in store.list_runs(limit=max(1, scan_limit)):
+        status = str(rec.get("status", "")).strip()
+        if status not in ACTIVE_RUN_STATUSES:
+            continue
+        run_id = str(rec.get("run_id", "")).strip()
+        if not run_id:
+            continue
+        updated = _parse_iso_utc(str(rec.get("updated_at", "")))
+        if not updated:
+            continue
+        age_seconds = int((now - updated).total_seconds())
+        if age_seconds < cutoff_seconds:
+            continue
+        detail = (
+            f"stale_run_watchdog: marked failed after {age_seconds}s without terminal state "
+            f"(cutoff={cutoff_seconds}s)"
+        )
+        store.upsert_run(
+            {
+                "run_id": run_id,
+                "status": "failed",
+                "stage": "failed",
+                "updated_at": now_utc(),
+                "error": detail,
+            }
+        )
+        emit_event(
+            store,
+            run_id=run_id,
+            stage="failed",
+            status="failed",
+            message=detail,
+            meta={"reason": "stale_run_watchdog", "age_seconds": age_seconds, "cutoff_seconds": cutoff_seconds},
+        )
+        changed += 1
+    return changed
+
+
+def _latest_active_run(scan_limit: int = 120) -> Dict[str, Any] | None:
+    """Return the newest active run record, if any."""
+    for rec in store.list_runs(limit=max(1, scan_limit)):
+        if str(rec.get("status", "")).strip() in ACTIVE_RUN_STATUSES:
+            return rec
+    return None
 
 
 def _search_plan_preview(workspace: Path, path_value: str, max_rows: int = 5) -> Dict[str, Any]:
@@ -273,7 +372,13 @@ def _candidate_chapters_from_text(text: str) -> List[str]:
 
 
 def _generated_gap_map_path(manuscript_file: Path) -> Path:
-    signature = hashlib.sha1(str(manuscript_file).encode("utf-8")).hexdigest()[:16]
+    # Include file fingerprint so map cache invalidates when manuscript content changes.
+    try:
+        stat = manuscript_file.stat()
+        fingerprint = f"{manuscript_file.resolve()}::{stat.st_size}::{stat.st_mtime_ns}"
+    except OSError:
+        fingerprint = str(manuscript_file.resolve())
+    signature = hashlib.sha1(fingerprint.encode("utf-8")).hexdigest()[:16]
     safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", manuscript_file.stem)[:40] or "manuscript"
     return GAP_MAP_DIR / f"{safe_stem}_{signature}_gap_claims.csv"
 
@@ -282,27 +387,539 @@ def _generated_gap_meta_path(gap_csv: Path) -> Path:
     return gap_csv.with_suffix(".meta.json")
 
 
-def _generate_gap_claims_for_manuscript(manuscript_file: Path, out_csv: Path) -> Dict[str, Any]:
-    """Generate fallback gap claims CSV when manuscript has no mapped gap file."""
-    text, extract_meta = _extract_text_for_gap_generation(manuscript_file)
-    chapters = _candidate_chapters_from_text(text)
-    rows: List[Dict[str, str]] = []
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "")
+    if not raw:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
-    used_fallback = False
-    if not chapters:
-        used_fallback = True
-        chapters = ["Auto Generated: Manuscript Review"]
-    for idx, chapter in enumerate(chapters, start=1):
+
+def _parse_json_object(text: str) -> Dict[str, Any]:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return {}
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{[\s\S]*\}", cleaned)
+    if not match:
+        return {}
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _ollama_list_models(base_url: str, timeout_seconds: int) -> List[str]:
+    req = urllib.request.Request(f"{base_url.rstrip('/')}/api/tags")
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+        payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    out: List[str] = []
+    for row in payload.get("models", []):
+        name = str(row.get("name", "")).strip()
+        if name:
+            out.append(name)
+    return out
+
+
+def _pick_smart_model(available: List[str], preferred: str) -> str:
+    preferred = (preferred or "").strip()
+    if preferred and preferred in available:
+        return preferred
+    ranking = [
+        "nemotron-3-super:120b",
+        "gpt-oss:120b",
+        "qwen2.5:72b",
+        "qwen3:32b",
+        "qwen2.5:32b",
+        "qwen2.5:14b",
+        "llama3.3:70b",
+        "llama3.1:70b",
+        "qwen2.5:7b",
+        "llama3.2:latest",
+        "llama3.1:8b",
+    ]
+    for target in ranking:
+        for name in available:
+            if name == target or name.startswith(f"{target}:"):
+                return name
+    if available:
+        return available[0]
+    return preferred or "qwen2.5:32b"
+
+
+def _ollama_generate_json(
+    *,
+    base_url: str,
+    model: str,
+    prompt: str,
+    timeout_seconds: int,
+    temperature: float = 0.1,
+    num_ctx: int = 4096,
+) -> Dict[str, Any]:
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": temperature, "num_ctx": num_ctx},
+    }
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/api/generate",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+        body = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    response_text = str(body.get("response", "")).strip()
+    return _parse_json_object(response_text)
+
+
+def _ollama_generate_text(
+    *,
+    base_url: str,
+    model: str,
+    prompt: str,
+    timeout_seconds: int,
+    temperature: float = 0.2,
+    num_ctx: int = 2048,
+) -> str:
+    """Generate plain-language strategy summary text with Ollama."""
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": temperature, "num_ctx": num_ctx},
+    }
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/api/generate",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+        body = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    return str(body.get("response", "")).strip()
+
+
+def _strategy_sources(provider: str) -> List[Dict[str, str]]:
+    """Map pull provider into a concise source list for strategy transparency."""
+    normalized = (provider or "ebscohost").strip().lower()
+    if normalized == "ebscohost":
+        return [
+            {"name": "Academic Search Ultimate", "provider": "EBSCOhost", "why": "broad scholarly coverage"},
+            {"name": "Regional Business News", "provider": "EBSCOhost", "why": "industry and firm context"},
+            {"name": "EconLit with Full Text", "provider": "EBSCOhost", "why": "economics and policy framing"},
+            {"name": "MasterFILE Premier", "provider": "EBSCOhost", "why": "historical periodicals and newspapers"},
+        ]
+    if normalized == "statista":
+        return [
+            {"name": "Statista", "provider": "Statista", "why": "curated market indicators and charts"},
+            {"name": "World Bank Indicators API", "provider": "Open API", "why": "macro comparator baselines"},
+        ]
+    return [
+        {"name": "Custom provider endpoint", "provider": normalized or "custom", "why": "user-supplied pull route"},
+        {"name": "World Bank Indicators API", "provider": "Open API", "why": "contextual macro controls"},
+    ]
+
+
+def _query_from_claim(claim_text: str, max_len: int = 180) -> str:
+    """Build compact query phrasing from a gap claim."""
+    cleaned = re.sub(r"\s+", " ", str(claim_text or "").strip())
+    if not cleaned:
+        return ""
+    out = cleaned
+    if out.lower().startswith("the manuscript"):
+        out = out[14:].strip()
+    if len(out) > max_len:
+        out = out[: max_len - 3].rstrip() + "..."
+    return out
+
+
+def _strategy_queries(
+    *,
+    gaps: List[Dict[str, Any]],
+    strategy_mode: str,
+    narrow_question: str,
+    target_gap_id: str,
+    limit: int = 8,
+) -> List[Dict[str, Any]]:
+    """Build user-visible source query list from selected strategy mode."""
+    mode = (strategy_mode or "automatic").strip().lower()
+    narrow = re.sub(r"\s+", " ", (narrow_question or "").strip())
+    target = (target_gap_id or "").strip()
+    rows: List[Dict[str, Any]] = []
+
+    if mode == "narrow" and narrow:
         rows.append(
             {
-                "gap_id": f"AUTO-{idx:02d}-G1",
-                "chapter": chapter,
+                "query_id": "Q-01",
+                "text": narrow,
+                "origin": "narrow_question",
+                "gap_id": target,
+                "status": "pending",
+            }
+        )
+        if target:
+            target_gap = next((g for g in gaps if str(g.get("gap_id", "")) == target), None)
+            if target_gap:
+                claim_q = _query_from_claim(str(target_gap.get("claim_text", "")))
+                if claim_q and claim_q.lower() != narrow.lower():
+                    rows.append(
+                        {
+                            "query_id": "Q-02",
+                            "text": claim_q,
+                            "origin": "target_gap",
+                            "gap_id": target,
+                            "status": "pending",
+                        }
+                    )
+        return rows[:limit]
+
+    # Automatic strategy: sample across top gaps so users can inspect intended pull coverage.
+    for gap in gaps[:limit]:
+        gap_id = str(gap.get("gap_id", "")).strip()
+        claim_q = _query_from_claim(str(gap.get("claim_text", "")))
+        if not claim_q:
+            continue
+        rows.append(
+            {
+                "query_id": f"Q-{len(rows) + 1:02d}",
+                "text": claim_q,
+                "origin": "gap_claim",
+                "gap_id": gap_id,
+                "status": "pending",
+            }
+        )
+    return rows
+
+
+def _strategy_checklist(settings: OrchestratorSettings, pull_mode: str, pull_provider: str) -> List[Dict[str, str]]:
+    """Return ordered execution checklist used by Strategy tab check-off UI."""
+    items = [
+        {"stage": "validating_config", "label": "Validate settings and credentials", "status": "pending"},
+        {"stage": "planning", "label": "Resolve manuscript intent and query scope", "status": "pending"},
+        {"stage": "pulling", "label": f"Run source pulls ({pull_mode}/{pull_provider})", "status": "pending"},
+    ]
+    if settings.auto_ingest:
+        items.append({"stage": "ingesting", "label": "Ingest pulled artifacts into Evidence Hub", "status": "pending"})
+    if settings.auto_ingest and settings.auto_llm_fit:
+        items.append({"stage": "llm_processing", "label": "Run LLM fit enrichment", "status": "pending"})
+    items.append({"stage": "completed", "label": "Finalize and persist run outputs", "status": "pending"})
+    return items
+
+
+def _fallback_strategy_summary(
+    *,
+    strategy_mode: str,
+    pull_mode: str,
+    pull_provider: str,
+    chapter_count: int,
+    gap_count: int,
+    source_count: int,
+    query_count: int,
+) -> str:
+    """Create readable strategy summary when LLM summary is unavailable."""
+    mode_label = "automatic research sweep" if strategy_mode == "automatic" else "narrow question mode"
+    return (
+        f"This run uses {mode_label} with {pull_mode}/{pull_provider}. "
+        f"It targets {chapter_count} chapter groups and {gap_count} evidence gaps, "
+        f"pulling from {source_count} source channels with {query_count} planned query prompts "
+        "before ingestion and LLM fit."
+    )
+
+
+def _strategy_summary_text(
+    *,
+    strategy_mode: str,
+    pull_mode: str,
+    pull_provider: str,
+    chapter_count: int,
+    gap_count: int,
+    sources: List[Dict[str, str]],
+    queries: List[Dict[str, Any]],
+    narrow_question: str,
+) -> Dict[str, str]:
+    """Build high-level strategy explanation, using Ollama when available."""
+    fallback = _fallback_strategy_summary(
+        strategy_mode=strategy_mode,
+        pull_mode=pull_mode,
+        pull_provider=pull_provider,
+        chapter_count=chapter_count,
+        gap_count=gap_count,
+        source_count=len(sources),
+        query_count=len(queries),
+    )
+    if not _env_bool("ORCH_STRATEGY_SUMMARY_USE_OLLAMA", default=True):
+        return {"summary": fallback, "method": "fallback", "model": "", "error": ""}
+
+    base_url = os.getenv(
+        "ORCH_STRATEGY_SUMMARY_OLLAMA_BASE_URL",
+        os.getenv("ORCH_GAP_ANALYSIS_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+    ).strip()
+    preferred = os.getenv("ORCH_STRATEGY_SUMMARY_MODEL", os.getenv("ORCH_GAP_ANALYSIS_MODEL", "qwen2.5:32b")).strip()
+    timeout_seconds = int(os.getenv("ORCH_STRATEGY_SUMMARY_TIMEOUT_SECONDS", "45"))
+    llm_error = ""
+    try:
+        available = _ollama_list_models(base_url, timeout_seconds=timeout_seconds)
+        model = _pick_smart_model(available, preferred)
+        src_lines = [f"- {row.get('name')} ({row.get('provider')}): {row.get('why')}" for row in sources[:6]]
+        q_lines = [f"- {row.get('query_id')}: {row.get('text')}" for row in queries[:8]]
+        narrow_line = f"Narrow question: {narrow_question}" if narrow_question else "Narrow question: none"
+        prompt = (
+            "You are writing a concise strategy brief for a historian using a research orchestration app.\n"
+            "Write 3-5 plain-language sentences, no bullet points, that explain:\n"
+            "1) what the pull strategy is,\n"
+            "2) what source families are being searched,\n"
+            "3) how query scope maps to manuscript gaps,\n"
+            "4) what ingest + LLM stages do next.\n"
+            "Avoid hype. Be concrete.\n\n"
+            f"Strategy mode: {strategy_mode}\n"
+            f"Pull mode/provider: {pull_mode}/{pull_provider}\n"
+            f"Chapter groups: {chapter_count}\n"
+            f"Gap count: {gap_count}\n"
+            f"{narrow_line}\n"
+            f"Sources:\n{chr(10).join(src_lines)}\n"
+            f"Queries:\n{chr(10).join(q_lines)}\n"
+        )
+        summary = _ollama_generate_text(
+            base_url=base_url,
+            model=model,
+            prompt=prompt,
+            timeout_seconds=timeout_seconds,
+            temperature=0.2,
+            num_ctx=2048,
+        )
+        summary = re.sub(r"\s+", " ", summary).strip()
+        if not summary:
+            raise RuntimeError("empty_strategy_summary")
+        if len(summary) > 900:
+            summary = summary[:897].rstrip() + "..."
+        return {"summary": summary, "method": "ollama", "model": model, "error": ""}
+    except Exception as exc:
+        llm_error = f"{type(exc).__name__}: {exc}"
+        return {"summary": fallback, "method": "fallback", "model": "", "error": llm_error}
+
+
+def _split_sections(text: str) -> List[Dict[str, Any]]:
+    """Split manuscript text into heading-oriented sections."""
+    lines = [re.sub(r"\s+", " ", (line or "").strip()) for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    sections: List[Dict[str, Any]] = []
+
+    def looks_like_heading(line: str) -> bool:
+        low = line.lower()
+        if re.match(r"^chapter\s+\d+[a-z]?(?:[:.\-]\s*|\s+).+", line, flags=re.IGNORECASE):
+            return True
+        if re.match(r"^chapter\s+[a-z0-9ivx]+", line, flags=re.IGNORECASE):
+            return True
+        if low.startswith("introduction") or low.startswith("conclusion"):
+            return True
+        if re.match(r"^(part|section)\s+[ivx0-9]+", line, flags=re.IGNORECASE):
+            return True
+        # Short all-caps lines often represent section headings in OCR/docx extracts.
+        if line.isupper() and 2 <= len(line.split()) <= 12 and len(line) <= 90:
+            return True
+        return False
+
+    current = {"heading": "Manuscript Body", "lines": []}
+    for line in lines:
+        if looks_like_heading(line):
+            if current["lines"]:
+                sections.append(current)
+            current = {"heading": line, "lines": []}
+        else:
+            current["lines"].append(line)
+    if current["lines"]:
+        sections.append(current)
+    if not sections:
+        sections = [{"heading": "Manuscript Body", "lines": lines}]
+    return sections
+
+
+def _count_hits(pattern: str, text: str) -> int:
+    return len(re.findall(pattern, text, flags=re.IGNORECASE))
+
+
+def _todo_markers(text: str) -> List[str]:
+    markers: List[str] = []
+    for line in text.splitlines():
+        low = line.lower()
+        if any(token in low for token in ["todo", "tbd", "fixme", "missing", "[", "]", "??", "insert "]):
+            snippet = re.sub(r"\s+", " ", line).strip()
+            if snippet:
+                markers.append(snippet[:220])
+    return markers
+
+
+def _build_gap_rows_from_text_heuristic(text: str) -> Dict[str, Any]:
+    """Produce manuscript-aware gap analysis rows from extracted text."""
+    sections = _split_sections(text)
+    rows: List[Dict[str, str]] = []
+    claim_seen: set[str] = set()
+    section_index = 0
+    total_todo = 0
+
+    for section in sections:
+        section_index += 1
+        heading = section["heading"]
+        body = "\n".join(section["lines"])
+        body_compact = re.sub(r"\s+", " ", body).strip()
+        if not body_compact:
+            continue
+
+        citation_hits = _count_hits(r"\(\d{4}\)|\[\d+\]|doi|source:|https?://|www\.", body_compact)
+        number_hits = _count_hits(r"\b\d{4}\b|\b\d+(?:\.\d+)?%|\$\s?\d+", body_compact)
+        hedge_hits = _count_hits(r"\b(maybe|perhaps|likely|appears|seems|suggests|could|might)\b", body_compact)
+        todo_hits = _todo_markers(body)
+        total_todo += len(todo_hits)
+        paragraph_count = len([ln for ln in section["lines"] if len(ln) > 60])
+
+        candidates: List[str] = []
+        for marker in todo_hits[:2]:
+            candidates.append(f"Unresolved placeholder or note in section requires source-backed completion: '{marker}'.")
+
+        if len(body_compact) > 500 and citation_hits < 2:
+            candidates.append("Section lacks explicit citations or source references for major claims.")
+        if len(body_compact) > 500 and number_hits < 2:
+            candidates.append("Section lacks quantitative evidence (figures, percentages, or dated metrics) to anchor key assertions.")
+        if hedge_hits >= 4 and citation_hits == 0:
+            candidates.append("Section relies on hedged language without direct evidence anchors; add stronger sourcing for causal claims.")
+        if paragraph_count <= 1 and len(body_compact) > 280:
+            candidates.append("Section argument is compressed into too little structured exposition; split claims and add supporting evidence per claim.")
+
+        if not candidates:
+            candidates.append("Section needs an explicit evidence map tying each major claim to at least one verifiable source.")
+
+        local_i = 0
+        for claim in candidates:
+            if claim in claim_seen:
+                continue
+            claim_seen.add(claim)
+            local_i += 1
+            rows.append(
+                {
+                    "gap_id": f"AUTO-{section_index:02d}-G{local_i}",
+                    "chapter": heading,
+                    "claim_text": claim,
+                }
+            )
+            if local_i >= 6:
+                break
+        if len(rows) >= 80:
+            break
+
+    if not rows:
+        rows = [
+            {
+                "gap_id": "AUTO-01-G1",
+                "chapter": "Auto Generated: Manuscript Review",
                 "claim_text": (
                     "Auto-generated placeholder gap for selected manuscript. "
                     "Refine this claim text before production pull runs."
                 ),
             }
-        )
+        ]
+
+    return {
+        "rows": rows,
+        "section_count": len(sections),
+        "todo_markers": total_todo,
+        "analysis_method": "heuristic",
+    }
+
+
+def _build_gap_rows_from_text_ollama(text: str) -> Dict[str, Any]:
+    """Use Ollama to produce structured gap analysis from manuscript text."""
+    base_url = os.getenv("ORCH_GAP_ANALYSIS_OLLAMA_BASE_URL", os.getenv("ORCH_OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
+    preferred_model = os.getenv("ORCH_GAP_ANALYSIS_MODEL", "qwen2.5:32b").strip()
+    timeout_seconds = int(os.getenv("ORCH_GAP_ANALYSIS_TIMEOUT_SECONDS", "240"))
+
+    available = _ollama_list_models(base_url, timeout_seconds=timeout_seconds)
+    model = _pick_smart_model(available, preferred_model)
+    chapter_hints = _candidate_chapters_from_text(text)[:20]
+    excerpt = text[:18000]
+    prompt = (
+        "You are a rigorous manuscript gap analyst.\n"
+        "Task: find evidence gaps in this manuscript content.\n"
+        "Output STRICT JSON object with key `gaps` only.\n"
+        "Schema: {\"gaps\":[{\"chapter\":\"...\",\"claim_text\":\"...\"}]}\n"
+        "Rules:\n"
+        "- 2 to 5 gaps per detected chapter when possible.\n"
+        "- claim_text must be concrete, evidence-oriented, and actionable.\n"
+        "- avoid generic filler.\n"
+        "- max 60 gaps total.\n\n"
+        f"Chapter hints: {chapter_hints}\n"
+        f"Manuscript excerpt:\n{excerpt}\n"
+    )
+    parsed = _ollama_generate_json(
+        base_url=base_url,
+        model=model,
+        prompt=prompt,
+        timeout_seconds=timeout_seconds,
+        temperature=0.1,
+        num_ctx=4096,
+    )
+    gap_items = parsed.get("gaps", [])
+    if not isinstance(gap_items, list):
+        raise RuntimeError("ollama_response_missing_gaps_array")
+
+    rows: List[Dict[str, str]] = []
+    per_chapter_counts: Dict[str, int] = {}
+    for item in gap_items:
+        if not isinstance(item, dict):
+            continue
+        chapter = " ".join(str(item.get("chapter", "")).split()).strip() or "Auto Generated: Manuscript Review"
+        claim_text = " ".join(str(item.get("claim_text", "")).split()).strip()
+        if len(claim_text) < 25:
+            continue
+        per_chapter_counts[chapter] = per_chapter_counts.get(chapter, 0) + 1
+        gap_id = f"AUTO-{len(per_chapter_counts):02d}-G{per_chapter_counts[chapter]}"
+        rows.append({"gap_id": gap_id, "chapter": chapter, "claim_text": claim_text})
+        if len(rows) >= 60:
+            break
+    if not rows:
+        raise RuntimeError("ollama_no_valid_gap_rows")
+
+    return {
+        "rows": rows,
+        "section_count": len(set(r["chapter"] for r in rows)),
+        "todo_markers": 0,
+        "analysis_method": "ollama",
+        "model": model,
+    }
+
+
+def _is_placeholder_only_gap_map(path: Path) -> bool:
+    """Detect legacy one-row placeholder maps that should be regenerated."""
+    try:
+        with path.open("r", newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+    except Exception:
+        return False
+    if len(rows) != 1:
+        return False
+    claim = str(rows[0].get("claim_text", "")).lower()
+    return "placeholder gap for selected manuscript" in claim
+
+
+def _generate_gap_claims_for_manuscript(manuscript_file: Path, out_csv: Path) -> Dict[str, Any]:
+    """Generate fallback gap claims CSV when manuscript has no mapped gap file."""
+    text, extract_meta = _extract_text_for_gap_generation(manuscript_file)
+    llm_error = ""
+    if _env_bool("ORCH_GAP_ANALYSIS_USE_OLLAMA", default=True):
+        try:
+            analysis = _build_gap_rows_from_text_ollama(text)
+        except Exception as exc:
+            llm_error = f"{type(exc).__name__}: {exc}"
+            analysis = _build_gap_rows_from_text_heuristic(text)
+    else:
+        analysis = _build_gap_rows_from_text_heuristic(text)
+    rows: List[Dict[str, str]] = analysis["rows"]
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="", encoding="utf-8") as handle:
@@ -312,17 +929,23 @@ def _generate_gap_claims_for_manuscript(manuscript_file: Path, out_csv: Path) ->
 
     meta = {
         "generated": True,
+        "analysis_version": ANALYSIS_VERSION,
         "row_count": len(rows),
         "source_manuscript": str(manuscript_file),
         "extraction": {
             **extract_meta,
-            "chapter_candidates_detected": len(chapters) if not used_fallback else 0,
-            "chapter_candidates_preview": chapters[:12] if not used_fallback else [],
-            "used_fallback_single_gap": used_fallback,
+            "section_count": analysis.get("section_count", 0),
+            "todo_markers_detected": analysis.get("todo_markers", 0),
+            "chapter_candidates_detected": len({row["chapter"] for row in rows if row.get("chapter")}),
+            "chapter_candidates_preview": list({row["chapter"] for row in rows if row.get("chapter")})[:12],
+            "used_fallback_single_gap": len(rows) == 1 and rows[0]["chapter"].startswith("Auto Generated"),
+            "analysis_method": analysis.get("analysis_method", "heuristic"),
+            "analysis_model": analysis.get("model", ""),
+            "llm_error": llm_error,
             "message": (
-                "No chapter headings detected; fallback placeholder gap map generated."
-                if used_fallback
-                else "Chapter headings detected and mapped into auto gap claims."
+                "Gap analysis generated from manuscript text."
+                if rows
+                else "No analyzable text extracted; fallback placeholder gap map generated."
             ),
         },
     }
@@ -370,23 +993,24 @@ def _gap_claims_for_manuscript(workspace: Path, manuscript_path: str, refresh: b
     if refresh or (not generated_csv.exists()):
         meta = _generate_gap_claims_for_manuscript(manuscript_file, generated_csv)
         return {"path": generated_csv, **meta, "reason": "generated_missing_map"}
+    if _is_placeholder_only_gap_map(generated_csv):
+        meta = _generate_gap_claims_for_manuscript(manuscript_file, generated_csv)
+        return {"path": generated_csv, **meta, "reason": "regenerated_placeholder_map"}
     meta_path = _generated_gap_meta_path(generated_csv)
     if meta_path.exists():
         try:
             prev = json.loads(meta_path.read_text(encoding="utf-8"))
             if isinstance(prev, dict):
+                version = int(prev.get("analysis_version", 0) or 0)
+                if version < ANALYSIS_VERSION:
+                    meta = _generate_gap_claims_for_manuscript(manuscript_file, generated_csv)
+                    return {"path": generated_csv, **meta, "reason": "regenerated_analysis_upgrade"}
                 return {"path": generated_csv, "generated": False, "reason": "existing_generated_map", **prev}
         except Exception:
             pass
-    return {
-        "path": generated_csv,
-        "generated": False,
-        "reason": "existing_generated_map",
-        "extraction": {
-            "status": "unknown",
-            "message": "Using previously generated map; extraction metadata unavailable.",
-        },
-    }
+    # Legacy maps without metadata should be regenerated to produce read diagnostics.
+    meta = _generate_gap_claims_for_manuscript(manuscript_file, generated_csv)
+    return {"path": generated_csv, **meta, "reason": "regenerated_missing_metadata"}
 
 
 def _gap_layout(workspace: Path, manuscript_path: str = "", refresh: bool = False) -> Dict[str, Any]:
@@ -501,6 +1125,55 @@ def api_gaps_layout(
     return _gap_layout(settings.workspace, manuscript_path=manuscript_path, refresh=refresh)
 
 
+@app.post("/api/orchestrator/strategy/preview")
+def api_strategy_preview(inp: StrategyPreviewInput) -> Dict[str, Any]:
+    """Return strategy summary + source/query/checklist preview for Strategy tab."""
+    settings = _settings()
+    layout = _gap_layout(settings.workspace, manuscript_path=inp.manuscript_path, refresh=False)
+    gaps = layout.get("gaps", [])
+    if not isinstance(gaps, list):
+        gaps = []
+
+    strategy_mode = (inp.strategy_mode or "automatic").strip().lower()
+    pull_mode = (inp.pull_mode or settings.pull_mode).strip().lower()
+    pull_provider = (inp.pull_provider or settings.pull_provider).strip().lower()
+    narrow_question = re.sub(r"\s+", " ", (inp.narrow_question or "").strip())
+    target_gap_id = (inp.target_gap_id or "").strip()
+
+    queries = _strategy_queries(
+        gaps=gaps,
+        strategy_mode=strategy_mode,
+        narrow_question=narrow_question,
+        target_gap_id=target_gap_id,
+    )
+    sources = _strategy_sources(pull_provider)
+    summary = _strategy_summary_text(
+        strategy_mode=strategy_mode,
+        pull_mode=pull_mode,
+        pull_provider=pull_provider,
+        chapter_count=int(layout.get("chapter_count", 0) or 0),
+        gap_count=int(layout.get("gap_count", 0) or 0),
+        sources=sources,
+        queries=queries,
+        narrow_question=narrow_question,
+    )
+    return {
+        "strategy_mode": strategy_mode,
+        "pull_mode": pull_mode,
+        "pull_provider": pull_provider,
+        "manuscript_path": inp.manuscript_path,
+        "chapter_count": int(layout.get("chapter_count", 0) or 0),
+        "gap_count": int(layout.get("gap_count", 0) or 0),
+        "sources": sources,
+        "queries": queries,
+        "checklist": _strategy_checklist(settings, pull_mode, pull_provider),
+        "summary": summary.get("summary", ""),
+        "summary_method": summary.get("method", "fallback"),
+        "summary_model": summary.get("model", ""),
+        "summary_error": summary.get("error", ""),
+    }
+
+
 @app.post("/api/orchestrator/intents")
 def api_create_intent(inp: IntentCreateInput) -> Dict[str, Any]:
     settings = _settings()
@@ -559,12 +1232,29 @@ def api_connection_save(inp: ConnectionSaveInput) -> Dict[str, Any]:
 
 @app.get("/api/orchestrator/connections/values")
 def api_connection_values(mask_secrets: bool = Query(default=True)) -> Dict[str, Any]:
-    """Return current .env values for settings page editing."""
+    """Return effective connection values (runtime env + .env) for settings page.
+
+    Non-obvious behavior:
+    - Runtime environment variables (for example Docker compose env vars) take
+      precedence over `.env` file values because that is what execution uses.
+    """
     settings = _settings()
-    values = read_env_values(settings.env_path)
+    file_values = read_env_values(settings.env_path)
+    keys: set[str] = set(file_values.keys())
+    # Include keys from known connection contracts so required-field checks are accurate.
+    for mode in ("auto", "api", "playwright"):
+        for provider in ("ebscohost", "statista", "custom"):
+            for field in required_connection_fields(mode=mode, provider=provider):
+                keys.add(str(field.get("key", "")))
+    # Include runtime ORCH_* keys even if absent from .env.
+    for key in os.environ.keys():
+        if key.startswith("ORCH_"):
+            keys.add(key)
+
     rows: List[Dict[str, Any]] = []
-    for key in sorted(values.keys()):
-        value = str(values.get(key, ""))
+    for key in sorted(k for k in keys if k):
+        in_env = key in os.environ
+        value = str(os.environ.get(key, file_values.get(key, "")))
         is_secret = any(token in key.upper() for token in ["PASSWORD", "KEY", "TOKEN", "SECRET"])
         display = value
         if mask_secrets and is_secret:
@@ -579,6 +1269,7 @@ def api_connection_values(mask_secrets: bool = Query(default=True)) -> Dict[str,
                 "raw_value": value if (not mask_secrets or not is_secret) else "",
                 "is_secret": is_secret,
                 "has_value": bool(value),
+                "source": "process_env" if in_env else ".env",
             }
         )
     return {"env_path": str(settings.env_path), "values": rows}
@@ -588,7 +1279,11 @@ def api_connection_values(mask_secrets: bool = Query(default=True)) -> Dict[str,
 def api_sources_catalog() -> Dict[str, Any]:
     """Return source inventory for Settings: free APIs, closed APIs, university DBs."""
     settings = _settings()
-    env_values = read_env_values(settings.env_path)
+    file_values = read_env_values(settings.env_path)
+    effective_env = dict(file_values)
+    # Runtime env values (for example Docker compose) are authoritative at execution time.
+    for key, value in os.environ.items():
+        effective_env[key] = value
 
     def with_env_status(rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         enriched: List[Dict[str, Any]] = []
@@ -597,7 +1292,7 @@ def api_sources_catalog() -> Dict[str, Any]:
             env_key = str(row.get("env_key", "")).strip()
             if env_key:
                 rec["env_key"] = env_key
-                rec["configured"] = bool(str(env_values.get(env_key, "")).strip())
+                rec["configured"] = bool(str(effective_env.get(env_key, "")).strip())
             else:
                 rec["env_key"] = ""
                 rec["configured"] = None
@@ -630,30 +1325,44 @@ def api_create_run(inp: RunCreateInput) -> Dict[str, Any]:
         if not intent:
             raise HTTPException(status_code=404, detail="intent not found")
 
-    run_id = _new_id("run")
-    rec = {
-        "run_id": run_id,
-        "status": "queued",
-        "stage": "queued",
-        "payload": inp.model_dump(),
-        "created_at": now_utc(),
-        "updated_at": now_utc(),
-        "result": {},
-        "error": None,
-    }
-    store.upsert_run(rec)
-    emit_event(store, run_id=run_id, stage="queued", status="queued", message="Run queued")
-    _start_background_run(run_id)
-    return rec
+    with RUN_CREATE_LOCK:
+        settings = _settings()
+        _reconcile_stale_runs(settings)
+        if not bool(inp.force):
+            existing = _latest_active_run()
+            if existing:
+                reused = dict(existing)
+                reused["reused_active_run"] = True
+                reused["message"] = "Active run already in progress; reused existing run."
+                return reused
+
+        run_id = _new_id("run")
+        rec = {
+            "run_id": run_id,
+            "status": "queued",
+            "stage": "queued",
+            "payload": inp.model_dump(),
+            "created_at": now_utc(),
+            "updated_at": now_utc(),
+            "result": {},
+            "error": None,
+            "reused_active_run": False,
+        }
+        store.upsert_run(rec)
+        emit_event(store, run_id=run_id, stage="queued", status="queued", message="Run queued")
+        _start_background_run(run_id)
+        return rec
 
 
 @app.get("/api/orchestrator/runs")
 def api_list_runs(limit: int = 30) -> Dict[str, Any]:
+    _reconcile_stale_runs(_settings())
     return {"runs": store.list_runs(limit=limit)}
 
 
 @app.get("/api/orchestrator/runs/{run_id}")
 def api_get_run(run_id: str) -> Dict[str, Any]:
+    _reconcile_stale_runs(_settings())
     rec = store.get_run(run_id)
     if not rec:
         raise HTTPException(status_code=404, detail="run not found")

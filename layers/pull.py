@@ -21,6 +21,7 @@ from ..adapters.playwright_adapters import (
 )
 from ..config import OrchestratorSettings
 from ..contracts import ClaimKind, EvidenceNeed, GapPullResult, PlannedGap, ResearchPlan, SourceAvailability, SourceResult, SourceType
+from ..library_profiles import get_active_playwright_source_ids, get_active_university_databases
 
 
 SOURCE_REGISTRY: Dict[str, PullAdapter] = {
@@ -196,11 +197,62 @@ SOURCE_CAPABILITIES: Dict[str, Dict[str, object]] = {
 }
 
 
-def source_capability_catalog() -> Dict[str, Dict[str, object]]:
+def _runtime_capability_map(settings: OrchestratorSettings | None = None) -> Dict[str, Dict[str, object]]:
+    """Build runtime capability map by merging static + library profile metadata."""
+
+    capabilities: Dict[str, Dict[str, object]] = {
+        source_id: {
+            "claim_kinds": list(row.get("claim_kinds", [])),
+            "evidence_needs": list(row.get("evidence_needs", [])),
+            "notes": str(row.get("notes", "")),
+        }
+        for source_id, row in SOURCE_CAPABILITIES.items()
+    }
+
+    if settings is not None:
+        for db in get_active_university_databases(settings):
+            source_id = str(db.get("source_id", "")).strip().lower()
+            if not source_id:
+                continue
+            if source_id not in capabilities:
+                capabilities[source_id] = {"claim_kinds": [], "evidence_needs": [], "notes": ""}
+
+            claim_rows = db.get("claim_kinds", [])
+            if isinstance(claim_rows, list):
+                claim_kinds: List[ClaimKind] = []
+                for item in claim_rows:
+                    try:
+                        claim_kinds.append(ClaimKind(str(item).strip()))
+                    except Exception:
+                        continue
+                if claim_kinds:
+                    capabilities[source_id]["claim_kinds"] = claim_kinds
+
+            evidence_rows = db.get("evidence_needs", [])
+            if isinstance(evidence_rows, list):
+                evidence_needs: List[EvidenceNeed] = []
+                for item in evidence_rows:
+                    try:
+                        evidence_needs.append(EvidenceNeed(str(item).strip()))
+                    except Exception:
+                        continue
+                if evidence_needs:
+                    capabilities[source_id]["evidence_needs"] = evidence_needs
+
+            categories = db.get("categories", [])
+            if isinstance(categories, list) and categories:
+                capabilities[source_id]["notes"] = (
+                    f"library profile categories: {', '.join(str(cat) for cat in categories)}"
+                )
+
+    return capabilities
+
+
+def source_capability_catalog(settings: OrchestratorSettings | None = None) -> Dict[str, Dict[str, object]]:
     """Return JSON-safe capability rows for API/LLM consumers."""
 
     catalog: Dict[str, Dict[str, object]] = {}
-    for source_id, row in SOURCE_CAPABILITIES.items():
+    for source_id, row in _runtime_capability_map(settings).items():
         claim_kinds = [str(kind.value) for kind in row.get("claim_kinds", [])]
         evidence_needs = [str(kind.value) for kind in row.get("evidence_needs", [])]
         catalog[source_id] = {
@@ -217,6 +269,7 @@ def rank_sources_for_claim(
     availability: SourceAvailability,
     source_types: List[SourceType] | None = None,
     max_sources: int = 4,
+    settings: OrchestratorSettings | None = None,
 ) -> List[str]:
     """Rank currently-available sources by semantic fit for one claim."""
 
@@ -232,12 +285,14 @@ def rank_sources_for_claim(
         if src_type in type_allow:
             candidates.extend(ids)
 
+    capabilities = _runtime_capability_map(settings)
+
     scored: List[tuple[float, str]] = []
     for source_id in candidates:
         adapter = SOURCE_REGISTRY.get(source_id)
         if adapter is None:
             continue
-        caps = SOURCE_CAPABILITIES.get(source_id, {})
+        caps = capabilities.get(source_id, {})
         cap_claims: List[ClaimKind] = list(caps.get("claim_kinds", []))  # type: ignore[arg-type]
         cap_evidence: List[EvidenceNeed] = list(caps.get("evidence_needs", []))  # type: ignore[arg-type]
 
@@ -315,10 +370,11 @@ def build_source_availability(settings: OrchestratorSettings) -> SourceAvailabil
     playwright_unavailable_reason = ""
     cdp_error = check_cdp_endpoint(settings.playwright_cdp_url)
     if not cdp_error:
+        preferred_playwright_ids = set(get_active_playwright_source_ids(settings))
         playwright_sources = [
             source_id
             for source_id, adapter in SOURCE_REGISTRY.items()
-            if adapter.source_type == SourceType.PLAYWRIGHT
+            if adapter.source_type == SourceType.PLAYWRIGHT and (not preferred_playwright_ids or source_id in preferred_playwright_ids)
         ]
     else:
         playwright_unavailable_reason = (
@@ -366,13 +422,19 @@ def pull_for_plan(
     return results
 
 
-def _source_ids_for_gap(gap: PlannedGap, availability: SourceAvailability) -> List[str]:
+def _source_ids_for_gap(gap: PlannedGap, availability: SourceAvailability, settings: OrchestratorSettings) -> List[str]:
     """Resolve source IDs for a planned gap using preferred list then type routing."""
 
     if gap.preferred_sources:
         return gap.preferred_sources
 
-    ranked = rank_sources_for_claim(gap.claim_kind, gap.evidence_need, availability, source_types=gap.source_types)
+    ranked = rank_sources_for_claim(
+        gap.claim_kind,
+        gap.evidence_need,
+        availability,
+        source_types=gap.source_types,
+        settings=settings,
+    )
     if ranked:
         return ranked
 
@@ -410,7 +472,7 @@ def _pull_gap(
     succeeded: List[str] = []
     failed: List[str] = []
 
-    source_ids = _source_ids_for_gap(gap, availability)
+    source_ids = _source_ids_for_gap(gap, availability, settings)
 
     for source_id in source_ids:
         adapter = SOURCE_REGISTRY.get(source_id)

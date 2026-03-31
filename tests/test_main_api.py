@@ -36,6 +36,7 @@ def test_documents_endpoint_and_file_clickthrough(tmp_path, monkeypatch):
     monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
     monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
     monkeypatch.setenv("ORCH_PULL_OUTPUT_ROOT", "pull_outputs")
+    monkeypatch.setenv("ORCH_LIBRARY_SYSTEM", "generic")
 
     store = OrchestratorStore(state_dir)
     monkeypatch.setattr(orchestrator_main, "store", store)
@@ -100,6 +101,10 @@ def test_documents_endpoint_and_file_clickthrough(tmp_path, monkeypatch):
 
     catalog = client.get("/api/orchestrator/sources/catalog")
     assert catalog.status_code == 200
-    universities = catalog.json().get("university_databases", [])
+    payload = catalog.json()
+    universities = payload.get("university_databases", [])
     assert universities
+    assert payload.get("library_system") == "generic"
     assert any(row.get("source_id") == "jstor" for row in universities)
+    assert not any(row.get("source_id") == "proquest_historical_newspapers" for row in universities)
+    assert all(isinstance(row.get("categories", []), list) for row in universities)

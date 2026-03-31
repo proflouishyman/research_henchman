@@ -55,6 +55,7 @@ Environment controls all behavior (`app/config.py`):
 - reflection: `ORCH_REFLECTION_*`
 - routing/review gates: `ORCH_ROUTING_MIN_CONFIDENCE`, `ORCH_PLAN_REVIEW_USE_OLLAMA`, `ORCH_PLAN_REVIEW_MODEL`, `ORCH_PLAN_REVIEW_TIMEOUT_SECONDS`
 - pull/router: `ORCH_PULL_TIMEOUT_SECONDS`, `ORCH_PULL_OUTPUT_ROOT`, `ORCH_PLAYWRIGHT_CDP_URL`
+- library profile routing: `ORCH_LIBRARY_SYSTEM`, `ORCH_LIBRARY_PROFILES_PATH`, `ORCH_PLAYWRIGHT_EXTRA_SOURCES`
 - ingest/fit: `ORCH_AUTO_INGEST`, `ORCH_AUTO_LLM_FIT`, `ORCH_LLM_*`, `ORCH_OLLAMA_BASE_URL`
 
 ## Notes on adapters
@@ -63,15 +64,17 @@ Environment controls all behavior (`app/config.py`):
 - Source-specific query translation logic can be implemented per adapter ticket without changing pipeline contracts.
 - Source semantics are declared in `SOURCE_CAPABILITIES`; add/update capability tags so routing can match claim type to source family.
 
-## JHU history coverage
-- Added Playwright adapter IDs for library-history workflows:
+## University profile coverage
+- Playwright adapter IDs currently implemented for history/library workflows:
   - `jstor`
   - `project_muse`
   - `ebscohost`
   - `proquest_historical_newspapers`
   - `americas_historical_newspapers`
   - `gale_primary_sources`
-- `GET /api/orchestrator/sources/catalog` now returns `university_databases` rows with `name`, `source_id`, and `url` to support settings/UI display and routing transparency.
+- Default profile file: `app/library_profiles.default.json` (contains `jhu` and `generic` examples).
+- `GET /api/orchestrator/sources/catalog` returns active-profile `university_databases` rows (`name`, `source_id`, `url`, `categories`, `claim_kinds`, `evidence_needs`) plus `library_system` metadata.
+- Runtime routing uses profile metadata to constrain Playwright availability by active university system, while API sources remain global/config-driven.
 
 ## Local run
 ```bash

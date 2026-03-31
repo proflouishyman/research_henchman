@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 
 ENV_LINE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$")
@@ -18,6 +18,20 @@ def parse_bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_csv_list(value: str | None) -> List[str]:
+    """Parse comma-separated env values into compact string list."""
+
+    if value is None:
+        return []
+    out: List[str] = []
+    for raw in str(value).split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        out.append(item)
+    return out
 
 
 def default_workspace() -> Path:
@@ -140,6 +154,9 @@ class OrchestratorSettings:
     pull_timeout_seconds: int
     pull_output_root: Path
     playwright_cdp_url: str
+    library_system: str
+    library_profiles_path: Path
+    playwright_extra_sources: List[str]
 
     ingest_ebsco_script: Path
     ingest_external_script: Path
@@ -194,6 +211,12 @@ class OrchestratorSettings:
                 os.getenv("ORCH_PULL_OUTPUT_ROOT", "codex/add_to_cart_audit/external_sources"),
             ),
             playwright_cdp_url=os.getenv("ORCH_PLAYWRIGHT_CDP_URL", "http://127.0.0.1:9222").strip(),
+            library_system=os.getenv("ORCH_LIBRARY_SYSTEM", "jhu").strip().lower(),
+            library_profiles_path=_as_abs(
+                workspace,
+                os.getenv("ORCH_LIBRARY_PROFILES_PATH", str(app_root / "library_profiles.default.json")),
+            ),
+            playwright_extra_sources=parse_csv_list(os.getenv("ORCH_PLAYWRIGHT_EXTRA_SOURCES")),
             ingest_ebsco_script=_as_abs(
                 workspace,
                 os.getenv("ORCH_INGEST_EBSCO_SCRIPT", "codex/evidence_hub/ingest_ebsco_runs.py"),

@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import OrchestratorSettings, load_runtime_env, read_env_values, write_env_updates
 from .contracts import ConnectionSaveInput, RetryInput, RunCreateInput, RunRecord, RunStatus, run_record_from_dict, run_record_to_dict
+from .library_profiles import get_active_library_profile, get_active_university_databases
 from .layers.pull import SOURCE_REGISTRY, build_source_availability, source_capability_catalog
 from .pipeline import run_orchestration
 from .store import OrchestratorStore, now_utc
@@ -48,28 +49,6 @@ ACTIVE_RUN_STATUSES = {
     RunStatus.INGESTING.value,
     RunStatus.FITTING.value,
 }
-
-
-# JHU sources:
-# - Search Tools page lists JSTOR and Project MUSE as humanities recommendations.
-# - JHU history guides/snippets reference historical newspaper and primary-source databases.
-UNIVERSITY_DATABASES = [
-    {"name": "JSTOR", "source_id": "jstor", "url": "https://databases.library.jhu.edu"},
-    {"name": "Project MUSE", "source_id": "project_muse", "url": "https://databases.library.jhu.edu"},
-    {"name": "EBSCOhost", "source_id": "ebscohost", "url": "https://databases.library.jhu.edu"},
-    {
-        "name": "ProQuest Historical Newspapers",
-        "source_id": "proquest_historical_newspapers",
-        "url": "https://databases.library.jhu.edu",
-    },
-    {
-        "name": "America's Historical Newspapers",
-        "source_id": "americas_historical_newspapers",
-        "url": "https://databases.library.jhu.edu",
-    },
-    {"name": "Gale Primary Sources", "source_id": "gale_primary_sources", "url": "https://databases.library.jhu.edu"},
-    {"name": "Statista", "source_id": "statista", "url": "https://databases.library.jhu.edu"},
-]
 
 
 def _settings() -> OrchestratorSettings:
@@ -317,9 +296,13 @@ def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], 
 def api_health() -> Dict[str, Any]:
     settings = _settings()
     availability = build_source_availability(settings)
+    profile = get_active_library_profile(settings)
     return {
         "status": "ok",
         "workspace": str(settings.workspace),
+        "library_system": str(profile.get("key", settings.library_system)),
+        "library_name": str(profile.get("name", "")),
+        "library_profiles_path": str(settings.library_profiles_path),
         "auto_ingest": settings.auto_ingest,
         "auto_llm_fit": settings.auto_llm_fit,
         "llm_backend": settings.llm_backend,
@@ -497,7 +480,9 @@ def api_connection_save(inp: ConnectionSaveInput) -> Dict[str, Any]:
 def api_sources_catalog() -> Dict[str, Any]:
     settings = _settings()
     availability = build_source_availability(settings)
-    caps = source_capability_catalog()
+    caps = source_capability_catalog(settings)
+    profile = get_active_library_profile(settings)
+    universities = get_active_university_databases(settings)
 
     free = []
     keyed = []
@@ -522,10 +507,13 @@ def api_sources_catalog() -> Dict[str, Any]:
 
     return {
         "workspace": str(settings.workspace),
+        "library_system": str(profile.get("key", settings.library_system)),
+        "library_name": str(profile.get("name", "")),
+        "library_profiles_path": str(settings.library_profiles_path),
         "free_apis": sorted(free, key=lambda row: row["source_id"]),
         "closed_apis": sorted(keyed, key=lambda row: row["source_id"]),
         "playwright_sources": sorted(playwright, key=lambda row: row["source_id"]),
-        "university_databases": [{**row, "provider": "library"} for row in UNIVERSITY_DATABASES],
+        "university_databases": sorted(universities, key=lambda row: row.get("source_id", "")),
     }
 
 

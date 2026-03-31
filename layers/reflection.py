@@ -131,7 +131,7 @@ def _format_source_availability(availability: SourceAvailability) -> str:
     )
 
 
-def _build_reflection_prompt(gap_map: GapMap, availability: SourceAvailability) -> str:
+def _build_reflection_prompt(gap_map: GapMap, availability: SourceAvailability, settings: OrchestratorSettings) -> str:
     gaps_json = json.dumps(
         [
             {
@@ -148,7 +148,7 @@ def _build_reflection_prompt(gap_map: GapMap, availability: SourceAvailability) 
         indent=2,
     )
     sources_block = _format_source_availability(availability)
-    capabilities_json = json.dumps(source_capability_catalog(), ensure_ascii=False, indent=2)
+    capabilities_json = json.dumps(source_capability_catalog(settings), ensure_ascii=False, indent=2)
 
     return f"""You are a research strategist reviewing an evidentiary gap analysis for a manuscript.
 
@@ -190,7 +190,7 @@ GAP ANALYSIS:
 """
 
 
-def _review_prompt(plan: ResearchPlan, availability: SourceAvailability) -> str:
+def _review_prompt(plan: ResearchPlan, availability: SourceAvailability, settings: OrchestratorSettings) -> str:
     needs_review = [
         {
             "gap_id": gap.gap_id,
@@ -218,7 +218,7 @@ AVAILABLE SOURCES:
 {_format_source_availability(availability)}
 
 SOURCE CAPABILITIES:
-{json.dumps(source_capability_catalog(), ensure_ascii=False, indent=2)}
+{json.dumps(source_capability_catalog(settings), ensure_ascii=False, indent=2)}
 
 NEEDS REVIEW GAPS:
 {json.dumps(needs_review, ensure_ascii=False, indent=2)}
@@ -247,7 +247,7 @@ def _reflect_with_ollama(
     run_id: str,
     settings: OrchestratorSettings,
 ) -> ResearchPlan:
-    prompt = _build_reflection_prompt(gap_map, availability)
+    prompt = _build_reflection_prompt(gap_map, availability, settings)
     response = _call_ollama(
         prompt=prompt,
         model=settings.reflection_model,
@@ -282,7 +282,7 @@ def _review_needs_review_gaps_with_ollama(
 
     try:
         response = _call_ollama(
-            prompt=_review_prompt(plan, availability),
+            prompt=_review_prompt(plan, availability, settings),
             model=settings.plan_review_model,
             base_url=settings.ollama_base_url,
             timeout_seconds=settings.plan_review_timeout_seconds,
@@ -658,6 +658,7 @@ def _apply_routing_policy(plan: ResearchPlan, availability: SourceAvailability, 
             availability,
             source_types=gap.source_types,
             max_sources=3,
+            settings=settings,
         )
         # Policy is authoritative: always replace legacy/LLM-preferred sources
         # with capability-ranked sources for this claim/evidence type.

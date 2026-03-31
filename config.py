@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
@@ -57,6 +58,17 @@ def _as_abs(workspace: Path, value: str) -> Path:
     if p.is_absolute():
         return p
     return (workspace / p).resolve()
+
+
+def _default_api_pull_command() -> str:
+    """Return built-in API pull command used when env override is absent.
+
+    Assumption:
+    - The orchestrator package path is stable and this file is co-located with
+      `default_api_pull.py`.
+    """
+    script = Path(__file__).resolve().with_name("default_api_pull.py")
+    return f"{sys.executable} \"{script}\" --workspace {{workspace}} --provider {{provider}}"
 
 
 @dataclass(frozen=True)
@@ -118,7 +130,7 @@ class OrchestratorSettings:
             pull_provider=os.getenv("ORCH_PULL_PROVIDER", "ebscohost").strip().lower(),
             pull_mode=os.getenv("ORCH_PULL_MODE", "auto").strip().lower(),
             pull_output_root=pull_root,
-            api_pull_command=os.getenv("ORCH_API_PULL_COMMAND", "").strip(),
+            api_pull_command=os.getenv("ORCH_API_PULL_COMMAND", _default_api_pull_command()).strip(),
             playwright_pull_command=os.getenv("ORCH_PLAYWRIGHT_PULL_COMMAND", "").strip(),
             playwright_cdp_url=os.getenv("ORCH_PLAYWRIGHT_CDP_URL", "http://127.0.0.1:9222").strip(),
             ingest_ebsco_script=ingest_ebsco_script,
@@ -151,12 +163,14 @@ def required_connection_fields(mode: str, provider: str) -> List[Dict[str, objec
     ]
 
     if mode in {"api", "auto"}:
+        # For ebscohost, API mode has a built-in default command fallback.
+        api_cmd_required = mode == "api" and provider != "ebscohost"
         fields.append(
             {
                 "key": "ORCH_API_PULL_COMMAND",
-                "label": "API Pull Command",
+                "label": "API Pull Command (optional for ebscohost)",
                 "secret": False,
-                "required": mode == "api",
+                "required": api_cmd_required,
             }
         )
         if provider == "ebscohost":

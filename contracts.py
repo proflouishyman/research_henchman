@@ -51,6 +51,17 @@ class ConnectionSchemaResponse(BaseModel):
     fields: List[Dict[str, object]]
 
 
+class StrategyPreviewInput(BaseModel):
+    """Input payload for generating strategy summary/source/query preview."""
+
+    manuscript_path: str = ""
+    pull_mode: Literal["api", "playwright", "auto"] = "auto"
+    pull_provider: str = "ebscohost"
+    strategy_mode: Literal["automatic", "narrow"] = "automatic"
+    narrow_question: str = ""
+    target_gap_id: str = ""
+
+
 class RunSummary(BaseModel):
     """Normalized run summary payload for UI polling."""
 
@@ -62,4 +73,3 @@ class RunSummary(BaseModel):
     payload: Dict[str, object]
     result: Dict[str, object] = Field(default_factory=dict)
     error: Optional[str] = None
-

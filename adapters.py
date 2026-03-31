@@ -79,7 +79,7 @@ class CommandPullAdapter(PullAdapter):
                 run_dir=existing_run_dir,
                 artifact_type=artifact_type,
                 status="completed",
-                stats={"handoff": True},
+                stats={"handoff": True, "pull_mode": self.mode},
             )
 
         if not self.command_template:
@@ -116,13 +116,24 @@ class CommandPullAdapter(PullAdapter):
                 "with `run_id` and `run_dir`."
             )
 
+        parsed_stats = payload_json.get("stats", {}) if isinstance(payload_json.get("stats"), dict) else {}
+        parsed_stats = dict(parsed_stats)
+        parsed_stats.update(
+            {
+                "pull_mode": self.mode,
+                "stdout_tail": (proc.stdout or "").strip()[-500:],
+            }
+        )
+        if proc.stderr and proc.stderr.strip():
+            parsed_stats["stderr_tail"] = (proc.stderr or "").strip()[-300:]
+
         return PullRunArtifact(
             run_id=run_id,
             provider=str(payload_json.get("provider", provider) or provider).strip().lower(),
             run_dir=run_dir,
             artifact_type=str(payload_json.get("artifact_type", artifact_type) or artifact_type),
             status=str(payload_json.get("status", "completed") or "completed"),
-            stats=payload_json.get("stats", {}) if isinstance(payload_json.get("stats"), dict) else {},
+            stats=parsed_stats,
         )
 
 
@@ -148,4 +159,3 @@ def validate_artifact_run_dir(settings: OrchestratorSettings, artifact: PullRunA
     if not run_dir.exists():
         raise RuntimeError(f"pull artifact run_dir does not exist: {run_dir}")
     return run_dir
-

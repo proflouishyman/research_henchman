@@ -16,6 +16,7 @@ while preserving existing Evidence Hub data contracts.
 - `GET /api/orchestrator/manuscripts`
 - `POST /api/orchestrator/manuscripts/upload`
 - `GET /api/orchestrator/gaps/layout`
+- `POST /api/orchestrator/strategy/preview`
 - `POST /api/orchestrator/intents`
 - `GET /api/orchestrator/intents/{intent_id}`
 - `GET /api/orchestrator/connections/schema`
@@ -37,18 +38,47 @@ while preserving existing Evidence Hub data contracts.
 
 ## Hiccup coverage in MVP
 - Runtime `.env` preflight validation before pulling.
+- API mode has a built-in EBSCO fallback pull command when `ORCH_API_PULL_COMMAND` is unset, preventing hard-fail on missing command setup.
+- Frontend run-start preflight checks required env keys from backend schema before launching runs; missing keys route users to Settings.
+- Required-key preflight and Settings now use effective runtime env values (`process_env` + `.env`), so Docker compose env injection is not misreported as missing.
 - Artifact-type routing supports:
   - `ebsco_manifest_pair`
   - `external_packet`
 - Structured stage events and run-state persistence.
 - Idempotent downstream ingestion relies on existing Evidence Hub dedupe contracts.
 - LLM stage invoked only after successful ingest when auto-chain enabled.
+- Run creation now enforces a single active-run policy by default (new requests reuse active run unless `force=true`).
+- Stale active runs are auto-reconciled to `failed` by a watchdog using timeout-derived cutoffs, preventing indefinite `ingesting`/`llm_processing` blockage.
+- Ingest stage now skips automatically when the pulled artifact `run_id` already exists in `codex/evidence_hub/data/ingest_runs.json` (override with `force=true`).
 
 ## Frontend surface
-- `Plan`: manuscript selector, local manuscript upload, and chapter/gap layout.
-- `Strategy`: automatic research or narrow question.
-- `Results`: run list + event timeline + retry.
+- Step tabs split workflow into one page per step:
+  - `1 Manuscript`
+  - `2 Gap Analysis`
+  - `3 Strategy`
+  - `4 Results`
+- Intent creation remains in backend contract but is auto-invoked by run start from `3 Strategy`.
+- UI persists last-used manuscript and active tab in browser local storage.
+- Gap analysis view includes explicit analysis status text:
+  - running indicator
+  - already-analyzed/cached-map indicator
+- App includes a persistent bottom run-log dock (`Live Run Log`) that streams run events across tabs and shows a visible log heartbeat status.
+- Log dock defaults to collapsed on initial load (user can expand manually).
+- Run log now announces the resolved run plan at launch and reports each stage with plan position (`N/Total`).
+- Run log now appends structured event metadata inline (pull mode/provider, pull command, run directory, artifact type, and available pull stats/fallback details).
+- Run monitor includes heartbeat feedback (pulsing live dot + “last check” age) and periodic long-stage heartbeat entries in the backend log.
+- `3 Strategy` includes `Live Activity` fields for current stage, action, and pull/search detail metadata.
+- `3 Strategy` now also includes a strategy brief panel:
+  - high-level summary text (Ollama when available, fallback otherwise)
+  - source targets
+  - planned query list
+  - stage checklist with live check-off.
+  - active checklist row highlighting with slow pulse so the current stage is visually obvious during execution.
+- Run launch from `3 Strategy` no longer auto-navigates to `Results`; users remain on Strategy by default.
+- Primary action buttons use a consistent dark-green accent and consistent bottom-anchored placement in workflow step panes.
+- `Results`: collapsible run list + run-events timeline + retry.
 - `Settings`: inspect `.env` values and add/update keys (including API keys).
+- `Settings` env-value grid includes source field (`process_env` or `.env`).
 - `Settings` also lists:
   - free APIs in use
   - closed/keyed APIs in use
@@ -59,14 +89,31 @@ while preserving existing Evidence Hub data contracts.
 - For Add-to-Cart manuscripts, canonical mapped gaps are used.
 - For other manuscripts:
   - use manuscript sidecar gap map if present
-  - otherwise auto-generate and persist a fallback gap map.
+  - otherwise auto-generate and persist a manuscript-specific gap map.
+- Gap analysis generation now prefers Ollama (`ORCH_GAP_ANALYSIS_USE_OLLAMA=true`) with smart-model selection and structured JSON output.
+- If Ollama is unavailable or errors, the app falls back to heuristic gap analysis and reports the fallback reason in extraction metadata.
+- Generated-map cache keys include manuscript file fingerprint (path + size + mtime) so swapping file contents at the same path triggers fresh analysis.
+- Legacy one-row placeholder maps or maps without metadata are auto-regenerated.
 - Gap layout response now includes manuscript extraction diagnostics:
   - status
   - char/line counts
   - detected chapter-heading candidates
+  - analysis method/model and LLM error fallback state
   - fallback reason when no headings are detected.
 
 ## Run locally
 ```bash
 uvicorn app.main:app --reload --port 8876
 ```
+
+## Automated Verification
+Run the end-to-end pytest suite from repository root:
+
+```bash
+python3 -m pytest app/tests/test_orchestrator_e2e.py -q
+```
+
+Coverage:
+- manuscript `.docx` parsing + generated gap layout
+- run creation and full stage flow (`validating_config -> planning -> pulling -> ingesting -> llm_processing`)
+- stage-event metadata assertions and downstream stage execution markers

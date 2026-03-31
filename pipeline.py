@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import traceback
@@ -122,8 +123,30 @@ def _run_ingest_stage(settings: OrchestratorSettings, artifact: PullRunArtifact)
     return {
         "artifact_type": artifact.artifact_type,
         "run_id": artifact.run_id,
+        "command": " ".join(cmd),
         "stdout_tail": (proc.stdout or "").strip()[-600:],
     }
+
+
+def _is_already_ingested(settings: OrchestratorSettings, artifact: PullRunArtifact) -> bool:
+    """Check ingest registry to avoid repeating expensive ingest work.
+
+    Non-obvious logic:
+    - The evidence hub stores ingest records by `run_id` in ingest_runs.json.
+      If the current artifact run already exists there, ingest can be safely
+      skipped for idempotent re-runs.
+    """
+    ingest_registry = settings.workspace / "codex" / "evidence_hub" / "data" / "ingest_runs.json"
+    if not ingest_registry.exists():
+        return False
+    try:
+        payload = json.loads(ingest_registry.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    rec = payload.get(artifact.run_id)
+    return isinstance(rec, dict)
 
 
 def _run_llm_stage(settings: OrchestratorSettings, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -166,7 +189,12 @@ def _run_llm_stage(settings: OrchestratorSettings, payload: Dict[str, Any]) -> D
     if proc.returncode != 0:
         raise RuntimeError(f"llm fit failed code={proc.returncode}: {(proc.stderr or '').strip()[:800]}")
 
-    return {"stdout_tail": (proc.stdout or "").strip()[-800:]}
+    return {
+        "command": " ".join(cmd),
+        "llm_model": settings.llm_model,
+        "llm_backend": settings.llm_backend,
+        "stdout_tail": (proc.stdout or "").strip()[-800:],
+    }
 
 
 def run_orchestration(
@@ -204,8 +232,19 @@ def run_orchestration(
         )
 
         _update_run_stage(store, run_id, status="pulling", stage="pulling")
-        emit_event(store, run_id=run_id, stage="pulling", status="started", message="Starting pull stage")
         adapter = build_pull_adapter(str(payload.get("pull_mode", settings.pull_mode)), settings)
+        emit_event(
+            store,
+            run_id=run_id,
+            stage="pulling",
+            status="started",
+            message="Starting pull stage",
+            meta={
+                "pull_mode": str(payload.get("pull_mode", settings.pull_mode)),
+                "pull_provider": str(payload.get("pull_provider", settings.pull_provider)),
+                "pull_command": getattr(adapter, "command_template", ""),
+            },
+        )
         artifact = adapter.run(payload=payload, settings=settings)
         emit_event(
             store,
@@ -218,6 +257,7 @@ def run_orchestration(
                 "run_dir": artifact.run_dir,
                 "artifact_type": artifact.artifact_type,
                 "provider": artifact.provider,
+                "stats": artifact.stats,
             },
         )
         _update_run_stage(
@@ -237,21 +277,65 @@ def run_orchestration(
         ingest_result: Dict[str, Any] = {}
         if settings.auto_ingest:
             _update_run_stage(store, run_id, status="ingesting", stage="ingesting")
-            emit_event(store, run_id=run_id, stage="ingesting", status="started", message="Starting ingest stage")
-            ingest_result = _run_ingest_stage(settings, artifact)
             emit_event(
                 store,
                 run_id=run_id,
                 stage="ingesting",
-                status="completed",
-                message="Ingest stage completed",
-                meta=ingest_result,
+                status="started",
+                message="Starting ingest stage",
+                meta={
+                    "artifact_type": artifact.artifact_type,
+                    "run_id": artifact.run_id,
+                    "run_dir": artifact.run_dir,
+                },
             )
+            if bool(payload.get("force")):
+                ingest_result = _run_ingest_stage(settings, artifact)
+                emit_event(
+                    store,
+                    run_id=run_id,
+                    stage="ingesting",
+                    status="completed",
+                    message="Ingest stage completed",
+                    meta=ingest_result,
+                )
+            elif _is_already_ingested(settings, artifact):
+                ingest_result = {
+                    "skipped": True,
+                    "reason": "already_ingested",
+                    "run_id": artifact.run_id,
+                    "artifact_type": artifact.artifact_type,
+                }
+                emit_event(
+                    store,
+                    run_id=run_id,
+                    stage="ingesting",
+                    status="skipped",
+                    message="Ingest stage skipped (already ingested run)",
+                    meta=ingest_result,
+                )
+            else:
+                ingest_result = _run_ingest_stage(settings, artifact)
+                emit_event(
+                    store,
+                    run_id=run_id,
+                    stage="ingesting",
+                    status="completed",
+                    message="Ingest stage completed",
+                    meta=ingest_result,
+                )
 
         llm_result: Dict[str, Any] = {}
         if settings.auto_llm_fit:
             _update_run_stage(store, run_id, status="llm_processing", stage="llm_processing")
-            emit_event(store, run_id=run_id, stage="llm_processing", status="started", message="Starting LLM fit stage")
+            emit_event(
+                store,
+                run_id=run_id,
+                stage="llm_processing",
+                status="started",
+                message="Starting LLM fit stage",
+                meta={"llm_model": settings.llm_model, "llm_backend": settings.llm_backend},
+            )
             llm_result = _run_llm_stage(settings, payload=payload)
             emit_event(
                 store,

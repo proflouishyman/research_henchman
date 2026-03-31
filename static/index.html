@@ -234,6 +234,14 @@
       background: #fcf9f2;
       font-size: 12px;
     }
+    .plan-gap.needs-review {
+      border-left: 4px solid #9a6e24;
+      background: #fff8ea;
+    }
+    .plan-gap.skipped {
+      border-left: 4px solid #8f3f3f;
+      background: #fff4f4;
+    }
 
     .plan-gap:last-child { margin-bottom: 0; }
 
@@ -573,20 +581,28 @@
       box.classList.remove("hidden");
       setText("plan_summary", plan.plan_summary || "");
       const skipCount = plan.gaps.filter((g) => !!g.skip).length;
-      setText("plan_stats", `${plan.gaps.length} planned gaps · ${skipCount} skipped · ${plan.estimated_pull_count || 0} estimated pulls`);
+      const reviewCount = plan.gaps.filter((g) => !!g.needs_review).length;
+      setText("plan_stats", `${plan.gaps.length} planned gaps · ${skipCount} skipped · ${reviewCount} needs review · ${plan.estimated_pull_count || 0} estimated pulls`);
 
       list.innerHTML = "";
       plan.gaps.forEach((gap) => {
         const card = document.createElement("div");
         card.className = "plan-gap";
+        if (gap.needs_review) card.classList.add("needs-review");
+        if (gap.skip) card.classList.add("skipped");
         const queries = Array.isArray(gap.search_queries) ? gap.search_queries.slice(0, 3) : [];
         const sources = Array.isArray(gap.preferred_sources) ? gap.preferred_sources : [];
+        const confidence = Number.isFinite(Number(gap.route_confidence)) ? Math.round(Number(gap.route_confidence) * 100) : 0;
+        const routeMeta = `${gap.claim_kind || "other"} -> ${gap.evidence_need || "mixed"} (${confidence}% confidence)`;
         card.innerHTML = `
           <div><strong>${gap.gap_id || "gap"}</strong> · ${gap.chapter || "chapter"} · ${gap.priority || "priority"}</div>
           <div>${gap.claim_text || ""}</div>
+          <div class="muted">route: ${routeMeta}</div>
           <div class="muted">queries: ${queries.join(" | ") || "none"}</div>
           <div class="muted">sources: ${sources.join(", ") || "auto"}</div>
+          <div class="muted">${gap.route_reason || ""}</div>
           <div class="muted">${gap.skip ? `skipped: ${gap.skip_reason || "no reason"}` : (gap.rationale || "")}</div>
+          <div class="muted">${gap.needs_review ? `review: ${gap.review_notes || "local review requested"}` : ""}</div>
         `;
         list.appendChild(card);
       });

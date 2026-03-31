@@ -14,10 +14,10 @@ def _gap_map() -> GapMap:
             Gap(
                 gap_id="AUTO-01-G1",
                 chapter="Chapter 1",
-                claim_text="Claim without source",
+                claim_text="US unemployment rate reached 6% in 1991 but no citation is provided.",
                 gap_type=GapType.IMPLICIT,
                 priority=GapPriority.HIGH,
-                suggested_queries=["query one"],
+                suggested_queries=["us unemployment rate 1991 bls"],
             )
         ],
         explicit_count=0,
@@ -58,3 +58,64 @@ def test_reflection_fallback_returns_plan(settings_factory, monkeypatch) -> None
     assert plan.gaps
     assert plan.gaps[0].search_queries
     assert not plan.gaps[0].skip
+
+
+def test_reflection_routes_historical_claims_to_scholarly_sources(settings_factory) -> None:
+    settings = settings_factory(
+        ORCH_REFLECTION_USE_OLLAMA="false",
+        ORCH_PLAN_REVIEW_USE_OLLAMA="false",
+    )
+    gap_map = GapMap(
+        manuscript_path="Manuscript/ch1.docx",
+        manuscript_fingerprint="xyz",
+        gaps=[
+            Gap(
+                gap_id="AUTO-01-G1",
+                chapter="Chapter One: Merchant",
+                claim_text="The manuscript claims NetMarket transformed historical commerce without citations.",
+                gap_type=GapType.IMPLICIT,
+                priority=GapPriority.HIGH,
+                suggested_queries=["NetMarket historical commerce scholarly source"],
+            )
+        ],
+    )
+    availability = SourceAvailability(
+        free_apis=["world_bank"],
+        keyed_apis=["ebsco_api"],
+    )
+
+    plan = reflection.reflect_on_gaps(gap_map, availability, "run_h", settings)
+    gap = plan.gaps[0]
+
+    assert "ebsco_api" in gap.preferred_sources
+    assert gap.evidence_need.value in {"scholarly_secondary", "news_archive", "primary_source"}
+    assert gap.needs_review is False
+
+
+def test_reflection_marks_low_confidence_historical_meta_claim_for_review(settings_factory) -> None:
+    settings = settings_factory(
+        ORCH_REFLECTION_USE_OLLAMA="false",
+        ORCH_PLAN_REVIEW_USE_OLLAMA="false",
+    )
+    gap_map = GapMap(
+        manuscript_path="Manuscript/ch1.docx",
+        manuscript_fingerprint="xyz",
+        gaps=[
+            Gap(
+                gap_id="AUTO-01-G1",
+                chapter="Chapter One: Merchant",
+                claim_text="Argument is highly compressed; split claims and tie each to evidence.",
+                gap_type=GapType.IMPLICIT,
+                priority=GapPriority.LOW,
+                suggested_queries=["Argument is highly compressed; split claims and tie each to evidence."],
+            )
+        ],
+    )
+    availability = SourceAvailability(free_apis=["world_bank"])
+
+    plan = reflection.reflect_on_gaps(gap_map, availability, "run_low", settings)
+    gap = plan.gaps[0]
+
+    assert gap.needs_review is True
+    assert gap.skip is True
+    assert "No suitable source" in gap.skip_reason

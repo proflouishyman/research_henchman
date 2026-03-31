@@ -41,6 +41,29 @@ class SourceType(str, Enum):
     PLAYWRIGHT = "playwright"
 
 
+class ClaimKind(str, Enum):
+    """High-level semantic claim category for source routing."""
+
+    HISTORICAL_NARRATIVE = "historical_narrative"
+    QUANTITATIVE_MACRO = "quantitative_macro"
+    QUANTITATIVE_LABOR = "quantitative_labor"
+    LEGAL_REGULATORY = "legal_regulatory"
+    COMPANY_OPERATIONS = "company_operations"
+    BIOGRAPHICAL = "biographical"
+    OTHER = "other"
+
+
+class EvidenceNeed(str, Enum):
+    """Evidence shape required to support the claim."""
+
+    SCHOLARLY_SECONDARY = "scholarly_secondary"
+    PRIMARY_SOURCE = "primary_source"
+    OFFICIAL_STATISTICS = "official_statistics"
+    LEGAL_TEXT = "legal_text"
+    NEWS_ARCHIVE = "news_archive"
+    MIXED = "mixed"
+
+
 class RunStatus(str, Enum):
     """Top-level pipeline status values."""
 
@@ -117,6 +140,13 @@ class PlannedGap:
     rationale: str = ""
     skip: bool = False
     skip_reason: str = ""
+    claim_kind: ClaimKind = ClaimKind.OTHER
+    evidence_need: EvidenceNeed = EvidenceNeed.MIXED
+    route_confidence: float = 0.0
+    route_reason: str = ""
+    needs_review: bool = False
+    review_notes: str = ""
+    review_method: str = ""
 
 
 @dataclass
@@ -131,6 +161,9 @@ class ResearchPlan:
     reflection_model: str = ""
     reflection_method: str = "heuristic_fallback"
     source_availability: SourceAvailability = field(default_factory=SourceAvailability)
+    routing_method: str = "policy_v1"
+    review_required_count: int = 0
+    review_resolved_count: int = 0
     created_at: str = ""
 
 

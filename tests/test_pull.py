@@ -6,6 +6,8 @@ from pathlib import Path
 
 from app.adapters.base import PullAdapter
 from app.contracts import (
+    ClaimKind,
+    EvidenceNeed,
     GapPriority,
     GapType,
     PlannedGap,
@@ -88,3 +90,22 @@ def test_pull_router_aggregates_gap_results(settings_factory, monkeypatch) -> No
     assert out[0].status == "completed"
     assert out[0].total_documents == 4
     assert events
+
+
+def test_rank_sources_prefers_scholarly_for_historical_claims() -> None:
+    availability = SourceAvailability(
+        free_apis=["world_bank"],
+        keyed_apis=["ebsco_api"],
+        playwright_sources=[],
+    )
+
+    ranked = pull.rank_sources_for_claim(
+        ClaimKind.HISTORICAL_NARRATIVE,
+        EvidenceNeed.SCHOLARLY_SECONDARY,
+        availability,
+        source_types=[SourceType.KEYED_API, SourceType.FREE_API],
+        max_sources=3,
+    )
+
+    assert ranked
+    assert ranked[0] == "ebsco_api"

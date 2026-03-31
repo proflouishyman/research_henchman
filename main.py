@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -49,6 +50,8 @@ ACTIVE_RUN_STATUSES = {
     RunStatus.INGESTING.value,
     RunStatus.FITTING.value,
 }
+_DOC_EXTENSIONS = {".pdf", ".html", ".htm", ".txt", ".md", ".csv", ".json"}
+_TITLE_KEYS = {"title", "name", "headline", "record_title", "document_title"}
 
 
 def _settings() -> OrchestratorSettings:
@@ -250,11 +253,110 @@ def _reset_for_stage(rec: RunRecord, from_stage: str) -> RunRecord:
     return rec
 
 
-def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], max_files: int = 600) -> List[Dict[str, Any]]:
-    """Build click-through document rows from pull result artifact folders."""
+def _record_title(row: Dict[str, Any]) -> str:
+    for key in _TITLE_KEYS:
+        value = row.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _normalize_external_link(key: str, value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.lower().startswith(("http://", "https://")):
+        return raw
+
+    # Convert DOI-like values into clickable links.
+    doi = raw
+    if raw.lower().startswith("doi:"):
+        doi = raw.split(":", 1)[1].strip()
+    if "doi" in key.lower() or re.match(r"^10\.\d{4,9}/\S+$", doi):
+        return f"https://doi.org/{doi}"
+    return ""
+
+
+def _resolve_local_artifact(packet_dir: Path, value: str) -> Path | None:
+    raw = str(value or "").strip().strip('"').strip("'")
+    if not raw:
+        return None
+    if raw.lower().startswith(("http://", "https://")):
+        return None
+    suffix = Path(raw).suffix.lower()
+    if suffix not in _DOC_EXTENSIONS:
+        return None
+
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = (packet_dir / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+    if candidate.exists() and candidate.is_file():
+        return candidate
+    return None
+
+
+def _extract_linked_documents_from_json(json_path: Path, max_docs: int = 40) -> List[Dict[str, Any]]:
+    """Extract likely document links/paths from JSON artifact packets."""
+
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _append(row: Dict[str, Any]) -> None:
+        key = row.get("url") or row.get("path") or row.get("name") or row.get("title")
+        stable = str(key or "").strip().lower()
+        if not stable or stable in seen:
+            return
+        seen.add(stable)
+        out.append(row)
+
+    def _walk(node: Any, parent: Dict[str, Any] | None = None, depth: int = 0) -> None:
+        if depth > 7 or len(out) >= max_docs:
+            return
+        if isinstance(node, dict):
+            title = _record_title(node) or _record_title(parent or {})
+            for key, value in node.items():
+                if len(out) >= max_docs:
+                    return
+                if isinstance(value, str):
+                    ext = _normalize_external_link(str(key), value)
+                    if ext:
+                        _append({"kind": "external", "title": title or str(key), "url": ext, "source_key": str(key)})
+                        continue
+                    local = _resolve_local_artifact(json_path.parent, value)
+                    if local is not None:
+                        _append(
+                            {
+                                "kind": "local",
+                                "title": title or local.name,
+                                "path": str(local),
+                                "name": local.name,
+                                "source_key": str(key),
+                            }
+                        )
+                elif isinstance(value, (dict, list)):
+                    _walk(value, node, depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                if len(out) >= max_docs:
+                    return
+                _walk(item, parent, depth + 1)
+
+    _walk(payload)
+    return out
+
+
+def _run_document_packets(settings: OrchestratorSettings, rec_row: Dict[str, Any], max_files: int = 600) -> List[Dict[str, Any]]:
+    """Build artifact packets with extracted linked documents for Results UI."""
 
     rec = run_record_from_dict(rec_row)
-    rows: List[Dict[str, Any]] = []
+    packets: List[Dict[str, Any]] = []
     seen_paths: set[str] = set()
     for gap_result in rec.pull_results:
         gap_id = gap_result.gap_id
@@ -276,7 +378,19 @@ def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], 
                 if path_str in seen_paths:
                     continue
                 seen_paths.add(path_str)
-                rows.append(
+                linked_documents: List[Dict[str, Any]]
+                if file_path.suffix.lower() == ".json":
+                    linked_documents = _extract_linked_documents_from_json(file_path, max_docs=40)
+                else:
+                    linked_documents = [
+                        {
+                            "kind": "local",
+                            "title": file_path.name,
+                            "path": path_str,
+                            "name": file_path.name,
+                        }
+                    ]
+                packets.append(
                     {
                         "gap_id": gap_id,
                         "source_id": source_id,
@@ -285,10 +399,57 @@ def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], 
                         "path": path_str,
                         "name": file_path.name,
                         "size_bytes": file_path.stat().st_size,
+                        "linked_documents": linked_documents,
                     }
                 )
+                if len(packets) >= max_files:
+                    return packets
+    return packets
+
+
+def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], max_files: int = 600) -> List[Dict[str, Any]]:
+    """Build legacy flattened click-through rows (derived from packet links)."""
+
+    packets = _run_document_packets(settings, rec_row, max_files=max_files)
+    rows: List[Dict[str, Any]] = []
+    for packet in packets:
+        linked = packet.get("linked_documents", [])
+        if isinstance(linked, list) and linked:
+            for item in linked:
+                if not isinstance(item, dict):
+                    continue
+                row = {
+                    "gap_id": packet.get("gap_id", ""),
+                    "source_id": packet.get("source_id", ""),
+                    "query": packet.get("query", ""),
+                    "artifact_type": packet.get("artifact_type", ""),
+                    "name": item.get("name") or item.get("title") or "document",
+                    "kind": item.get("kind", ""),
+                }
+                if item.get("path"):
+                    row["path"] = item.get("path")
+                if item.get("url"):
+                    row["url"] = item.get("url")
+                rows.append(row)
                 if len(rows) >= max_files:
                     return rows
+            continue
+
+        # Fallback for packets with no extracted links: keep raw artifact row.
+        rows.append(
+            {
+                "gap_id": packet.get("gap_id", ""),
+                "source_id": packet.get("source_id", ""),
+                "query": packet.get("query", ""),
+                "artifact_type": packet.get("artifact_type", ""),
+                "path": packet.get("path", ""),
+                "name": packet.get("name", ""),
+                "raw_packet": True,
+                "kind": "local",
+            }
+        )
+        if len(rows) >= max_files:
+            return rows
     return rows
 
 
@@ -409,8 +570,10 @@ def api_run_documents(run_id: str, limit: int = Query(default=300, ge=1, le=2000
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
     settings = _settings()
+    packets = _run_document_packets(settings, row, max_files=limit)
     docs = _run_document_rows(settings, row, max_files=limit)
-    return {"run_id": run_id, "documents": docs}
+    linked_total = sum(len(packet.get("linked_documents", [])) for packet in packets if isinstance(packet.get("linked_documents"), list))
+    return {"run_id": run_id, "documents": docs, "packets": packets, "linked_document_count": linked_total}
 
 
 @app.post("/api/orchestrator/runs/{run_id}/retry")

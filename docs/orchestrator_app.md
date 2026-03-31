@@ -47,6 +47,7 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - active-stage pulse + heartbeat indicator while run is in progress
   - auto-expanded log while active with live event count/stage header
   - post-run document list with click-through links to pulled artifact files
+  - pulled documents shown as collapsible source packets; packet JSON is parsed for linked document targets so users see source docs (PDF/web/DOI) first
   - plan cards show route details (`claim_kind`, `evidence_need`, confidence, review status)
 
 ## Configuration

@@ -9,6 +9,7 @@ Contract-enforced automated pipeline for manuscript research runs.
 - Frontend is a single launch + live monitor page.
 - UI highlights progress with active-stage color pulse and run heartbeat.
 - Completed runs expose click-through artifact files in a document panel.
+- Results document panel now renders collapsible source packets and prioritizes extracted linked documents (PDF/HTML/DOI/record URLs) over raw JSON artifact filenames.
 - Plan routing is now claim-aware: historical/scholarly gaps are routed away from macro-stat APIs unless they semantically fit.
 - Query execution now uses bounded backoff attempts (specific -> broader terms) so failed tight queries can recover without manual reruns.
 

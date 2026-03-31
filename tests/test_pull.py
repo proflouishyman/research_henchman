@@ -154,3 +154,25 @@ def test_rank_sources_prefers_jstor_family_over_macro_for_history() -> None:
     assert ranked
     assert ranked[0] in {"jstor", "project_muse"}
     assert "world_bank" not in ranked[:2]
+
+
+def test_query_attempt_chain_splits_compound_query_and_adds_backoff() -> None:
+    gap = PlannedGap(
+        gap_id="AUTO-01-G1",
+        chapter="Chapter One: Merchant",
+        claim_text="John McDonogh served as a supercargo for Taylor Merchant Company in New Orleans.",
+        gap_type=GapType.IMPLICIT,
+        priority=GapPriority.MEDIUM,
+        claim_kind=ClaimKind.HISTORICAL_NARRATIVE,
+        evidence_need=EvidenceNeed.SCHOLARLY_SECONDARY,
+    )
+
+    attempts = pull._query_attempt_chain(
+        gap,
+        "john mcdonogh supercargo great britain new orleans 1800 | taylor merchant company overseas assignments early 19th century",
+        max_attempts=3,
+    )
+
+    assert attempts
+    assert any("john mcdonogh supercargo" in q for q in attempts)
+    assert any("taylor merchant company" in q for q in attempts)

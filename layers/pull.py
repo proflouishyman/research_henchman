@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Callable, Dict, List
 
@@ -22,6 +23,32 @@ from ..adapters.playwright_adapters import (
 from ..config import OrchestratorSettings
 from ..contracts import ClaimKind, EvidenceNeed, GapPullResult, PlannedGap, ResearchPlan, SourceAvailability, SourceResult, SourceType
 from ..library_profiles import get_active_playwright_source_ids, get_active_university_databases
+
+QUERY_SPLIT_RE = re.compile(r"\s*[|;\n]+\s*")
+QUERY_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'-]{2,}")
+QUERY_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "there",
+    "about",
+    "without",
+    "where",
+    "which",
+    "what",
+    "were",
+    "have",
+    "has",
+    "had",
+    "company",
+    "merchant",
+    "chapter",
+}
 
 
 SOURCE_REGISTRY: Dict[str, PullAdapter] = {
@@ -457,6 +484,48 @@ def _source_ids_for_gap(gap: PlannedGap, availability: SourceAvailability, setti
     return unique
 
 
+def _query_attempt_chain(gap: PlannedGap, query: str, max_attempts: int = 3) -> List[str]:
+    """Build a progressive query chain from specific to broader fallback terms."""
+
+    base = str(query or "").strip() or gap.claim_text[:120]
+    parts = [p.strip() for p in QUERY_SPLIT_RE.split(base) if p.strip()] or [base]
+
+    out: List[str] = []
+    seen = set()
+
+    def _push(candidate: str) -> None:
+        key = candidate.strip().lower()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        out.append(candidate.strip())
+
+    for part in parts:
+        _push(part)
+
+    # Query-length backoff for very narrow strings.
+    seed_tokens = [t.lower() for t in QUERY_TOKEN_RE.findall(base)]
+    compact = [tok for tok in seed_tokens if tok not in QUERY_STOPWORDS]
+    if len(compact) >= 5:
+        _push(" ".join(compact[:5]))
+
+    # Historical claims should always include at least one broad person/topic query.
+    if gap.claim_kind in {
+        ClaimKind.HISTORICAL_NARRATIVE,
+        ClaimKind.BIOGRAPHICAL,
+        ClaimKind.COMPANY_OPERATIONS,
+        ClaimKind.LEGAL_REGULATORY,
+    }:
+        claim_tokens = [t.lower() for t in QUERY_TOKEN_RE.findall(f"{gap.chapter} {gap.claim_text}")]
+        claim_compact = [tok for tok in claim_tokens if tok not in QUERY_STOPWORDS]
+        if len(claim_compact) >= 2:
+            _push(" ".join(claim_compact[:2]))
+        if len(claim_compact) >= 4:
+            _push(" ".join(claim_compact[:4]))
+
+    return out[:max_attempts]
+
+
 def _pull_gap(
     gap: PlannedGap,
     availability: SourceAvailability,
@@ -480,39 +549,56 @@ def _pull_gap(
             continue
 
         for query in (gap.search_queries or [gap.claim_text[:120]]):
-            attempted.append(source_id)
-            if emit_event:
-                emit_event(
-                    stage="pulling",
-                    status="progress",
-                    message=f"[{gap.gap_id}] querying {source_id}: {query[:160]}",
-                    meta={"gap_id": gap.gap_id, "source_id": source_id, "query": query},
+            attempts = _query_attempt_chain(gap, query, max_attempts=3)
+            for attempt_index, attempt_query in enumerate(attempts, start=1):
+                attempted.append(source_id)
+                if emit_event:
+                    emit_event(
+                        stage="pulling",
+                        status="progress",
+                        message=f"[{gap.gap_id}] querying {source_id} ({attempt_index}/{len(attempts)}): {attempt_query[:160]}",
+                        meta={
+                            "gap_id": gap.gap_id,
+                            "source_id": source_id,
+                            "query": attempt_query,
+                            "attempt_index": attempt_index,
+                            "attempt_total": len(attempts),
+                        },
+                    )
+                result = adapter.pull(
+                    gap=gap,
+                    query=attempt_query,
+                    run_dir=run_dir,
+                    timeout_seconds=settings.pull_timeout_seconds,
                 )
-            result = adapter.pull(
-                gap=gap,
-                query=query,
-                run_dir=run_dir,
-                timeout_seconds=settings.pull_timeout_seconds,
-            )
-            source_results.append(result)
-            if result.status in {"completed", "partial"}:
-                succeeded.append(source_id)
-            else:
-                failed.append(source_id)
-            if emit_event:
-                emit_event(
-                    stage="pulling",
-                    status="progress",
-                    message=f"[{gap.gap_id}] {source_id} -> {result.status} ({result.document_count} docs)",
-                    meta={
-                        "gap_id": gap.gap_id,
-                        "source_id": source_id,
-                        "query": query,
-                        "result_status": result.status,
-                        "document_count": result.document_count,
-                        "artifact_type": result.artifact_type,
-                    },
-                )
+                source_results.append(result)
+                if result.status in {"completed", "partial"}:
+                    succeeded.append(source_id)
+                else:
+                    failed.append(source_id)
+                if emit_event:
+                    emit_event(
+                        stage="pulling",
+                        status="progress",
+                        message=f"[{gap.gap_id}] {source_id} -> {result.status} ({result.document_count} docs)",
+                        meta={
+                            "gap_id": gap.gap_id,
+                            "source_id": source_id,
+                            "query": attempt_query,
+                            "result_status": result.status,
+                            "document_count": result.document_count,
+                            "artifact_type": result.artifact_type,
+                            "attempt_index": attempt_index,
+                            "attempt_total": len(attempts),
+                        },
+                    )
+
+                # Stop backing off once one attempt yields documents.
+                if result.document_count > 0:
+                    break
+                # If adapter failed structurally, do not repeat with broader text.
+                if result.status == "failed":
+                    break
 
     total_docs = sum(result.document_count for result in source_results)
     status = "unresolvable" if total_docs == 0 else ("partial" if failed else "completed")

@@ -69,6 +69,7 @@ STOPWORDS = {
     "evidence",
     "claim",
 }
+QUERY_SPLIT_RE = re.compile(r"\s*[|;\n]+\s*")
 
 
 def reflect_on_gaps(
@@ -596,6 +597,26 @@ def _extract_keywords(text: str, limit: int = 6) -> List[str]:
     return out
 
 
+def _explode_queries(candidates: List[str]) -> List[str]:
+    """Split combined query blobs into concrete retrievable query strings."""
+
+    out: List[str] = []
+    seen = set()
+    for raw in candidates:
+        if not str(raw).strip():
+            continue
+        parts = [p.strip() for p in QUERY_SPLIT_RE.split(str(raw)) if p.strip()]
+        if not parts:
+            parts = [str(raw).strip()]
+        for part in parts:
+            key = part.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(part)
+    return out
+
+
 def _fallback_queries(gap: PlannedGap, evidence_need: EvidenceNeed) -> List[str]:
     kws = _extract_keywords(f"{gap.chapter} {gap.claim_text}")
     core = " ".join(kws[:4]) if kws else gap.chapter or "manuscript claim"
@@ -613,6 +634,7 @@ def _fallback_queries(gap: PlannedGap, evidence_need: EvidenceNeed) -> List[str]
 
 def _clean_queries(gap: PlannedGap, evidence_need: EvidenceNeed) -> Tuple[List[str], float]:
     candidates = gap.search_queries[:] if gap.search_queries else []
+    candidates = _explode_queries(candidates)
     if not candidates:
         candidates = _fallback_queries(gap, evidence_need)
 
@@ -632,6 +654,17 @@ def _clean_queries(gap: PlannedGap, evidence_need: EvidenceNeed) -> Tuple[List[s
     if not kept:
         kept = _fallback_queries(gap, evidence_need)
         ranked = [(_query_quality_score(q), q) for q in kept]
+    else:
+        # Always include one broad fallback query so pulls can back off
+        # if highly specific strings return zero documents.
+        for fallback in _fallback_queries(gap, evidence_need):
+            key = fallback.lower()
+            if key in seen:
+                continue
+            kept.append(fallback)
+            seen.add(key)
+            if len(kept) >= 4:
+                break
 
     avg = (sum(score for score, _ in ranked) / len(ranked)) if ranked else 0.0
     return (kept[:4], avg)
@@ -660,6 +693,15 @@ def _apply_routing_policy(plan: ResearchPlan, availability: SourceAvailability, 
             max_sources=3,
             settings=settings,
         )
+        if not preferred and gap.claim_kind in QUALITATIVE_CLAIM_KINDS:
+            preferred = rank_sources_for_claim(
+                gap.claim_kind,
+                EvidenceNeed.MIXED,
+                availability,
+                source_types=[SourceType.KEYED_API, SourceType.PLAYWRIGHT, SourceType.FREE_API],
+                max_sources=3,
+                settings=settings,
+            )
         # Policy is authoritative: always replace legacy/LLM-preferred sources
         # with capability-ranked sources for this claim/evidence type.
         gap.preferred_sources = preferred
@@ -682,6 +724,19 @@ def _apply_routing_policy(plan: ResearchPlan, availability: SourceAvailability, 
 
         gap.route_confidence = conf
         gap.route_reason = source_fit_reason(gap.claim_kind, gap.evidence_need, gap.preferred_sources)
+        if not has_sources:
+            missing = []
+            if availability.playwright_unavailable_reason:
+                missing.append(availability.playwright_unavailable_reason)
+            if availability.missing_keys:
+                missing.append(
+                    "missing API keys: "
+                    + ", ".join(
+                        f"{source_id}:{env_key}" for source_id, env_key in sorted(availability.missing_keys.items())
+                    )
+                )
+            if missing:
+                gap.route_reason = f"{gap.route_reason} {' | '.join(missing)}"
 
         needs_review = (conf < settings.routing_min_confidence) or (not has_sources) or (
             gap.claim_kind in QUALITATIVE_CLAIM_KINDS and only_stat_sources

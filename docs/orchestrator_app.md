@@ -63,6 +63,7 @@ Environment controls all behavior (`app/config.py`):
 - Add source: one adapter class + one registry entry.
 - Source-specific query translation logic can be implemented per adapter ticket without changing pipeline contracts.
 - Source semantics are declared in `SOURCE_CAPABILITIES`; add/update capability tags so routing can match claim type to source family.
+- Pull execution includes a bounded query backoff ladder (split compound queries, then broaden) before marking a source attempt as exhausted.
 
 ## University profile coverage
 - Playwright adapter IDs currently implemented for history/library workflows:

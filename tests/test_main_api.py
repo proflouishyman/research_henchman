@@ -87,7 +87,12 @@ def test_documents_endpoint_and_file_clickthrough(tmp_path, monkeypatch):
 
     docs_resp = client.get("/api/orchestrator/runs/run_test_api/documents")
     assert docs_resp.status_code == 200
-    docs = docs_resp.json()["documents"]
+    payload = docs_resp.json()
+    docs = payload["documents"]
+    packets = payload.get("packets", [])
+    assert isinstance(packets, list)
+    assert packets, "expected packet rows for document browser"
+    assert "linked_documents" in packets[0]
     assert docs, "expected at least one pulled artifact file"
     assert len({row["path"] for row in docs}) == len(docs), "expected deduped artifact paths"
 
@@ -108,3 +113,74 @@ def test_documents_endpoint_and_file_clickthrough(tmp_path, monkeypatch):
     assert any(row.get("source_id") == "jstor" for row in universities)
     assert not any(row.get("source_id") == "proquest_historical_newspapers" for row in universities)
     assert all(isinstance(row.get("categories", []), list) for row in universities)
+
+
+def test_documents_endpoint_extracts_linked_docs_from_json_packet(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state_dir = tmp_path / "state"
+    uploads = state_dir / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+
+    artifact_root = workspace / "pull_outputs" / "run_test_links" / "AUTO-01-G1" / "ebsco_api"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    artifact_file = artifact_root / "packet.json"
+    artifact_file.write_text(
+        json.dumps([{"title": "JSTOR record", "url": "https://example.org/paper.pdf"}]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
+    monkeypatch.setenv("ORCH_PULL_OUTPUT_ROOT", "pull_outputs")
+
+    store = OrchestratorStore(state_dir)
+    monkeypatch.setattr(orchestrator_main, "store", store)
+    monkeypatch.setattr(orchestrator_main, "UPLOAD_DIR", uploads)
+
+    rec = RunRecord(
+        run_id="run_test_links",
+        manuscript_path="Manuscript/sample.txt",
+        status=RunStatus.COMPLETE,
+        stage_detail="Run complete",
+    )
+    rec.pull_results = [
+        GapPullResult(
+            gap_id="AUTO-01-G1",
+            planned_gap=PlannedGap(
+                gap_id="AUTO-01-G1",
+                chapter="Chapter One",
+                claim_text="Claim",
+                gap_type=GapType.IMPLICIT,
+                priority=GapPriority.MEDIUM,
+                search_queries=["example query"],
+                source_types=[SourceType.KEYED_API],
+                preferred_sources=["ebsco_api"],
+            ),
+            results=[
+                SourceResult(
+                    source_id="ebsco_api",
+                    source_type=SourceType.KEYED_API,
+                    query="example query",
+                    gap_id="AUTO-01-G1",
+                    document_count=1,
+                    run_dir=str(artifact_root),
+                    artifact_type="json_records",
+                    status="completed",
+                )
+            ],
+            total_documents=1,
+            sources_attempted=["ebsco_api"],
+            sources_succeeded=["ebsco_api"],
+            sources_failed=[],
+            status="completed",
+        )
+    ]
+    store.upsert_run(run_record_to_dict(rec))
+    client = TestClient(orchestrator_main.app)
+
+    docs_resp = client.get("/api/orchestrator/runs/run_test_links/documents")
+    assert docs_resp.status_code == 200
+    payload = docs_resp.json()
+    docs = payload.get("documents", [])
+    assert docs
+    assert any(row.get("url") == "https://example.org/paper.pdf" for row in docs)

@@ -265,6 +265,33 @@
 
     .doc-row:last-child { margin-bottom: 0; }
 
+    .doc-packet {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fcf9f2;
+      margin-bottom: 10px;
+      overflow: hidden;
+    }
+
+    .doc-packet summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 10px;
+      background: #f6efdf;
+      border-bottom: 1px solid var(--line);
+      font-weight: 700;
+    }
+
+    .doc-packet summary::-webkit-details-marker { display: none; }
+
+    .doc-packet-body { padding: 10px; }
+
+    .doc-link-list {
+      display: grid;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
     .doc-link {
       color: #1f5f47;
       font-weight: 700;
@@ -608,36 +635,85 @@
       });
     }
 
-    function renderDocuments(docs) {
+    function renderDocuments(packetRows, docs) {
       const box = q("docs_box");
       const list = q("docs_list");
       if (!box || !list) return;
+      const packets = Array.isArray(packetRows) ? packetRows : [];
       const rows = Array.isArray(docs) ? docs : [];
       box.classList.remove("hidden");
-      if (!rows.length) {
+      if (!packets.length && !rows.length) {
         setText("docs_status", "Run completed, but no artifact files were indexed for click-through.");
         list.innerHTML = "";
         return;
       }
-      setText("docs_status", `${rows.length} files available for click-through.`);
+      const linkedCount = packets.reduce((acc, packet) => {
+        const linked = Array.isArray(packet.linked_documents) ? packet.linked_documents.length : 0;
+        return acc + linked;
+      }, 0);
+      setText("docs_status", `${packets.length || rows.length} source packets · ${linkedCount || rows.length} linked documents.`);
       list.innerHTML = "";
-      rows.forEach((doc) => {
-        const row = document.createElement("div");
-        row.className = "doc-row";
-        const href = `/api/orchestrator/files?path=${encodeURIComponent(doc.path || "")}`;
-        row.innerHTML = `
-          <div><a class="doc-link" target="_blank" rel="noopener noreferrer" href="${href}">${doc.name || "document"}</a></div>
-          <div class="muted">${doc.gap_id || ""} · ${doc.source_id || ""} · ${doc.artifact_type || ""}</div>
-          <div class="muted">${doc.query || ""}</div>
+      if (!packets.length) {
+        rows.forEach((doc) => {
+          const row = document.createElement("div");
+          row.className = "doc-row";
+          const href = doc.url || `/api/orchestrator/files?path=${encodeURIComponent(doc.path || "")}`;
+          row.innerHTML = `
+            <div><a class="doc-link" target="_blank" rel="noopener noreferrer" href="${href}">${doc.name || "document"}</a></div>
+            <div class="muted">${doc.gap_id || ""} · ${doc.source_id || ""} · ${doc.artifact_type || ""}</div>
+            <div class="muted">${doc.query || ""}</div>
+          `;
+          list.appendChild(row);
+        });
+        return;
+      }
+
+      packets.forEach((packet, idx) => {
+        const details = document.createElement("details");
+        details.className = "doc-packet";
+        if (idx < 2) details.open = true;
+        const linked = Array.isArray(packet.linked_documents) ? packet.linked_documents : [];
+        const query = String(packet.query || "").slice(0, 160);
+        details.innerHTML = `
+          <summary>${packet.gap_id || "gap"} · ${packet.source_id || "source"} · ${linked.length} linked docs</summary>
+          <div class="doc-packet-body">
+            <div class="muted">${packet.artifact_type || ""}</div>
+            <div class="muted">${query || ""}</div>
+            <div class="doc-link-list"></div>
+          </div>
         `;
-        list.appendChild(row);
+        const linkList = details.querySelector(".doc-link-list");
+        if (linkList) {
+          if (!linked.length) {
+            const placeholder = document.createElement("div");
+            placeholder.className = "doc-row";
+            const rawHref = packet.path ? `/api/orchestrator/files?path=${encodeURIComponent(packet.path)}` : "";
+            placeholder.innerHTML = `
+              <div class="muted">No extracted linked documents in this packet.</div>
+              <div>${rawHref ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${rawHref}\">Open Raw Packet (${packet.name || "artifact"})</a>` : ""}</div>
+            `;
+            linkList.appendChild(placeholder);
+          } else {
+            linked.forEach((item) => {
+              const row = document.createElement("div");
+              row.className = "doc-row";
+              const href = item.url || (item.path ? `/api/orchestrator/files?path=${encodeURIComponent(item.path)}` : "");
+              row.innerHTML = `
+                <div>${href ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${href}\">${item.title || item.name || "document"}</a>` : `<strong>${item.title || item.name || "document"}</strong>`}</div>
+                <div class="muted">${item.kind || ""}${item.source_key ? ` · ${item.source_key}` : ""}</div>
+              `;
+              linkList.appendChild(row);
+            });
+          }
+        }
+        list.appendChild(details);
       });
     }
 
     async function loadDocumentsForRun(runId) {
       if (!runId || state.docsRunId === runId) return;
       const out = await api(`/api/orchestrator/runs/${runId}/documents?limit=500`);
-      renderDocuments(out.documents || []);
+      renderDocuments(out.packets || [], out.documents || []);
       state.docsRunId = runId;
     }
 

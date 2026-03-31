@@ -53,6 +53,31 @@ def test_build_source_availability_marks_missing_keys(settings_factory, monkeypa
     assert availability.playwright_unavailable_reason
 
 
+def test_build_source_availability_uses_library_profile_playwright_sources(settings_factory, monkeypatch) -> None:
+    settings = settings_factory(ORCH_LIBRARY_SYSTEM="generic")
+    monkeypatch.setattr(pull, "check_cdp_endpoint", lambda _url: "")
+
+    availability = pull.build_source_availability(settings)
+
+    assert "jstor" in availability.playwright_sources
+    assert "project_muse" in availability.playwright_sources
+    assert "ebscohost" in availability.playwright_sources
+    assert "proquest_historical_newspapers" not in availability.playwright_sources
+
+
+def test_build_source_availability_allows_extra_playwright_sources(settings_factory, monkeypatch) -> None:
+    settings = settings_factory(
+        ORCH_LIBRARY_SYSTEM="generic",
+        ORCH_PLAYWRIGHT_EXTRA_SOURCES="statista, gale_primary_sources",
+    )
+    monkeypatch.setattr(pull, "check_cdp_endpoint", lambda _url: "")
+
+    availability = pull.build_source_availability(settings)
+
+    assert "statista" in availability.playwright_sources
+    assert "gale_primary_sources" in availability.playwright_sources
+
+
 def test_pull_router_aggregates_gap_results(settings_factory, monkeypatch) -> None:
     settings = settings_factory()
     availability = SourceAvailability(free_apis=["fake_source"])

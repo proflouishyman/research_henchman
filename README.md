@@ -60,6 +60,13 @@ For historical narrative gaps, routing prefers these scholarly/archive sources o
 - `ORCH_PLAN_REVIEW_MODEL` (default `ORCH_REFLECTION_MODEL`)
 - `ORCH_PLAN_REVIEW_TIMEOUT_SECONDS` (default `90`)
 
+## University library profiles (Playwright sources)
+- `ORCH_LIBRARY_SYSTEM` selects the active university profile (default `jhu`).
+- `ORCH_LIBRARY_PROFILES_PATH` points to profile JSON (default `app/library_profiles.default.json`).
+- `ORCH_PLAYWRIGHT_EXTRA_SOURCES` optionally appends comma-separated source IDs.
+
+`/api/orchestrator/sources/catalog` now reads `university_databases` from the active profile, including `categories`, `claim_kinds`, and `evidence_needs`. This replaces hardcoded university database lists so other institutions can adapt by editing profile JSON only.
+
 ## Run locally
 From repository root:
 

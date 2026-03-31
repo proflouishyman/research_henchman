@@ -25,7 +25,8 @@ def _gap_map() -> GapMap:
     )
 
 
-def test_reflection_prompt_includes_source_availability() -> None:
+def test_reflection_prompt_includes_source_availability(settings_factory) -> None:
+    settings = settings_factory()
     prompt = reflection._build_reflection_prompt(
         _gap_map(),
         SourceAvailability(
@@ -35,6 +36,7 @@ def test_reflection_prompt_includes_source_availability() -> None:
             missing_keys={"census": "CENSUS_API_KEY"},
             playwright_unavailable_reason="cdp down",
         ),
+        settings,
     )
 
     assert "AVAILABLE SOURCES" in prompt

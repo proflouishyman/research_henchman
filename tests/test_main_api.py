@@ -97,3 +97,9 @@ def test_documents_endpoint_and_file_clickthrough(tmp_path, monkeypatch):
 
     blocked = client.get("/api/orchestrator/files", params={"path": "/etc/hosts"})
     assert blocked.status_code == 403
+
+    catalog = client.get("/api/orchestrator/sources/catalog")
+    assert catalog.status_code == 200
+    universities = catalog.json().get("university_databases", [])
+    assert universities
+    assert any(row.get("source_id") == "jstor" for row in universities)

@@ -43,6 +43,17 @@ Add a new source by:
 
 No pipeline or API rewrite required.
 
+## Library-history routing
+Playwright source IDs now include JHU-oriented history databases:
+- `jstor`
+- `project_muse`
+- `ebscohost`
+- `proquest_historical_newspapers`
+- `americas_historical_newspapers`
+- `gale_primary_sources`
+
+For historical narrative gaps, routing prefers these scholarly/archive sources over macro-stat APIs.
+
 ## Routing/Review env vars
 - `ORCH_ROUTING_MIN_CONFIDENCE` (default `0.67`)
 - `ORCH_PLAN_REVIEW_USE_OLLAMA` (default `true`)

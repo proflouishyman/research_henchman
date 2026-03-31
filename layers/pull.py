@@ -9,7 +9,16 @@ from typing import Callable, Dict, List
 from ..adapters.base import PullAdapter
 from ..adapters.free_apis import FredAdapter, IlostatAdapter, OecdAdapter, WorldBankAdapter
 from ..adapters.keyed_apis import BeaAdapter, BlsAdapter, CensusAdapter, EbscoApiAdapter
-from ..adapters.playwright_adapters import EbscohostPlaywrightAdapter, StatistaPlaywrightAdapter, check_cdp_endpoint
+from ..adapters.playwright_adapters import (
+    AmericasHistoricalNewsPlaywrightAdapter,
+    EbscohostPlaywrightAdapter,
+    GalePrimarySourcesPlaywrightAdapter,
+    JstorPlaywrightAdapter,
+    ProjectMusePlaywrightAdapter,
+    ProquestHistoricalNewsPlaywrightAdapter,
+    StatistaPlaywrightAdapter,
+    check_cdp_endpoint,
+)
 from ..config import OrchestratorSettings
 from ..contracts import ClaimKind, EvidenceNeed, GapPullResult, PlannedGap, ResearchPlan, SourceAvailability, SourceResult, SourceType
 
@@ -24,6 +33,11 @@ SOURCE_REGISTRY: Dict[str, PullAdapter] = {
     "census": CensusAdapter(),
     "ebsco_api": EbscoApiAdapter(),
     "ebscohost": EbscohostPlaywrightAdapter(),
+    "jstor": JstorPlaywrightAdapter(),
+    "project_muse": ProjectMusePlaywrightAdapter(),
+    "proquest_historical_newspapers": ProquestHistoricalNewsPlaywrightAdapter(),
+    "americas_historical_newspapers": AmericasHistoricalNewsPlaywrightAdapter(),
+    "gale_primary_sources": GalePrimarySourcesPlaywrightAdapter(),
     "statista": StatistaPlaywrightAdapter(),
 }
 
@@ -98,6 +112,81 @@ SOURCE_CAPABILITIES: Dict[str, Dict[str, object]] = {
             EvidenceNeed.MIXED,
         ],
         "notes": "authenticated university database access",
+    },
+    "jstor": {
+        "claim_kinds": [
+            ClaimKind.HISTORICAL_NARRATIVE,
+            ClaimKind.COMPANY_OPERATIONS,
+            ClaimKind.BIOGRAPHICAL,
+            ClaimKind.LEGAL_REGULATORY,
+            ClaimKind.OTHER,
+        ],
+        "evidence_needs": [
+            EvidenceNeed.SCHOLARLY_SECONDARY,
+            EvidenceNeed.PRIMARY_SOURCE,
+            EvidenceNeed.NEWS_ARCHIVE,
+            EvidenceNeed.MIXED,
+        ],
+        "notes": "JHU humanities recommendation for peer-reviewed scholarship",
+    },
+    "project_muse": {
+        "claim_kinds": [
+            ClaimKind.HISTORICAL_NARRATIVE,
+            ClaimKind.COMPANY_OPERATIONS,
+            ClaimKind.BIOGRAPHICAL,
+            ClaimKind.OTHER,
+        ],
+        "evidence_needs": [
+            EvidenceNeed.SCHOLARLY_SECONDARY,
+            EvidenceNeed.PRIMARY_SOURCE,
+            EvidenceNeed.MIXED,
+        ],
+        "notes": "JHU humanities recommendation for history and cultural scholarship",
+    },
+    "proquest_historical_newspapers": {
+        "claim_kinds": [
+            ClaimKind.HISTORICAL_NARRATIVE,
+            ClaimKind.COMPANY_OPERATIONS,
+            ClaimKind.LEGAL_REGULATORY,
+            ClaimKind.BIOGRAPHICAL,
+            ClaimKind.OTHER,
+        ],
+        "evidence_needs": [
+            EvidenceNeed.NEWS_ARCHIVE,
+            EvidenceNeed.PRIMARY_SOURCE,
+            EvidenceNeed.MIXED,
+        ],
+        "notes": "historical newspaper archives",
+    },
+    "americas_historical_newspapers": {
+        "claim_kinds": [
+            ClaimKind.HISTORICAL_NARRATIVE,
+            ClaimKind.COMPANY_OPERATIONS,
+            ClaimKind.BIOGRAPHICAL,
+            ClaimKind.OTHER,
+        ],
+        "evidence_needs": [
+            EvidenceNeed.NEWS_ARCHIVE,
+            EvidenceNeed.PRIMARY_SOURCE,
+            EvidenceNeed.MIXED,
+        ],
+        "notes": "early American newspaper and periodical archives",
+    },
+    "gale_primary_sources": {
+        "claim_kinds": [
+            ClaimKind.HISTORICAL_NARRATIVE,
+            ClaimKind.LEGAL_REGULATORY,
+            ClaimKind.COMPANY_OPERATIONS,
+            ClaimKind.BIOGRAPHICAL,
+            ClaimKind.OTHER,
+        ],
+        "evidence_needs": [
+            EvidenceNeed.PRIMARY_SOURCE,
+            EvidenceNeed.NEWS_ARCHIVE,
+            EvidenceNeed.LEGAL_TEXT,
+            EvidenceNeed.MIXED,
+        ],
+        "notes": "digitized primary-source collections and periodicals",
     },
     "statista": {
         "claim_kinds": [ClaimKind.QUANTITATIVE_MACRO, ClaimKind.COMPANY_OPERATIONS],

@@ -63,6 +63,16 @@ Environment controls all behavior (`app/config.py`):
 - Source-specific query translation logic can be implemented per adapter ticket without changing pipeline contracts.
 - Source semantics are declared in `SOURCE_CAPABILITIES`; add/update capability tags so routing can match claim type to source family.
 
+## JHU history coverage
+- Added Playwright adapter IDs for library-history workflows:
+  - `jstor`
+  - `project_muse`
+  - `ebscohost`
+  - `proquest_historical_newspapers`
+  - `americas_historical_newspapers`
+  - `gale_primary_sources`
+- `GET /api/orchestrator/sources/catalog` now returns `university_databases` rows with `name`, `source_id`, and `url` to support settings/UI display and routing transparency.
+
 ## Local run
 ```bash
 uvicorn app.main:app --reload --port 8876

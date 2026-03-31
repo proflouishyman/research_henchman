@@ -7,6 +7,8 @@ Contract-enforced automated pipeline for manuscript research runs.
 - Manual strategy/gap endpoints are removed.
 - One run record now owns full state: analysis -> reflection -> pull -> ingest -> fit.
 - Frontend is a single launch + live monitor page.
+- UI highlights progress with active-stage color pulse and run heartbeat.
+- Completed runs expose click-through artifact files in a document panel.
 
 ## Core architecture
 - `app/contracts.py`: layer dataclasses and enums.
@@ -25,6 +27,8 @@ Contract-enforced automated pipeline for manuscript research runs.
 - `GET /api/orchestrator/runs`
 - `GET /api/orchestrator/runs/{run_id}`
 - `GET /api/orchestrator/runs/{run_id}/events`
+- `GET /api/orchestrator/runs/{run_id}/documents`
+- `GET /api/orchestrator/files?path=...`
 - `POST /api/orchestrator/runs/{run_id}/retry`
 - `GET /api/orchestrator/connections/values`
 - `POST /api/orchestrator/connections/save`

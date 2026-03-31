@@ -89,7 +89,15 @@ def pull_for_plan(
             message=f"Pulling gap {index}/{len(active_gaps)}: {planned_gap.gap_id}",
             meta={"gap_id": planned_gap.gap_id, "queries": planned_gap.search_queries},
         )
-        results.append(_pull_gap(planned_gap, plan.source_availability, settings, run_id))
+        results.append(
+            _pull_gap(
+                planned_gap,
+                plan.source_availability,
+                settings,
+                run_id,
+                emit_event=emit_event,
+            )
+        )
 
     return results
 
@@ -124,6 +132,7 @@ def _pull_gap(
     availability: SourceAvailability,
     settings: OrchestratorSettings,
     run_id: str,
+    emit_event: Callable[..., None] | None = None,
 ) -> GapPullResult:
     """Pull all queries for one gap across selected adapters."""
 
@@ -142,6 +151,13 @@ def _pull_gap(
 
         for query in (gap.search_queries or [gap.claim_text[:120]]):
             attempted.append(source_id)
+            if emit_event:
+                emit_event(
+                    stage="pulling",
+                    status="progress",
+                    message=f"[{gap.gap_id}] querying {source_id}: {query[:160]}",
+                    meta={"gap_id": gap.gap_id, "source_id": source_id, "query": query},
+                )
             result = adapter.pull(
                 gap=gap,
                 query=query,
@@ -153,6 +169,20 @@ def _pull_gap(
                 succeeded.append(source_id)
             else:
                 failed.append(source_id)
+            if emit_event:
+                emit_event(
+                    stage="pulling",
+                    status="progress",
+                    message=f"[{gap.gap_id}] {source_id} -> {result.status} ({result.document_count} docs)",
+                    meta={
+                        "gap_id": gap.gap_id,
+                        "source_id": source_id,
+                        "query": query,
+                        "result_status": result.status,
+                        "document_count": result.document_count,
+                        "artifact_type": result.artifact_type,
+                    },
+                )
 
     total_docs = sum(result.document_count for result in source_results)
     status = "unresolvable" if total_docs == 0 else ("partial" if failed else "completed")

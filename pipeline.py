@@ -7,7 +7,7 @@ import traceback
 from typing import Any, Dict
 
 from .config import OrchestratorSettings
-from .contracts import RunRecord, RunStatus, run_record_from_dict, run_record_to_dict, to_primitive
+from .contracts import RunStatus, run_record_from_dict, run_record_to_dict
 from .layers.analysis import analyze_manuscript
 from .layers.fit import fit_gap
 from .layers.ingest import ingest_gap_result
@@ -152,7 +152,13 @@ def run_orchestration(
     try:
         save(RunStatus.PULLING, "Executing research pulls")
         emit("pulling", "started", "Starting pull stage")
-        pull_results = pull_for_plan(plan, settings, emit, run_id)
+
+        def emit_pull(stage: str, status: str, message: str, meta: Dict[str, Any] | None = None) -> None:
+            emit(stage, status, message, meta)
+            if stage == "pulling" and status == "progress":
+                save(RunStatus.PULLING, message)
+
+        pull_results = pull_for_plan(plan, settings, emit_pull, run_id)
         rec.pull_results = pull_results
 
         unresolvable = sum(1 for row in pull_results if row.status == "unresolvable")
@@ -176,7 +182,10 @@ def run_orchestration(
         save(RunStatus.INGESTING, "Ingesting pulled documents")
         emit("ingesting", "started", f"Ingesting {len(pull_results)} gap result sets")
 
-        for result in pull_results:
+        for idx, result in enumerate(pull_results, start=1):
+            detail = f"Ingesting gap {idx}/{len(pull_results)}: {result.gap_id}"
+            save(RunStatus.INGESTING, detail)
+            emit("ingesting", "progress", detail, {"gap_id": result.gap_id, "position": f"{idx}/{len(pull_results)}"})
             ingest_results.append(ingest_gap_result(result, settings, run_id))
 
         rec.ingest_results = ingest_results
@@ -196,7 +205,10 @@ def run_orchestration(
             save(RunStatus.FITTING, "Running LLM fit scoring")
             emit("fitting", "started", "Scoring document-gap fit with LLM")
 
-            for ingest_result in ingest_results:
+            for idx, ingest_result in enumerate(ingest_results, start=1):
+                detail = f"Scoring fit for gap {idx}/{len(ingest_results)}: {ingest_result.gap_id}"
+                save(RunStatus.FITTING, detail)
+                emit("fitting", "progress", detail, {"gap_id": ingest_result.gap_id, "position": f"{idx}/{len(ingest_results)}"})
                 fit_results.append(fit_gap(ingest_result, settings, run_id))
 
             rec.fit_results = fit_results

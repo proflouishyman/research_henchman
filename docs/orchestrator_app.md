@@ -25,6 +25,8 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 - `GET /api/orchestrator/runs`
 - `GET /api/orchestrator/runs/{run_id}`
 - `GET /api/orchestrator/runs/{run_id}/events`
+- `GET /api/orchestrator/runs/{run_id}/documents`
+- `GET /api/orchestrator/files?path=...`
 - `POST /api/orchestrator/runs/{run_id}/retry`
 - `GET /api/orchestrator/connections/values`
 - `POST /api/orchestrator/connections/save`
@@ -42,6 +44,9 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - single `Run Research` button
   - plan panel appears once `research_plan` is available
   - live stage tracker and event log polling every 3s
+  - active-stage pulse + heartbeat indicator while run is in progress
+  - auto-expanded log while active with live event count/stage header
+  - post-run document list with click-through links to pulled artifact files
 
 ## Configuration
 Environment controls all behavior (`app/config.py`):

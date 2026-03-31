@@ -115,6 +115,25 @@ def _resolve_manuscript_path(workspace: Path, manuscript_path: str) -> Path:
     return p.resolve() if p.is_absolute() else (workspace / p).resolve()
 
 
+def _allowed_file_roots(settings: OrchestratorSettings) -> List[Path]:
+    """Return root directories allowed for file click-through serving."""
+
+    return [settings.workspace.resolve(), settings.data_root.resolve(), UPLOAD_DIR.resolve(), settings.pull_output_root.resolve()]
+
+
+def _safe_file_path(settings: OrchestratorSettings, raw_path: str) -> Path:
+    """Resolve file path and enforce that it stays within approved roots."""
+
+    candidate = Path(raw_path)
+    resolved = candidate.resolve() if candidate.is_absolute() else (settings.workspace / candidate).resolve()
+    allowed = _allowed_file_roots(settings)
+    if not any(resolved.is_relative_to(root) for root in allowed):
+        raise HTTPException(status_code=403, detail="path outside allowed roots")
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    return resolved
+
+
 def _emit_event(run_id: str, stage: str, status: str, message: str, meta: Dict[str, Any] | None = None) -> None:
     store.append_event(
         {
@@ -241,6 +260,48 @@ def _reset_for_stage(rec: RunRecord, from_stage: str) -> RunRecord:
     return rec
 
 
+def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], max_files: int = 600) -> List[Dict[str, Any]]:
+    """Build click-through document rows from pull result artifact folders."""
+
+    rec = run_record_from_dict(rec_row)
+    rows: List[Dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for gap_result in rec.pull_results:
+        gap_id = gap_result.gap_id
+        for source_result in gap_result.results:
+            run_dir = Path(str(source_result.run_dir or "")).expanduser()
+            if not run_dir.is_absolute():
+                run_dir = (settings.workspace / run_dir).resolve()
+            if not run_dir.exists() or not run_dir.is_dir():
+                continue
+
+            source_id = source_result.source_id
+            query = source_result.query
+            for file_path in sorted(run_dir.rglob("*")):
+                if not file_path.is_file():
+                    continue
+                path_str = str(file_path.resolve())
+                # Multiple query results can point at the same adapter folder.
+                # Keep each artifact path only once in the click-through list.
+                if path_str in seen_paths:
+                    continue
+                seen_paths.add(path_str)
+                rows.append(
+                    {
+                        "gap_id": gap_id,
+                        "source_id": source_id,
+                        "query": query,
+                        "artifact_type": source_result.artifact_type,
+                        "path": path_str,
+                        "name": file_path.name,
+                        "size_bytes": file_path.stat().st_size,
+                    }
+                )
+                if len(rows) >= max_files:
+                    return rows
+    return rows
+
+
 @app.get("/api/orchestrator/health")
 def api_health() -> Dict[str, Any]:
     settings = _settings()
@@ -346,6 +407,18 @@ def api_run_events(run_id: str, limit: int = Query(default=500, ge=1, le=5000)) 
     return {"run_id": run_id, "events": store.list_events(run_id, limit=limit)}
 
 
+@app.get("/api/orchestrator/runs/{run_id}/documents")
+def api_run_documents(run_id: str, limit: int = Query(default=300, ge=1, le=2000)) -> Dict[str, Any]:
+    """List pulled artifact files for run-complete click-through in UI."""
+
+    row = store.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+    settings = _settings()
+    docs = _run_document_rows(settings, row, max_files=limit)
+    return {"run_id": run_id, "documents": docs}
+
+
 @app.post("/api/orchestrator/runs/{run_id}/retry")
 def api_retry_run(run_id: str, inp: RetryInput) -> Dict[str, Any]:
     row = store.get_run(run_id)
@@ -441,6 +514,15 @@ def api_sources_catalog() -> Dict[str, Any]:
         "playwright_sources": sorted(playwright, key=lambda row: row["source_id"]),
         "university_databases": [{"name": name, "provider": "library"} for name in UNIVERSITY_DATABASES],
     }
+
+
+@app.get("/api/orchestrator/files")
+def api_file(path: str = Query(...)) -> FileResponse:
+    """Serve one artifact/document file for click-through download/open."""
+
+    settings = _settings()
+    resolved = _safe_file_path(settings, path)
+    return FileResponse(str(resolved))
 
 
 @app.get("/", include_in_schema=False)

@@ -113,6 +113,48 @@
 
     .muted { color: var(--muted); font-size: 12px; }
     .status-line { margin: 4px 0 12px; font-size: 13px; color: var(--muted); }
+    .status-line.live { color: #1d6a4e; font-weight: 700; }
+
+    .activity-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      margin-bottom: 2px;
+      flex-wrap: wrap;
+    }
+
+    .heartbeat {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #9d907e;
+      border: 1px solid #8f806b;
+      flex: 0 0 10px;
+    }
+
+    .heartbeat.live {
+      background: #2f8a5d;
+      border-color: #2f8a5d;
+      box-shadow: 0 0 0 0 rgba(47, 138, 93, 0.5);
+      animation: pulseHeartbeat 1.2s ease-in-out infinite;
+    }
+
+    .heartbeat.done {
+      background: #2f8a5d;
+      border-color: #2f8a5d;
+    }
+
+    .heartbeat.err {
+      background: #8f3f3f;
+      border-color: #8f3f3f;
+    }
+
+    @keyframes pulseHeartbeat {
+      0% { box-shadow: 0 0 0 0 rgba(47, 138, 93, 0.45); }
+      70% { box-shadow: 0 0 0 8px rgba(47, 138, 93, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(47, 138, 93, 0); }
+    }
 
     .event-box {
       border: 1px solid var(--line);
@@ -149,9 +191,11 @@
 
     .stage.done { background: var(--ok-bg); border-color: var(--ok-line); }
     .stage.failed { background: var(--err-bg); border-color: var(--err-line); }
+    .stage.pending { background: #fcf8ef; border-color: #dccdb7; }
     .stage.active {
       background: var(--active-bg);
       border-color: var(--active-line);
+      border-left: 4px solid #2f8a5d;
       box-shadow: 0 0 0 0 rgba(24, 95, 69, 0.24);
       animation: pulseStage 2.2s ease-in-out infinite;
     }
@@ -193,6 +237,34 @@
 
     .plan-gap:last-child { margin-bottom: 0; }
 
+    .doc-list {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      max-height: 28vh;
+      overflow: auto;
+      padding: 8px;
+    }
+
+    .doc-row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fcf9f2;
+      padding: 8px;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .doc-row:last-child { margin-bottom: 0; }
+
+    .doc-link {
+      color: #1f5f47;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .doc-link:hover { text-decoration: underline; }
+
     .log-wrap {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -228,6 +300,7 @@
 
     .log-line.ok { color: #2f6f4f; background: #f3faf6; }
     .log-line.err { color: #8f3f3f; background: #fff6f6; }
+    .log-line.live { background: #f7fbf8; }
 
     .hidden { display: none !important; }
 
@@ -248,6 +321,14 @@
       <section class="panel">
         <h2>Launch</h2>
         <div id="launch_status" class="status-line">Choose a manuscript and start a run.</div>
+        <div class="event-box">
+          <div><strong>Run Activity</strong></div>
+          <div class="activity-row">
+            <span id="heartbeat_dot" class="heartbeat" aria-hidden="true"></span>
+            <span id="heartbeat_text" class="muted">idle</span>
+            <span id="poll_age" class="muted">not polling</span>
+          </div>
+        </div>
 
         <label for="manuscript_select">Select Manuscript</label>
         <select id="manuscript_select" title="Select a manuscript from workspace or uploaded files."></select>
@@ -276,6 +357,12 @@
           <div id="plan_list" class="plan-list"></div>
         </div>
 
+        <div id="docs_box" class="event-box hidden">
+          <div><strong>Pulled Documents</strong></div>
+          <div id="docs_status" class="muted">Waiting for run completion...</div>
+          <div id="docs_list" class="doc-list"></div>
+        </div>
+
         <div class="event-box">
           <div><strong>Pipeline Stages</strong></div>
           <div class="stage-list" id="stage_list"></div>
@@ -283,7 +370,7 @@
         </div>
 
         <details class="log-wrap" id="log_details">
-          <summary class="log-head">Live Log</summary>
+          <summary class="log-head" id="log_summary">Live Log</summary>
           <div class="log-body" id="log_body"></div>
         </details>
       </section>
@@ -302,6 +389,8 @@
       pollTimer: null,
       eventsSeen: new Set(),
       currentRun: null,
+      lastPollTs: 0,
+      docsRunId: "",
     };
 
     async function api(path, method = "GET", body = null) {
@@ -328,6 +417,13 @@
       btn.textContent = busy ? "Running..." : "Run Research";
     }
 
+    function setButtonBusy(id, busy, busyLabel, idleLabel) {
+      const btn = q(id);
+      if (!btn) return;
+      btn.disabled = busy;
+      btn.textContent = busy ? busyLabel : idleLabel;
+    }
+
     function appendLog(line, klass = "") {
       const logBody = q("log_body");
       if (!logBody) return;
@@ -336,6 +432,71 @@
       div.textContent = line;
       logBody.appendChild(div);
       logBody.scrollTop = logBody.scrollHeight;
+    }
+
+    function isRunActive(runStatus) {
+      return !!runStatus && !TERMINAL.has(String(runStatus));
+    }
+
+    function updateActivity(run) {
+      const runStatus = String(run?.status || "");
+      const dot = q("heartbeat_dot");
+      const text = q("heartbeat_text");
+      const age = q("poll_age");
+      const launch = q("launch_status");
+      const logDetails = q("log_details");
+      const logSummary = q("log_summary");
+      const runBtn = q("run_btn");
+      const eventsCount = state.eventsSeen.size;
+
+      if (dot) dot.className = "heartbeat";
+      if (isRunActive(runStatus)) {
+        if (runBtn) {
+          runBtn.disabled = true;
+          runBtn.classList.add("running");
+          runBtn.textContent = "Run In Progress...";
+        }
+        if (dot) dot.classList.add("live");
+        if (text) text.textContent = `${runStatus} in progress`;
+        const seconds = state.lastPollTs ? Math.max(0, Math.floor((Date.now() - state.lastPollTs) / 1000)) : 0;
+        if (age) age.textContent = `checked ${seconds}s ago`;
+        if (launch) {
+          launch.classList.add("live");
+          launch.textContent = `Run active: ${runStatus}. ${run?.stage_detail || ""}`;
+        }
+        if (logDetails) logDetails.open = true;
+      } else if (runStatus === "failed") {
+        if (runBtn) {
+          runBtn.disabled = false;
+          runBtn.classList.remove("running");
+          runBtn.textContent = "Run Research";
+        }
+        if (dot) dot.classList.add("err");
+        if (text) text.textContent = "run failed";
+        if (age) age.textContent = "";
+        if (launch) {
+          launch.classList.remove("live");
+          launch.textContent = `Run failed: ${run?.error || "check live log"}`;
+        }
+      } else if (runStatus) {
+        if (runBtn) {
+          runBtn.disabled = false;
+          runBtn.classList.remove("running");
+          runBtn.textContent = "Run Research";
+        }
+        if (dot) dot.classList.add("done");
+        if (text) text.textContent = `${runStatus}`;
+        if (age) age.textContent = "";
+        if (launch) {
+          launch.classList.remove("live");
+          launch.textContent = `Run finished with status: ${runStatus}`;
+        }
+      }
+
+      if (logSummary) {
+        const stage = run?.status ? ` · ${run.status}` : "";
+        logSummary.textContent = `Live Log · ${eventsCount} events${stage}`;
+      }
     }
 
     function summarizeEvent(evt) {
@@ -363,7 +524,7 @@
         const stageIndex = STAGES.indexOf(name);
         const runIndex = STAGES.indexOf(stage);
 
-        if (runStatus === "failed" && name === stage) {
+        if (runStatus === "failed" && name === "complete") {
           row.classList.add("failed");
           badge.textContent = "failed";
         } else if (runStatus === "complete" || runStatus === "partial") {
@@ -382,9 +543,11 @@
             row.classList.add("active");
             badge.textContent = "active";
           } else {
+            row.classList.add("pending");
             badge.textContent = "pending";
           }
         } else {
+          row.classList.add("pending");
           badge.textContent = "pending";
         }
 
@@ -427,6 +590,39 @@
         `;
         list.appendChild(card);
       });
+    }
+
+    function renderDocuments(docs) {
+      const box = q("docs_box");
+      const list = q("docs_list");
+      if (!box || !list) return;
+      const rows = Array.isArray(docs) ? docs : [];
+      box.classList.remove("hidden");
+      if (!rows.length) {
+        setText("docs_status", "Run completed, but no artifact files were indexed for click-through.");
+        list.innerHTML = "";
+        return;
+      }
+      setText("docs_status", `${rows.length} files available for click-through.`);
+      list.innerHTML = "";
+      rows.forEach((doc) => {
+        const row = document.createElement("div");
+        row.className = "doc-row";
+        const href = `/api/orchestrator/files?path=${encodeURIComponent(doc.path || "")}`;
+        row.innerHTML = `
+          <div><a class="doc-link" target="_blank" rel="noopener noreferrer" href="${href}">${doc.name || "document"}</a></div>
+          <div class="muted">${doc.gap_id || ""} · ${doc.source_id || ""} · ${doc.artifact_type || ""}</div>
+          <div class="muted">${doc.query || ""}</div>
+        `;
+        list.appendChild(row);
+      });
+    }
+
+    async function loadDocumentsForRun(runId) {
+      if (!runId || state.docsRunId === runId) return;
+      const out = await api(`/api/orchestrator/runs/${runId}/documents?limit=500`);
+      renderDocuments(out.documents || []);
+      state.docsRunId = runId;
     }
 
     function saveLastManuscript(path) {
@@ -472,16 +668,21 @@
         return;
       }
 
-      const form = new FormData();
-      form.append("file", input.files[0]);
-      const res = await fetch("/api/orchestrator/manuscripts/upload", { method: "POST", body: form });
-      if (!res.ok) {
-        setText("launch_status", `Upload failed (${res.status}).`);
-        return;
+      setButtonBusy("upload_manuscript_btn", true, "Uploading...", "Upload");
+      try {
+        const form = new FormData();
+        form.append("file", input.files[0]);
+        const res = await fetch("/api/orchestrator/manuscripts/upload", { method: "POST", body: form });
+        if (!res.ok) {
+          setText("launch_status", `Upload failed (${res.status}).`);
+          return;
+        }
+        setText("launch_status", "Upload complete.");
+        input.value = "";
+        await loadManuscripts();
+      } finally {
+        setButtonBusy("upload_manuscript_btn", false, "Uploading...", "Upload");
       }
-      setText("launch_status", "Upload complete.");
-      input.value = "";
-      await loadManuscripts();
     }
 
     async function startRun() {
@@ -498,7 +699,10 @@
       try {
         const out = await api("/api/orchestrator/runs", "POST", { manuscript_path: manuscriptPath, force: false, pull_timeout_seconds: 60 });
         state.activeRunId = out.run_id;
+        state.eventsSeen = new Set();
         state.currentRun = out;
+        state.docsRunId = "";
+        q("docs_box")?.classList.add("hidden");
         setText("run_meta", `${out.run_id} · ${out.status || "queued"}`);
         appendLog(`[${new Date().toLocaleTimeString()}] run queued: ${out.run_id}`, "ok");
         await pollRun();
@@ -522,6 +726,7 @@
       const run = await api(`/api/orchestrator/runs/${state.activeRunId}`);
       const evt = await api(`/api/orchestrator/runs/${state.activeRunId}/events?limit=500`);
       state.currentRun = run;
+      state.lastPollTs = Date.now();
 
       setText("run_meta", `${run.run_id} · ${run.status} · ${run.stage_detail || ""}`);
       renderStages(run);
@@ -530,17 +735,34 @@
       (evt.events || []).forEach((row) => {
         if (state.eventsSeen.has(row.event_id)) return;
         state.eventsSeen.add(row.event_id);
-        const klass = row.status === "failed" ? "err" : (row.status === "completed" ? "ok" : "");
+        const klass = row.status === "failed" ? "err" : (row.status === "completed" ? "ok" : "live");
         appendLog(summarizeEvent(row), klass);
       });
+      updateActivity(run);
 
       if (TERMINAL.has(String(run.status || ""))) {
+        try {
+          await loadDocumentsForRun(run.run_id);
+        } catch (err) {
+          setText("docs_status", `Could not load documents: ${err.message}`);
+          q("docs_box")?.classList.remove("hidden");
+        }
         setText("launch_status", `Run finished with status: ${run.status}`);
       }
     }
 
     function bindEvents() {
-      q("refresh_manuscripts_btn")?.addEventListener("click", () => loadManuscripts().catch((err) => setText("launch_status", err.message)));
+      q("refresh_manuscripts_btn")?.addEventListener("click", async () => {
+        setButtonBusy("refresh_manuscripts_btn", true, "Refreshing...", "Refresh Manuscripts");
+        try {
+          await loadManuscripts();
+          appendLog(`[${new Date().toLocaleTimeString()}] manuscripts refreshed`, "ok");
+        } catch (err) {
+          setText("launch_status", err.message);
+        } finally {
+          setButtonBusy("refresh_manuscripts_btn", false, "Refreshing...", "Refresh Manuscripts");
+        }
+      });
       q("upload_manuscript_btn")?.addEventListener("click", () => uploadManuscript().catch((err) => setText("launch_status", err.message)));
       q("run_btn")?.addEventListener("click", () => startRun().catch((err) => setText("launch_status", err.message)));
       q("manuscript_select")?.addEventListener("change", (evt) => saveLastManuscript(String(evt.target.value || "")));

@@ -121,3 +121,37 @@ def test_reflection_marks_low_confidence_historical_meta_claim_for_review(settin
     assert gap.needs_review is True
     assert gap.skip is True
     assert "No suitable source" in gap.skip_reason
+
+
+def test_reflection_splits_compound_queries_for_pull_backoff(settings_factory) -> None:
+    settings = settings_factory(
+        ORCH_REFLECTION_USE_OLLAMA="false",
+        ORCH_PLAN_REVIEW_USE_OLLAMA="false",
+    )
+    gap_map = GapMap(
+        manuscript_path="Manuscript/ch1.docx",
+        manuscript_fingerprint="xyz",
+        gaps=[
+            Gap(
+                gap_id="AUTO-01-G1",
+                chapter="Chapter One: Merchant",
+                claim_text="John McDonogh served as a supercargo for Taylor Merchant Company in New Orleans.",
+                gap_type=GapType.IMPLICIT,
+                priority=GapPriority.HIGH,
+                suggested_queries=[
+                    "john mcdonogh supercargo great britain new orleans 1800 | taylor merchant company overseas assignments early 19th century"
+                ],
+            )
+        ],
+    )
+    availability = SourceAvailability(
+        free_apis=["world_bank"],
+        keyed_apis=["ebsco_api"],
+    )
+
+    plan = reflection.reflect_on_gaps(gap_map, availability, "run_compound", settings)
+    gap = plan.gaps[0]
+
+    assert gap.search_queries
+    assert any("|" not in query for query in gap.search_queries)
+    assert any("john mcdonogh supercargo" in query for query in gap.search_queries)

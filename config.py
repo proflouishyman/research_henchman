@@ -132,6 +132,10 @@ class OrchestratorSettings:
     reflection_use_ollama: bool
     reflection_model: str
     reflection_timeout_seconds: int
+    routing_min_confidence: float
+    plan_review_use_ollama: bool
+    plan_review_model: str
+    plan_review_timeout_seconds: int
 
     pull_timeout_seconds: int
     pull_output_root: Path
@@ -180,6 +184,10 @@ class OrchestratorSettings:
             reflection_use_ollama=parse_bool(os.getenv("ORCH_REFLECTION_USE_OLLAMA"), True),
             reflection_model=os.getenv("ORCH_REFLECTION_MODEL", "qwen2.5:7b").strip(),
             reflection_timeout_seconds=int(os.getenv("ORCH_REFLECTION_TIMEOUT_SECONDS", "120")),
+            routing_min_confidence=float(os.getenv("ORCH_ROUTING_MIN_CONFIDENCE", "0.67")),
+            plan_review_use_ollama=parse_bool(os.getenv("ORCH_PLAN_REVIEW_USE_OLLAMA"), True),
+            plan_review_model=os.getenv("ORCH_PLAN_REVIEW_MODEL", os.getenv("ORCH_REFLECTION_MODEL", "qwen2.5:7b")).strip(),
+            plan_review_timeout_seconds=int(os.getenv("ORCH_PLAN_REVIEW_TIMEOUT_SECONDS", "90")),
             pull_timeout_seconds=int(os.getenv("ORCH_PULL_TIMEOUT_SECONDS", "60")),
             pull_output_root=_as_abs(
                 workspace,

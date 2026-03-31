@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import OrchestratorSettings, load_runtime_env, read_env_values, write_env_updates
 from .contracts import ConnectionSaveInput, RetryInput, RunCreateInput, RunRecord, RunStatus, run_record_from_dict, run_record_to_dict
-from .layers.pull import SOURCE_REGISTRY, build_source_availability
+from .layers.pull import SOURCE_REGISTRY, build_source_availability, source_capability_catalog
 from .pipeline import run_orchestration
 from .store import OrchestratorStore, now_utc
 
@@ -486,6 +486,7 @@ def api_connection_save(inp: ConnectionSaveInput) -> Dict[str, Any]:
 def api_sources_catalog() -> Dict[str, Any]:
     settings = _settings()
     availability = build_source_availability(settings)
+    caps = source_capability_catalog()
 
     free = []
     keyed = []
@@ -497,6 +498,7 @@ def api_sources_catalog() -> Dict[str, Any]:
             "configured": True,
             "available": adapter.is_available(availability),
             "validation": adapter.validate(availability),
+            "capabilities": caps.get(source_id, {}),
         }
         if adapter.source_type.value == "free_api":
             free.append(row)

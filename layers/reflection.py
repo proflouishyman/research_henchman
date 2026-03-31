@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Tuple
 
 from ..config import OrchestratorSettings
 from ..contracts import (
+    ClaimKind,
+    EvidenceNeed,
     GapMap,
+    GapPriority,
     PlannedGap,
     ResearchPlan,
     SourceAvailability,
@@ -15,6 +19,56 @@ from ..contracts import (
 )
 from ..store import now_utc
 from .analysis import _call_ollama
+from .pull import rank_sources_for_claim, source_capability_catalog, source_fit_reason
+
+LOW_QUALITY_QUERY_PATTERNS = [
+    r"\bsplit claims\b",
+    r"\btie .* evidence\b",
+    r"\bargument is highly compressed\b",
+    r"\brefine .* claim\b",
+    r"\bneeds evidence\b",
+    r"\bimprove manuscript\b",
+]
+STATISTICAL_SOURCE_IDS = {"world_bank", "fred", "oecd", "bea", "census", "bls", "ilostat"}
+QUALITATIVE_CLAIM_KINDS = {
+    ClaimKind.HISTORICAL_NARRATIVE,
+    ClaimKind.LEGAL_REGULATORY,
+    ClaimKind.COMPANY_OPERATIONS,
+    ClaimKind.BIOGRAPHICAL,
+    ClaimKind.OTHER,
+}
+
+STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "there",
+    "about",
+    "without",
+    "where",
+    "which",
+    "what",
+    "been",
+    "were",
+    "have",
+    "has",
+    "had",
+    "your",
+    "their",
+    "them",
+    "they",
+    "could",
+    "would",
+    "should",
+    "argument",
+    "evidence",
+    "claim",
+}
 
 
 def reflect_on_gaps(
@@ -23,7 +77,7 @@ def reflect_on_gaps(
     run_id: str,
     settings: OrchestratorSettings,
 ) -> ResearchPlan:
-    """Generate reflected research plan using Ollama with heuristic fallback."""
+    """Generate reflected research plan using Ollama with policy and review gates."""
 
     plan: Optional[ResearchPlan] = None
     fallback_reason = ""
@@ -36,6 +90,24 @@ def reflect_on_gaps(
 
     if plan is None:
         plan = _reflect_heuristic(gap_map, availability, run_id, fallback_reason=fallback_reason)
+
+    _apply_routing_policy(plan, availability, settings)
+
+    initially_needs_review = [gap for gap in plan.gaps if gap.needs_review and not gap.skip]
+    resolved = 0
+    if initially_needs_review and settings.plan_review_use_ollama:
+        before = {gap.gap_id for gap in initially_needs_review}
+        _review_needs_review_gaps_with_ollama(plan, availability, settings)
+        _apply_routing_policy(plan, availability, settings)
+        after = {gap.gap_id for gap in plan.gaps if gap.needs_review and not gap.skip}
+        resolved = len(before - after)
+
+    _finalize_review_status(plan)
+    plan.routing_method = "policy_v1"
+    plan.review_required_count = sum(1 for gap in plan.gaps if gap.needs_review)
+    plan.review_resolved_count = max(0, resolved)
+    plan.estimated_pull_count = sum(len(gap.search_queries) for gap in plan.gaps if not gap.skip)
+
     return plan
 
 
@@ -51,7 +123,11 @@ def _format_source_availability(availability: SourceAvailability) -> str:
             else "none"
         )
         + "\n"
-        + (f"Playwright unavailable reason: {availability.playwright_unavailable_reason}" if availability.playwright_unavailable_reason else "")
+        + (
+            f"Playwright unavailable reason: {availability.playwright_unavailable_reason}"
+            if availability.playwright_unavailable_reason
+            else ""
+        )
     )
 
 
@@ -72,38 +148,96 @@ def _build_reflection_prompt(gap_map: GapMap, availability: SourceAvailability) 
         indent=2,
     )
     sources_block = _format_source_availability(availability)
+    capabilities_json = json.dumps(source_capability_catalog(), ensure_ascii=False, indent=2)
 
     return f"""You are a research strategist reviewing an evidentiary gap analysis for a manuscript.
 
 Your job is to:
 1. Review each gap and decide whether it is worth pursuing.
-2. Refine the suggested search queries into the 2-4 most targeted, retrievable strings.
-3. Recommend which source types to use for each gap based on what is AVAILABLE.
-4. Write a brief plan summary explaining what the manuscript needs and why.
+2. Refine suggested queries into 2-4 targeted retrievable strings.
+3. Assign each gap a semantic claim_kind and evidence_need.
+4. Route to sources that match claim semantics and availability.
+5. Write a brief plan summary.
 
 AVAILABLE SOURCES:
 {sources_block}
 
-If a source type is not listed as available, do NOT recommend it.
-If a gap cannot be filled with available sources, set skip=true and explain why.
+SOURCE CAPABILITIES:
+{capabilities_json}
 
-For each gap, return:
-  gap_id            — unchanged from input
-  search_queries    — final list of 2-4 refined search strings
-  source_types      — list of: \"free_api\", \"keyed_api\", \"playwright\" (in preferred order)
-  preferred_sources — list of specific source IDs (e.g. \"world_bank\", \"ebscohost\")
-  rationale         — 1 sentence: why this gap matters to the manuscript's argument
-  skip              — true if the gap should not be pursued
-  skip_reason       — explanation when skip is true
+For each gap return:
+  gap_id
+  search_queries
+  source_types ("free_api", "keyed_api", "playwright")
+  preferred_sources
+  rationale
+  claim_kind ("historical_narrative", "quantitative_macro", "quantitative_labor",
+              "legal_regulatory", "company_operations", "biographical", "other")
+  evidence_need ("scholarly_secondary", "primary_source", "official_statistics",
+                 "legal_text", "news_archive", "mixed")
+  route_confidence (0.0-1.0)
+  skip
+  skip_reason
 
 Also return:
-  plan_summary      — 1 paragraph overview of the research plan
+  plan_summary
 
 Return ONLY a JSON object with keys: plan_summary, gaps (array).
 No preamble, no markdown fences.
 
 GAP ANALYSIS:
 {gaps_json}
+"""
+
+
+def _review_prompt(plan: ResearchPlan, availability: SourceAvailability) -> str:
+    needs_review = [
+        {
+            "gap_id": gap.gap_id,
+            "chapter": gap.chapter,
+            "claim_text": gap.claim_text,
+            "current_queries": gap.search_queries,
+            "current_sources": gap.preferred_sources,
+            "claim_kind": gap.claim_kind.value,
+            "evidence_need": gap.evidence_need.value,
+            "route_reason": gap.route_reason,
+        }
+        for gap in plan.gaps
+        if gap.needs_review and not gap.skip
+    ]
+
+    return f"""You are reviewing low-confidence research-routing gaps.
+
+Task:
+- Improve only the gaps provided below.
+- Produce source-specific, retrievable search strings.
+- Choose sources that semantically fit each claim and are currently available.
+- If no suitable source exists, keep preferred_sources empty and explain.
+
+AVAILABLE SOURCES:
+{_format_source_availability(availability)}
+
+SOURCE CAPABILITIES:
+{json.dumps(source_capability_catalog(), ensure_ascii=False, indent=2)}
+
+NEEDS REVIEW GAPS:
+{json.dumps(needs_review, ensure_ascii=False, indent=2)}
+
+Return ONLY JSON object:
+{{
+  "gaps": [
+    {{
+      "gap_id": "...",
+      "search_queries": ["..."],
+      "preferred_sources": ["..."],
+      "rationale": "...",
+      "claim_kind": "...",
+      "evidence_need": "...",
+      "route_confidence": 0.0,
+      "review_notes": "..."
+    }}
+  ]
+}}
 """
 
 
@@ -133,6 +267,81 @@ def _reflect_with_ollama(
         source_availability=availability,
         created_at=now_utc(),
     )
+
+
+def _review_needs_review_gaps_with_ollama(
+    plan: ResearchPlan,
+    availability: SourceAvailability,
+    settings: OrchestratorSettings,
+) -> None:
+    """Run a second local-LLM pass only for low-confidence routing rows."""
+
+    review_targets = [gap for gap in plan.gaps if gap.needs_review and not gap.skip]
+    if not review_targets:
+        return
+
+    try:
+        response = _call_ollama(
+            prompt=_review_prompt(plan, availability),
+            model=settings.plan_review_model,
+            base_url=settings.ollama_base_url,
+            timeout_seconds=settings.plan_review_timeout_seconds,
+        )
+        payload = _parse_reflection_json(response)
+    except Exception as exc:  # noqa: BLE001 - review is best-effort.
+        note = f"review_unavailable:{str(exc)[:120]}"
+        for gap in review_targets:
+            if not gap.review_notes:
+                gap.review_notes = note
+        return
+
+    rows = payload.get("gaps", [])
+    if not isinstance(rows, list):
+        return
+
+    by_id = {gap.gap_id: gap for gap in review_targets}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        gap_id = str(row.get("gap_id", "")).strip()
+        gap = by_id.get(gap_id)
+        if gap is None:
+            continue
+
+        queries = row.get("search_queries", [])
+        if isinstance(queries, list):
+            cleaned = [str(q).strip() for q in queries if str(q).strip()]
+            if cleaned:
+                gap.search_queries = cleaned
+
+        preferred = row.get("preferred_sources", [])
+        if isinstance(preferred, list):
+            allowed = set(availability.free_apis + availability.keyed_apis + availability.playwright_sources)
+            cleaned_sources = [str(s).strip() for s in preferred if str(s).strip() in allowed]
+            if cleaned_sources:
+                gap.preferred_sources = cleaned_sources
+
+        if "rationale" in row and str(row.get("rationale", "")).strip():
+            gap.rationale = str(row.get("rationale", "")).strip()
+
+        try:
+            gap.claim_kind = ClaimKind(str(row.get("claim_kind", gap.claim_kind.value)).strip())
+        except Exception:
+            pass
+
+        try:
+            gap.evidence_need = EvidenceNeed(str(row.get("evidence_need", gap.evidence_need.value)).strip())
+        except Exception:
+            pass
+
+        try:
+            llm_conf = float(row.get("route_confidence", gap.route_confidence))
+            gap.route_confidence = max(0.0, min(1.0, llm_conf))
+        except Exception:
+            pass
+
+        gap.review_notes = str(row.get("review_notes", "")).strip() or gap.review_notes
+        gap.review_method = f"ollama:{settings.plan_review_model}"
 
 
 def _parse_reflection_json(response: str) -> Dict[str, object]:
@@ -184,6 +393,21 @@ def _parse_planned_gaps(rows: object, gap_map: GapMap) -> List[PlannedGap]:
         preferred_rows = row.get("preferred_sources", [])
         preferred_sources = [str(item).strip() for item in preferred_rows if str(item).strip()] if isinstance(preferred_rows, list) else []
 
+        try:
+            claim_kind = ClaimKind(str(row.get("claim_kind", ClaimKind.OTHER.value)).strip())
+        except Exception:
+            claim_kind = ClaimKind.OTHER
+
+        try:
+            evidence_need = EvidenceNeed(str(row.get("evidence_need", EvidenceNeed.MIXED.value)).strip())
+        except Exception:
+            evidence_need = EvidenceNeed.MIXED
+
+        try:
+            route_confidence = max(0.0, min(1.0, float(row.get("route_confidence", 0.0))))
+        except Exception:
+            route_confidence = 0.0
+
         out.append(
             PlannedGap(
                 gap_id=source_gap.gap_id,
@@ -197,6 +421,9 @@ def _parse_planned_gaps(rows: object, gap_map: GapMap) -> List[PlannedGap]:
                 rationale=str(row.get("rationale", "")).strip(),
                 skip=bool(row.get("skip", False)),
                 skip_reason=str(row.get("skip_reason", "")).strip(),
+                claim_kind=claim_kind,
+                evidence_need=evidence_need,
+                route_confidence=route_confidence,
             )
         )
 
@@ -232,6 +459,7 @@ def _default_preferred_sources(source_types: List[SourceType], availability: Sou
             preferred.extend(availability.keyed_apis[:2])
         elif source_type == SourceType.PLAYWRIGHT:
             preferred.extend(availability.playwright_sources[:2])
+
     # Preserve order while removing duplicates.
     out: List[str] = []
     seen = set()
@@ -243,17 +471,14 @@ def _default_preferred_sources(source_types: List[SourceType], availability: Sou
     return out
 
 
-def _default_source_routing(priority: object, availability: SourceAvailability) -> List[SourceType]:
+def _default_source_routing(priority: GapPriority, availability: SourceAvailability) -> List[SourceType]:
     """Fallback source order when reflection LLM is unavailable."""
 
-    types: List[SourceType] = []
-    if availability.free_apis:
-        types.append(SourceType.FREE_API)
-    if availability.keyed_apis and str(priority) in {"GapPriority.HIGH", "GapPriority.MEDIUM", "high", "medium"}:
-        types.append(SourceType.KEYED_API)
-    if availability.playwright_sources and str(priority) in {"GapPriority.HIGH", "high"}:
-        types.append(SourceType.PLAYWRIGHT)
-    return types or [SourceType.FREE_API]
+    if priority == GapPriority.HIGH:
+        return [SourceType.KEYED_API, SourceType.PLAYWRIGHT, SourceType.FREE_API]
+    if priority == GapPriority.MEDIUM:
+        return [SourceType.KEYED_API, SourceType.FREE_API]
+    return [SourceType.FREE_API]
 
 
 def _reflect_heuristic(
@@ -277,7 +502,7 @@ def _reflect_heuristic(
                 search_queries=gap.suggested_queries[:] or [gap.claim_text[:120]],
                 source_types=source_types,
                 preferred_sources=_default_preferred_sources(source_types, availability),
-                rationale="Heuristic fallback — LLM reflection unavailable.",
+                rationale="Heuristic fallback - LLM reflection unavailable.",
                 skip=False,
             )
         )
@@ -300,3 +525,198 @@ def _reflect_heuristic(
         source_availability=availability,
         created_at=now_utc(),
     )
+
+
+def _evidence_source_types(evidence_need: EvidenceNeed) -> List[SourceType]:
+    if evidence_need in {
+        EvidenceNeed.SCHOLARLY_SECONDARY,
+        EvidenceNeed.PRIMARY_SOURCE,
+        EvidenceNeed.NEWS_ARCHIVE,
+        EvidenceNeed.LEGAL_TEXT,
+    }:
+        return [SourceType.KEYED_API, SourceType.PLAYWRIGHT]
+    if evidence_need == EvidenceNeed.OFFICIAL_STATISTICS:
+        return [SourceType.KEYED_API, SourceType.FREE_API]
+    return [SourceType.KEYED_API, SourceType.FREE_API, SourceType.PLAYWRIGHT]
+
+
+def _claim_routing_profile(gap: PlannedGap) -> Tuple[ClaimKind, EvidenceNeed, float]:
+    text = f"{gap.chapter} {gap.claim_text}".lower()
+
+    if re.search(r"\b(law|regulation|statute|act|policy|court|legal)\b", text):
+        return (ClaimKind.LEGAL_REGULATORY, EvidenceNeed.LEGAL_TEXT, 0.84)
+
+    if re.search(r"\b(percent|rate|gdp|inflation|unemployment|wage|index|dollar|\d{4}|\d+%)\b", text):
+        if re.search(r"\b(worker|labor|employment|injury|wage|payroll|occupation)\b", text):
+            return (ClaimKind.QUANTITATIVE_LABOR, EvidenceNeed.OFFICIAL_STATISTICS, 0.88)
+        return (ClaimKind.QUANTITATIVE_MACRO, EvidenceNeed.OFFICIAL_STATISTICS, 0.86)
+
+    if re.search(r"\b(born|father|mother|friend|life|biograph|childhood)\b", text):
+        return (ClaimKind.BIOGRAPHICAL, EvidenceNeed.PRIMARY_SOURCE, 0.74)
+
+    if re.search(r"\b(company|firm|business|commerce|warehouse|platform|retail|market)\b", text):
+        return (ClaimKind.COMPANY_OPERATIONS, EvidenceNeed.NEWS_ARCHIVE, 0.68)
+
+    if re.search(r"\b(chapter|history|historical|merchant|century|archive)\b", text):
+        return (ClaimKind.HISTORICAL_NARRATIVE, EvidenceNeed.SCHOLARLY_SECONDARY, 0.72)
+
+    return (ClaimKind.OTHER, EvidenceNeed.MIXED, 0.46)
+
+
+def _query_quality_score(query: str) -> float:
+    raw = (query or "").strip()
+    if not raw:
+        return 0.0
+    q = raw.lower()
+
+    score = 1.0
+    if len(raw) < 12:
+        score -= 0.35
+    if len(raw.split()) < 3:
+        score -= 0.3
+    if any(re.search(pattern, q) for pattern in LOW_QUALITY_QUERY_PATTERNS):
+        score -= 0.7
+    if re.search(r"\b(split|refine|rewrite|improve)\b", q) and "source" not in q and "archive" not in q:
+        score -= 0.25
+
+    return max(0.0, min(1.0, score))
+
+
+def _extract_keywords(text: str, limit: int = 6) -> List[str]:
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z\-']{2,}", text.lower())
+    out: List[str] = []
+    seen = set()
+    for tok in tokens:
+        if tok in STOPWORDS or tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _fallback_queries(gap: PlannedGap, evidence_need: EvidenceNeed) -> List[str]:
+    kws = _extract_keywords(f"{gap.chapter} {gap.claim_text}")
+    core = " ".join(kws[:4]) if kws else gap.chapter or "manuscript claim"
+
+    if evidence_need == EvidenceNeed.OFFICIAL_STATISTICS:
+        return [f"{core} statistics time series", f"{core} official data"]
+    if evidence_need in {EvidenceNeed.SCHOLARLY_SECONDARY, EvidenceNeed.PRIMARY_SOURCE}:
+        return [f"{core} scholarly article", f"{core} primary source archive"]
+    if evidence_need == EvidenceNeed.LEGAL_TEXT:
+        return [f"{core} legal text regulation", f"{core} statute policy archive"]
+    if evidence_need == EvidenceNeed.NEWS_ARCHIVE:
+        return [f"{core} historical newspaper archive", f"{core} periodical source"]
+    return [f"{core} historical evidence", f"{core} supporting source"]
+
+
+def _clean_queries(gap: PlannedGap, evidence_need: EvidenceNeed) -> Tuple[List[str], float]:
+    candidates = gap.search_queries[:] if gap.search_queries else []
+    if not candidates:
+        candidates = _fallback_queries(gap, evidence_need)
+
+    ranked: List[Tuple[float, str]] = []
+    seen = set()
+    for query in candidates:
+        q = str(query).strip()
+        if not q:
+            continue
+        key = q.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ranked.append((_query_quality_score(q), q))
+
+    kept = [q for score, q in ranked if score >= 0.42]
+    if not kept:
+        kept = _fallback_queries(gap, evidence_need)
+        ranked = [(_query_quality_score(q), q) for q in kept]
+
+    avg = (sum(score for score, _ in ranked) / len(ranked)) if ranked else 0.0
+    return (kept[:4], avg)
+
+
+def _apply_routing_policy(plan: ResearchPlan, availability: SourceAvailability, settings: OrchestratorSettings) -> None:
+    """Assign claim/evidence types and enforce capability-based source routing."""
+
+    for gap in plan.gaps:
+        claim_kind, evidence_need, claim_conf = _claim_routing_profile(gap)
+
+        # Policy typing is authoritative to prevent semantic drift from
+        # low-quality LLM rows (e.g., historical claims routed as macro stats).
+        gap.claim_kind = claim_kind
+        gap.evidence_need = evidence_need
+
+        gap.source_types = _evidence_source_types(gap.evidence_need)
+        cleaned_queries, query_conf = _clean_queries(gap, gap.evidence_need)
+        gap.search_queries = cleaned_queries
+
+        preferred = rank_sources_for_claim(
+            gap.claim_kind,
+            gap.evidence_need,
+            availability,
+            source_types=gap.source_types,
+            max_sources=3,
+        )
+        # Policy is authoritative: always replace legacy/LLM-preferred sources
+        # with capability-ranked sources for this claim/evidence type.
+        gap.preferred_sources = preferred
+
+        has_sources = bool(gap.preferred_sources)
+        only_stat_sources = has_sources and all(src in STATISTICAL_SOURCE_IDS for src in gap.preferred_sources)
+        source_conf = 0.2 if has_sources else -0.35
+        conf = max(0.0, min(1.0, claim_conf + (query_conf - 0.5) * 0.4 + source_conf))
+
+        # If route appears semantically mismatched, lower confidence hard.
+        if gap.evidence_need in {
+            EvidenceNeed.SCHOLARLY_SECONDARY,
+            EvidenceNeed.PRIMARY_SOURCE,
+            EvidenceNeed.NEWS_ARCHIVE,
+            EvidenceNeed.LEGAL_TEXT,
+        } and any(src in STATISTICAL_SOURCE_IDS for src in gap.preferred_sources):
+            conf = max(0.0, conf - 0.35)
+        if gap.claim_kind in QUALITATIVE_CLAIM_KINDS and only_stat_sources:
+            conf = max(0.0, conf - 0.4)
+
+        gap.route_confidence = conf
+        gap.route_reason = source_fit_reason(gap.claim_kind, gap.evidence_need, gap.preferred_sources)
+
+        needs_review = (conf < settings.routing_min_confidence) or (not has_sources) or (
+            gap.claim_kind in QUALITATIVE_CLAIM_KINDS and only_stat_sources
+        )
+        gap.needs_review = needs_review
+
+        if needs_review and not gap.review_notes:
+            gap.review_notes = "Low-confidence route; local review recommended."
+
+
+def _finalize_review_status(plan: ResearchPlan) -> None:
+    """Prevent bad pulls when route remains low confidence after review pass."""
+
+    for gap in plan.gaps:
+        if gap.skip:
+            continue
+        only_stat_sources = bool(gap.preferred_sources) and all(src in STATISTICAL_SOURCE_IDS for src in gap.preferred_sources)
+        if gap.needs_review and gap.claim_kind in QUALITATIVE_CLAIM_KINDS and only_stat_sources:
+            gap.skip = True
+            gap.skip_reason = "Claim requires scholarly/archival sources; only statistical APIs are available."
+            continue
+        if gap.needs_review and not gap.preferred_sources:
+            gap.skip = True
+            gap.skip_reason = "No suitable source available for claim type; review required."
+            continue
+
+        if gap.needs_review and gap.preferred_sources:
+            # Keep executable but make uncertainty explicit in rationale for UI transparency.
+            prefix = "Needs review before publication use. "
+            if not gap.rationale.startswith(prefix):
+                gap.rationale = f"{prefix}{gap.rationale}".strip()
+
+    active = sum(1 for gap in plan.gaps if not gap.skip)
+    review_count = sum(1 for gap in plan.gaps if gap.needs_review)
+    if review_count:
+        plan.plan_summary = (
+            f"{plan.plan_summary} Routing policy flagged {review_count} low-confidence gaps. "
+            f"{active} gaps remain executable."
+        ).strip()

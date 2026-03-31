@@ -9,12 +9,13 @@ Contract-enforced automated pipeline for manuscript research runs.
 - Frontend is a single launch + live monitor page.
 - UI highlights progress with active-stage color pulse and run heartbeat.
 - Completed runs expose click-through artifact files in a document panel.
+- Plan routing is now claim-aware: historical/scholarly gaps are routed away from macro-stat APIs unless they semantically fit.
 
 ## Core architecture
 - `app/contracts.py`: layer dataclasses and enums.
 - `app/layers/analysis.py`: Layer 1 (`manuscript_path -> GapMap`).
-- `app/layers/reflection.py`: Layer 2 (`GapMap + SourceAvailability -> ResearchPlan`).
-- `app/layers/pull.py`: Layer 3 source router + `SOURCE_REGISTRY`.
+- `app/layers/reflection.py`: Layer 2 (`GapMap + SourceAvailability -> ResearchPlan`) plus claim/evidence typing and routing quality gates.
+- `app/layers/pull.py`: Layer 3 source router + `SOURCE_REGISTRY` + `SOURCE_CAPABILITIES`.
 - `app/layers/ingest.py`: Layer 4 ingest (`GapPullResult -> IngestResult`).
 - `app/layers/fit.py`: Layer 5 fit (`IngestResult -> FitResult`).
 - `app/pipeline.py`: stage sequencer and structured events.
@@ -38,8 +39,15 @@ Contract-enforced automated pipeline for manuscript research runs.
 Add a new source by:
 1. creating one adapter class in `app/adapters/`
 2. registering it in `app/layers/pull.py` `SOURCE_REGISTRY`
+3. declaring claim/evidence capability tags in `SOURCE_CAPABILITIES`
 
 No pipeline or API rewrite required.
+
+## Routing/Review env vars
+- `ORCH_ROUTING_MIN_CONFIDENCE` (default `0.67`)
+- `ORCH_PLAN_REVIEW_USE_OLLAMA` (default `true`)
+- `ORCH_PLAN_REVIEW_MODEL` (default `ORCH_REFLECTION_MODEL`)
+- `ORCH_PLAN_REVIEW_TIMEOUT_SECONDS` (default `90`)
 
 ## Run locally
 From repository root:

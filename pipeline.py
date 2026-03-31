@@ -140,8 +140,18 @@ def run_orchestration(
                 "skipped_gaps": skipped,
                 "estimated_pulls": plan.estimated_pull_count,
                 "method": plan.reflection_method,
+                "routing_method": plan.routing_method,
+                "review_required": plan.review_required_count,
+                "review_resolved": plan.review_resolved_count,
             },
         )
+        if plan.review_required_count:
+            emit(
+                "planning",
+                "warning",
+                f"Routing review flagged {plan.review_required_count} gap(s)",
+                {"review_required": plan.review_required_count, "review_resolved": plan.review_resolved_count},
+            )
     except Exception as exc:  # noqa: BLE001 - hard fail stage.
         save(RunStatus.FAILED, str(exc)[:200], error=str(exc)[:200])
         emit("planning", "failed", str(exc)[:200], {"traceback": traceback.format_exc()[-1200:]})

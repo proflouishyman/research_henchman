@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Callable, Dict, List
@@ -387,11 +386,12 @@ def build_source_availability(settings: OrchestratorSettings) -> SourceAvailabil
             continue
 
         if adapter.source_type == SourceType.KEYED_API:
-            env_key = str(getattr(adapter, "env_key", "")).strip()
-            if env_key and os.environ.get(env_key, "").strip():
+            has_credentials = bool(getattr(adapter, "has_credentials", lambda: False)())
+            if has_credentials:
                 keyed_apis.append(source_id)
             else:
-                missing_keys[source_id] = env_key
+                hint = str(getattr(adapter, "credential_hint", lambda: getattr(adapter, "env_key", ""))()).strip()
+                missing_keys[source_id] = hint
 
     playwright_sources: List[str] = []
     playwright_unavailable_reason = ""

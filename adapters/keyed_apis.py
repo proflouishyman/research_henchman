@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .base import PullAdapter
+from .document_links import build_link_rows
 from .io_utils import write_json_records
 from ..contracts import PlannedGap, SourceAvailability, SourceResult, SourceType
 
@@ -208,12 +209,11 @@ class CensusAdapter(KeyedApiAdapter):
 
 
 class EbscoApiAdapter(KeyedApiAdapter):
-    """EBSCOhost API adapter placeholder.
+    """EBSCOhost API adapter.
 
-    Note:
-    - Full provider query translation is intentionally ticketed per-source.
-    - This adapter records a deterministic pull receipt so downstream stages can
-      proceed in architecture tests and local dry-runs.
+    Current behavior emits provider click-through search URLs plus best-effort
+    local corpus matches so results remain actionable while API-specific
+    translation evolves.
     """
 
     source_id = "ebsco_api"
@@ -227,24 +227,19 @@ class EbscoApiAdapter(KeyedApiAdapter):
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
         try:
-            rows = [
-                {
-                    "query": query,
-                    "note": "EBSCO API translation pending source-specific implementation",
-                    "gap_id": gap.gap_id,
-                }
-            ]
+            rows = build_link_rows(self.source_id, query, gap.gap_id, limit_local=6)
             root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
+            status = "completed" if rows else "partial"
             return SourceResult(
                 source_id=self.source_id,
                 source_type=self.source_type,
                 query=query,
                 gap_id=gap.gap_id,
-                document_count=1,
+                document_count=len(rows),
                 run_dir=root,
                 artifact_type="json_records",
-                status="partial",
-                stats={"records": 1, "placeholder": True},
+                status=status,
+                stats={"records": len(rows), "link_mode": "provider_search+local_corpus"},
             )
         except Exception as exc:
             return SourceResult(

@@ -11,7 +11,8 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 ## Architecture
 - `app/contracts.py`: all layer dataclasses and enums (`GapMap`, `ResearchPlan`, `GapPullResult`, `IngestResult`, `FitResult`, `RunRecord`).
 - `app/layers/analysis.py`: Layer 1 analysis (Ollama-first with heuristic fallback, fingerprint cache).
-- `app/layers/reflection.py`: Layer 2 reflection + policy gates (claim typing, evidence typing, query-quality gate, local review pass for low-confidence routes).
+- `app/layers/search_policy.py`: Accordion search-policy layer (claim classification, era synonym ring, ladder generation, move-state logic, hash cache).
+- `app/layers/reflection.py`: Layer 2 reflection + policy gates (claim typing, evidence typing, query-quality gate, ladder persistence on `PlannedGap.query_ladder`, local review pass for low-confidence routes).
 - `app/layers/pull.py`: Layer 3 router + `SOURCE_REGISTRY` + `SOURCE_CAPABILITIES` semantic routing table.
 - `app/layers/ingest.py`: Layer 4 ingest, tags artifacts with `gap_id` and `source_id`.
 - `app/layers/fit.py`: Layer 5 fit, per-gap scoring and idempotent skip of already-scored links.
@@ -49,14 +50,16 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - post-run document list with click-through links to pulled artifact files
   - pulled documents shown as collapsible source packets; packet JSON is parsed for linked document targets so users see source docs (PDF/web/DOI) first
   - linked documents are quality-ranked (`high`, `medium`, `seed`) so direct/local PDFs and strong document links appear above provider-search seed links
-  - plan cards show route details (`claim_kind`, `evidence_need`, confidence, review status)
+  - plan cards show route details (`claim_kind`, `evidence_need`, confidence, review status) plus ladder/synonym-ring context when available
 
 ## Configuration
 Environment controls all behavior (`app/config.py`):
 - analysis: `ORCH_GAP_ANALYSIS_*`
 - reflection: `ORCH_REFLECTION_*`
+- search policy cache: `ORCH_REFLECTION_*` + `search_policy_cache` directory under `ORCH_DATA_ROOT`
 - routing/review gates: `ORCH_ROUTING_MIN_CONFIDENCE`, `ORCH_PLAN_REVIEW_USE_OLLAMA`, `ORCH_PLAN_REVIEW_MODEL`, `ORCH_PLAN_REVIEW_TIMEOUT_SECONDS`
-- pull/router: `ORCH_PULL_TIMEOUT_SECONDS`, `ORCH_PULL_OUTPUT_ROOT`, `ORCH_PLAYWRIGHT_CDP_URL`
+- pull/router: `ORCH_PULL_TIMEOUT_SECONDS`, `ORCH_PULL_OUTPUT_ROOT`, `ORCH_PLAYWRIGHT_CDP_URL`, `ORCH_PULL_MAX_QUERY_ATTEMPTS`, `ORCH_PULL_SYNONYM_CAP`, `ORCH_PULL_NOISE_THRESHOLD*`
+- pull acceptance floor: `ORCH_PULL_MIN_ACCEPT_DOCS` (minimum per-query hits before accordion stops widening; default `2`)
 - library profile routing: `ORCH_LIBRARY_SYSTEM`, `ORCH_LIBRARY_PROFILES_PATH`, `ORCH_PLAYWRIGHT_EXTRA_SOURCES`
 - ingest/fit: `ORCH_AUTO_INGEST`, `ORCH_AUTO_LLM_FIT`, `ORCH_LLM_*`, `ORCH_OLLAMA_BASE_URL`
 - keyed credential aliases: `BLS_REGISTRATION_KEY` can substitute for `BLS_API_KEY`; EBSCO profile credentials (`EBSCO_PROF` + `EBSCO_PWD`, or `EBSCO_PROFILE_ID` + `EBSCO_PROFILE_PASSWORD`) can satisfy `ebsco_api` availability.
@@ -66,7 +69,8 @@ Environment controls all behavior (`app/config.py`):
 - Add source: one adapter class + one registry entry.
 - Source-specific query translation logic can be implemented per adapter ticket without changing pipeline contracts.
 - Source semantics are declared in `SOURCE_CAPABILITIES`; add/update capability tags so routing can match claim type to source family.
-- Pull execution includes a bounded query backoff ladder (split compound queries, then broaden) before marking a source attempt as exhausted.
+- Pull execution includes accordion traversal using rung/synonym state (`lateral`, `widen`, `tighten`, `accept`, `exhausted`) with bounded attempts, per-source noise thresholds, minimum-hit acceptance floor, and a final entity-only retry before marking needs-review.
+- Capability ranking now applies light provider diversity constraints so one source family does not dominate all selected routes when equally strong alternatives are available.
 - Seed adapters for EBSCO/Playwright now emit normalized click-through links (`url` and best-effort local `path`) so packet extraction can render document links even before full site-specific automation is complete.
 - Document indexing preserves adapter-provided quality metadata (`quality_rank`, `quality_label`) and sorts flattened run-document rows by quality so high-confidence links remain first even when mixed with raw artifact files.
 

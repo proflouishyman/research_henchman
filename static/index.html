@@ -569,7 +569,14 @@
       const stage = evt.stage || "stage";
       const status = evt.status || "status";
       const msg = evt.message || "";
-      return `[${ts}] ${stage}/${status}: ${msg}`;
+      const meta = evt.meta || {};
+      let detail = "";
+      if (["lateral", "widen", "tighten", "exhausted"].includes(status) && meta.rung) {
+        detail = ` [${meta.action || status} rung=${meta.rung} syn=${meta.synonym_idx ?? "?"} docs=${meta.doc_count ?? "?"}]`;
+      } else if (status === "accept" && meta.rung) {
+        detail = ` [accepted rung=${meta.rung} docs=${meta.doc_count ?? "?"}]`;
+      }
+      return `[${ts}] ${stage}/${status}${detail}: ${msg}`;
     }
 
     function renderStages(run) {
@@ -651,11 +658,29 @@
         const sources = Array.isArray(gap.preferred_sources) ? gap.preferred_sources : [];
         const confidence = Number.isFinite(Number(gap.route_confidence)) ? Math.round(Number(gap.route_confidence) * 100) : 0;
         const routeMeta = `${gap.claim_kind || "other"} -> ${gap.evidence_need || "mixed"} (${confidence}% confidence)`;
+        const ladder = gap.query_ladder || {};
+        const ring = ladder.synonym_ring || {};
+        const termShifts = Array.isArray(ring.terminology_shifts) ? ring.terminology_shifts.join(", ") : "";
+        const instNames = Array.isArray(ring.institutional_names) ? ring.institutional_names.join(", ") : "";
+        const eraModifiers = Array.isArray(ring.era_modifiers) ? ring.era_modifiers.join(", ") : "";
+        const genMethod = ladder.generation_method || "unknown";
+        const eraRange = (ring.era_start && ring.era_end) ? ` · ${ring.era_start}-${ring.era_end}` : "";
+        const ladderHtml = ladder.constrained
+          ? `<div class="muted ladder">
+               <span class="pill">${genMethod}</span>${eraRange}<br>
+               🔬 <strong>constrained:</strong> ${ladder.constrained}<br>
+               🔭 <strong>contextual:</strong> ${ladder.contextual || ""}<br>
+               📖 <strong>broad:</strong> ${ladder.broad || ""}<br>
+               ${termShifts ? `era terms: ${termShifts}<br>` : ""}
+               ${instNames ? `inst. names: ${instNames}<br>` : ""}
+               ${eraModifiers ? `era modifiers: ${eraModifiers}` : ""}
+             </div>`
+          : `<div class="muted">queries: ${queries.join(" | ") || "none"}</div>`;
         card.innerHTML = `
           <div><strong>${gap.gap_id || "gap"}</strong> · ${gap.chapter || "chapter"} · ${gap.priority || "priority"}</div>
           <div>${gap.claim_text || ""}</div>
           <div class="muted">route: ${routeMeta}</div>
-          <div class="muted">queries: ${queries.join(" | ") || "none"}</div>
+          ${ladderHtml}
           <div class="muted">sources: ${sources.join(", ") || "auto"}</div>
           <div class="muted">${gap.route_reason || ""}</div>
           <div class="muted">${gap.skip ? `skipped: ${gap.skip_reason || "no reason"}` : (gap.rationale || "")}</div>

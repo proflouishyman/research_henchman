@@ -20,15 +20,8 @@ from ..contracts import (
 from ..store import now_utc
 from .analysis import _call_ollama
 from .pull import rank_sources_for_claim, source_capability_catalog, source_fit_reason
+from .search_policy import AccordionLadder, classify_and_build_ladder, query_quality_score
 
-LOW_QUALITY_QUERY_PATTERNS = [
-    r"\bsplit claims\b",
-    r"\btie .* evidence\b",
-    r"\bargument is highly compressed\b",
-    r"\brefine .* claim\b",
-    r"\bneeds evidence\b",
-    r"\bimprove manuscript\b",
-]
 STATISTICAL_SOURCE_IDS = {"world_bank", "fred", "oecd", "bea", "census", "bls", "ilostat"}
 QUALITATIVE_CLAIM_KINDS = {
     ClaimKind.HISTORICAL_NARRATIVE,
@@ -393,6 +386,9 @@ def _parse_planned_gaps(rows: object, gap_map: GapMap) -> List[PlannedGap]:
 
         preferred_rows = row.get("preferred_sources", [])
         preferred_sources = [str(item).strip() for item in preferred_rows if str(item).strip()] if isinstance(preferred_rows, list) else []
+        query_ladder = row.get("query_ladder", {})
+        if not isinstance(query_ladder, dict):
+            query_ladder = {}
 
         try:
             claim_kind = ClaimKind(str(row.get("claim_kind", ClaimKind.OTHER.value)).strip())
@@ -425,6 +421,7 @@ def _parse_planned_gaps(rows: object, gap_map: GapMap) -> List[PlannedGap]:
                 claim_kind=claim_kind,
                 evidence_need=evidence_need,
                 route_confidence=route_confidence,
+                query_ladder=query_ladder,
             )
         )
 
@@ -541,46 +538,29 @@ def _evidence_source_types(evidence_need: EvidenceNeed) -> List[SourceType]:
     return [SourceType.KEYED_API, SourceType.FREE_API, SourceType.PLAYWRIGHT]
 
 
-def _claim_routing_profile(gap: PlannedGap) -> Tuple[ClaimKind, EvidenceNeed, float]:
-    text = f"{gap.chapter} {gap.claim_text}".lower()
+def _claim_routing_profile(gap: PlannedGap, settings: OrchestratorSettings) -> Tuple[ClaimKind, EvidenceNeed, float]:
+    """Classify claim and build accordion ladder, caching by claim hash."""
 
-    if re.search(r"\b(law|regulation|statute|act|policy|court|legal)\b", text):
-        return (ClaimKind.LEGAL_REGULATORY, EvidenceNeed.LEGAL_TEXT, 0.84)
-
-    if re.search(r"\b(percent|rate|gdp|inflation|unemployment|wage|index|dollar|\d{4}|\d+%)\b", text):
-        if re.search(r"\b(worker|labor|employment|injury|wage|payroll|occupation)\b", text):
-            return (ClaimKind.QUANTITATIVE_LABOR, EvidenceNeed.OFFICIAL_STATISTICS, 0.88)
-        return (ClaimKind.QUANTITATIVE_MACRO, EvidenceNeed.OFFICIAL_STATISTICS, 0.86)
-
-    if re.search(r"\b(born|father|mother|friend|life|biograph|childhood)\b", text):
-        return (ClaimKind.BIOGRAPHICAL, EvidenceNeed.PRIMARY_SOURCE, 0.74)
-
-    if re.search(r"\b(company|firm|business|commerce|warehouse|platform|retail|market)\b", text):
-        return (ClaimKind.COMPANY_OPERATIONS, EvidenceNeed.NEWS_ARCHIVE, 0.68)
-
-    if re.search(r"\b(chapter|history|historical|merchant|century|archive)\b", text):
-        return (ClaimKind.HISTORICAL_NARRATIVE, EvidenceNeed.SCHOLARLY_SECONDARY, 0.72)
-
-    return (ClaimKind.OTHER, EvidenceNeed.MIXED, 0.46)
-
-
-def _query_quality_score(query: str) -> float:
-    raw = (query or "").strip()
-    if not raw:
-        return 0.0
-    q = raw.lower()
-
-    score = 1.0
-    if len(raw) < 12:
-        score -= 0.35
-    if len(raw.split()) < 3:
-        score -= 0.3
-    if any(re.search(pattern, q) for pattern in LOW_QUALITY_QUERY_PATTERNS):
-        score -= 0.7
-    if re.search(r"\b(split|refine|rewrite|improve)\b", q) and "source" not in q and "archive" not in q:
-        score -= 0.25
-
-    return max(0.0, min(1.0, score))
+    ck_str, en_str, conf, ladder = classify_and_build_ladder(
+        chapter=gap.chapter,
+        claim_text=gap.claim_text,
+        use_llm=settings.reflection_use_ollama,
+        model=settings.reflection_model,
+        base_url=settings.ollama_base_url,
+        timeout_seconds=min(settings.reflection_timeout_seconds, 25),
+        existing_queries=gap.search_queries[:] if gap.search_queries else None,
+        cache_dir=(settings.data_root / "search_policy_cache"),
+    )
+    gap.query_ladder = ladder.to_dict()
+    try:
+        claim_kind = ClaimKind(ck_str)
+    except ValueError:
+        claim_kind = ClaimKind.OTHER
+    try:
+        evidence_need = EvidenceNeed(en_str)
+    except ValueError:
+        evidence_need = EvidenceNeed.MIXED
+    return (claim_kind, evidence_need, conf)
 
 
 def _extract_keywords(text: str, limit: int = 6) -> List[str]:
@@ -632,49 +612,48 @@ def _fallback_queries(gap: PlannedGap, evidence_need: EvidenceNeed) -> List[str]
     return [f"{core} historical evidence", f"{core} supporting source"]
 
 
-def _clean_queries(gap: PlannedGap, evidence_need: EvidenceNeed) -> Tuple[List[str], float]:
-    candidates = gap.search_queries[:] if gap.search_queries else []
-    candidates = _explode_queries(candidates)
-    if not candidates:
-        candidates = _fallback_queries(gap, evidence_need)
+def _clean_queries(
+    gap: PlannedGap,
+    evidence_need: EvidenceNeed,
+    settings: OrchestratorSettings,
+) -> Tuple[List[str], float]:
+    """Normalize planning-time query list from stored query ladder."""
 
-    ranked: List[Tuple[float, str]] = []
-    seen = set()
-    for query in candidates:
-        q = str(query).strip()
-        if not q:
-            continue
-        key = q.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        ranked.append((_query_quality_score(q), q))
-
-    kept = [q for score, q in ranked if score >= 0.42]
-    if not kept:
-        kept = _fallback_queries(gap, evidence_need)
-        ranked = [(_query_quality_score(q), q) for q in kept]
+    ladder_dict = getattr(gap, "query_ladder", {}) or {}
+    if isinstance(ladder_dict, dict) and ladder_dict:
+        ladder = AccordionLadder.from_dict(ladder_dict)
+        ordered = ladder.queries_for_rung("constrained", synonym_cap=settings.pull_synonym_cap)
+        if not ordered:
+            ordered = ladder.queries_for_rung("contextual", synonym_cap=settings.pull_synonym_cap)
     else:
-        # Always include one broad fallback query so pulls can back off
-        # if highly specific strings return zero documents.
-        for fallback in _fallback_queries(gap, evidence_need):
-            key = fallback.lower()
-            if key in seen:
-                continue
-            kept.append(fallback)
-            seen.add(key)
-            if len(kept) >= 4:
-                break
+        ordered = []
 
-    avg = (sum(score for score, _ in ranked) / len(ranked)) if ranked else 0.0
-    return (kept[:4], avg)
+    if not ordered:
+        candidates = _explode_queries(gap.search_queries[:] if gap.search_queries else [])
+        ordered = candidates if candidates else _fallback_queries(gap, evidence_need)
+
+    # Ensure one broad backup query appears in plan if constrained terms are over-tight.
+    fallback_candidates = _fallback_queries(gap, evidence_need)
+    seen = {q.strip().lower() for q in ordered}
+    for fallback in fallback_candidates:
+        key = fallback.strip().lower()
+        if not key or key in seen:
+            continue
+        ordered.append(fallback)
+        seen.add(key)
+        if len(ordered) >= max(4, settings.pull_synonym_cap):
+            break
+
+    scores = [query_quality_score(q) for q in ordered]
+    avg = (sum(scores) / len(scores)) if scores else 0.0
+    return (ordered[: max(4, settings.pull_synonym_cap)], avg)
 
 
 def _apply_routing_policy(plan: ResearchPlan, availability: SourceAvailability, settings: OrchestratorSettings) -> None:
     """Assign claim/evidence types and enforce capability-based source routing."""
 
     for gap in plan.gaps:
-        claim_kind, evidence_need, claim_conf = _claim_routing_profile(gap)
+        claim_kind, evidence_need, claim_conf = _claim_routing_profile(gap, settings)
 
         # Policy typing is authoritative to prevent semantic drift from
         # low-quality LLM rows (e.g., historical claims routed as macro stats).
@@ -682,7 +661,7 @@ def _apply_routing_policy(plan: ResearchPlan, availability: SourceAvailability, 
         gap.evidence_need = evidence_need
 
         gap.source_types = _evidence_source_types(gap.evidence_need)
-        cleaned_queries, query_conf = _clean_queries(gap, gap.evidence_need)
+        cleaned_queries, query_conf = _clean_queries(gap, gap.evidence_need, settings)
         gap.search_queries = cleaned_queries
 
         preferred = rank_sources_for_claim(

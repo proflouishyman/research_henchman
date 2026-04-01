@@ -1,0 +1,104 @@
+{
+  "systems": {
+    "jhu": {
+      "name": "Johns Hopkins University",
+      "databases": [
+        {
+          "source_id": "jstor",
+          "name": "JSTOR",
+          "url": "https://databases.library.jhu.edu",
+          "source_type": "playwright",
+          "categories": ["history", "scholarly_journals"],
+          "claim_kinds": ["historical_narrative", "company_operations", "biographical", "legal_regulatory", "other"],
+          "evidence_needs": ["scholarly_secondary", "primary_source", "news_archive", "mixed"]
+        },
+        {
+          "source_id": "project_muse",
+          "name": "Project MUSE",
+          "url": "https://databases.library.jhu.edu",
+          "source_type": "playwright",
+          "categories": ["history", "humanities"],
+          "claim_kinds": ["historical_narrative", "company_operations", "biographical", "other"],
+          "evidence_needs": ["scholarly_secondary", "primary_source", "mixed"]
+        },
+        {
+          "source_id": "ebscohost",
+          "name": "EBSCOhost",
+          "url": "https://databases.library.jhu.edu",
+          "source_type": "playwright",
+          "categories": ["history", "multidisciplinary", "newspapers"],
+          "claim_kinds": ["historical_narrative", "legal_regulatory", "company_operations", "biographical", "other"],
+          "evidence_needs": ["scholarly_secondary", "primary_source", "news_archive", "legal_text", "mixed"]
+        },
+        {
+          "source_id": "proquest_historical_newspapers",
+          "name": "ProQuest Historical Newspapers",
+          "url": "https://databases.library.jhu.edu",
+          "source_type": "playwright",
+          "categories": ["history", "newspapers", "primary_sources"],
+          "claim_kinds": ["historical_narrative", "company_operations", "legal_regulatory", "biographical", "other"],
+          "evidence_needs": ["news_archive", "primary_source", "mixed"]
+        },
+        {
+          "source_id": "americas_historical_newspapers",
+          "name": "America's Historical Newspapers",
+          "url": "https://databases.library.jhu.edu",
+          "source_type": "playwright",
+          "categories": ["history", "newspapers", "primary_sources"],
+          "claim_kinds": ["historical_narrative", "company_operations", "biographical", "other"],
+          "evidence_needs": ["news_archive", "primary_source", "mixed"]
+        },
+        {
+          "source_id": "gale_primary_sources",
+          "name": "Gale Primary Sources",
+          "url": "https://databases.library.jhu.edu",
+          "source_type": "playwright",
+          "categories": ["history", "archives", "primary_sources"],
+          "claim_kinds": ["historical_narrative", "legal_regulatory", "company_operations", "biographical", "other"],
+          "evidence_needs": ["primary_source", "news_archive", "legal_text", "mixed"]
+        },
+        {
+          "source_id": "statista",
+          "name": "Statista",
+          "url": "https://databases.library.jhu.edu",
+          "source_type": "playwright",
+          "categories": ["statistics", "market_data"],
+          "claim_kinds": ["quantitative_macro", "company_operations"],
+          "evidence_needs": ["official_statistics", "news_archive"]
+        }
+      ]
+    },
+    "generic": {
+      "name": "Generic University Library",
+      "databases": [
+        {
+          "source_id": "ebscohost",
+          "name": "EBSCOhost",
+          "url": "https://example.edu/library/databases",
+          "source_type": "playwright",
+          "categories": ["multidisciplinary"],
+          "claim_kinds": ["historical_narrative", "legal_regulatory", "company_operations", "biographical", "other"],
+          "evidence_needs": ["scholarly_secondary", "primary_source", "news_archive", "legal_text", "mixed"]
+        },
+        {
+          "source_id": "jstor",
+          "name": "JSTOR",
+          "url": "https://example.edu/library/databases",
+          "source_type": "playwright",
+          "categories": ["history", "scholarly_journals"],
+          "claim_kinds": ["historical_narrative", "company_operations", "biographical", "legal_regulatory", "other"],
+          "evidence_needs": ["scholarly_secondary", "primary_source", "news_archive", "mixed"]
+        },
+        {
+          "source_id": "project_muse",
+          "name": "Project MUSE",
+          "url": "https://example.edu/library/databases",
+          "source_type": "playwright",
+          "categories": ["history", "humanities"],
+          "claim_kinds": ["historical_narrative", "company_operations", "biographical", "other"],
+          "evidence_needs": ["scholarly_secondary", "primary_source", "mixed"]
+        }
+      ]
+    }
+  }
+}

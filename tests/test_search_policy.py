@@ -207,6 +207,19 @@ class TestGetAccordionMove:
         move = get_accordion_move(ladder, "constrained", 0, result_count=15)
         assert move.action == "accept"
 
+    def test_low_nonzero_count_widens_when_below_min_accept(self):
+        ladder = self._ladder(has_synonyms=False)
+        move = get_accordion_move(
+            ladder,
+            "constrained",
+            0,
+            result_count=1,
+            min_accept_results=2,
+            synonym_cap=2,
+        )
+        assert move.action == "widen"
+        assert move.rung == "contextual"
+
     def test_accept_exactly_at_noise_threshold(self):
         ladder = self._ladder()
         move = get_accordion_move(ladder, "contextual", 0, result_count=50, noise_threshold=50)

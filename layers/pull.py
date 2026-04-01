@@ -50,6 +50,16 @@ QUERY_STOPWORDS = {
     "chapter",
 }
 
+_SOURCE_FAMILY_BY_PREFIX: Dict[str, str] = {
+    "ebsco_api": "ebsco",
+    "ebscohost": "ebsco",
+    "jstor": "jstor",
+    "project_muse": "muse",
+    "proquest_historical_newspapers": "proquest",
+    "americas_historical_newspapers": "readex",
+    "gale_primary_sources": "gale",
+}
+
 
 SOURCE_REGISTRY: Dict[str, PullAdapter] = {
     "world_bank": WorldBankAdapter(),
@@ -357,10 +367,85 @@ def rank_sources_for_claim(
         scored.append((score, source_id))
 
     scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
-    preferred = [source_id for score, source_id in scored if score >= 1.5]
+    preferred = _diversified_ranked_sources(
+        scored,
+        source_types=list(source_types or [SourceType.KEYED_API, SourceType.PLAYWRIGHT, SourceType.FREE_API]),
+        max_sources=max_sources,
+    )
     if preferred:
-        return preferred[:max_sources]
+        return preferred
     return []
+
+
+def _source_family(source_id: str) -> str:
+    """Map source IDs into coarse provider families for diversity balancing."""
+
+    source_id = source_id.strip().lower()
+    if source_id in _SOURCE_FAMILY_BY_PREFIX:
+        return _SOURCE_FAMILY_BY_PREFIX[source_id]
+    return source_id.split("_")[0] if "_" in source_id else source_id
+
+
+def _diversified_ranked_sources(
+    scored: List[tuple[float, str]],
+    source_types: List[SourceType],
+    max_sources: int,
+) -> List[str]:
+    """Select ranked sources with light diversity constraints.
+
+    Non-obvious logic:
+    - First pass picks the best semantic match per requested source type.
+    - Second pass fills remaining slots by score while limiting one family
+      from dominating all selected routes.
+    """
+
+    if max_sources <= 0:
+        return []
+
+    typed_rows: List[tuple[float, str, SourceType]] = []
+    for score, source_id in scored:
+        if score < 1.5:
+            continue
+        adapter = SOURCE_REGISTRY.get(source_id)
+        if adapter is None:
+            continue
+        typed_rows.append((score, source_id, adapter.source_type))
+
+    if not typed_rows:
+        return []
+
+    selected: List[str] = []
+    selected_set: set[str] = set()
+    family_counts: Dict[str, int] = {}
+
+    def _append(source_id: str) -> None:
+        if source_id in selected_set or len(selected) >= max_sources:
+            return
+        family = _source_family(source_id)
+        selected.append(source_id)
+        selected_set.add(source_id)
+        family_counts[family] = family_counts.get(family, 0) + 1
+
+    # Prioritize one best source per requested source type when available.
+    for source_type in source_types:
+        for _score, source_id, row_type in typed_rows:
+            if row_type != source_type:
+                continue
+            _append(source_id)
+            break
+        if len(selected) >= max_sources:
+            return selected
+
+    # Fill remaining slots with highest-ranked rows, capped at two per family.
+    for _score, source_id, _row_type in typed_rows:
+        family = _source_family(source_id)
+        if family_counts.get(family, 0) >= 2:
+            continue
+        _append(source_id)
+        if len(selected) >= max_sources:
+            break
+
+    return selected
 
 
 def source_fit_reason(claim_kind: ClaimKind, evidence_need: EvidenceNeed, preferred_sources: List[str]) -> str:
@@ -628,6 +713,7 @@ def _execute_with_accordion(
             current_synonym_idx,
             doc_count,
             noise_threshold=noise_threshold,
+            min_accept_results=max(1, settings.pull_min_accept_docs),
             synonym_cap=synonym_cap,
         )
 

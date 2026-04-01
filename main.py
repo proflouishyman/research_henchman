@@ -308,18 +308,76 @@ def _extract_linked_documents_from_json(json_path: Path, max_docs: int = 40) -> 
     out: List[Dict[str, Any]] = []
     seen: set[str] = set()
 
+    def _link_rank(row: Dict[str, Any]) -> tuple[int, str]:
+        # Explicit quality from adapter rows wins.
+        raw_rank = row.get("quality_rank")
+        try:
+            if raw_rank is not None:
+                return (int(str(raw_rank)), str(row.get("quality_label", "")))
+        except Exception:
+            pass
+
+        path = str(row.get("path", "")).strip()
+        url = str(row.get("url", "")).strip().lower()
+        source_key = str(row.get("source_key", "")).strip().lower()
+        link_type = str(row.get("link_type", "")).strip().lower()
+
+        if path:
+            ext = Path(path).suffix.lower()
+            if ext == ".pdf":
+                return (100, "high")
+            return (88, "high")
+
+        if "doi.org/" in url or source_key == "doi":
+            return (84, "medium")
+        if url.endswith(".pdf") or ".pdf?" in url:
+            return (82, "medium")
+        if link_type == "provider_search" or "search" in source_key:
+            return (20, "seed")
+        return (58, "medium")
+
     def _append(row: Dict[str, Any]) -> None:
         key = row.get("url") or row.get("path") or row.get("name") or row.get("title")
         stable = str(key or "").strip().lower()
         if not stable or stable in seen:
             return
         seen.add(stable)
+        rank, label = _link_rank(row)
+        row["quality_rank"] = rank
+        row["quality_label"] = label
         out.append(row)
 
     def _walk(node: Any, parent: Dict[str, Any] | None = None, depth: int = 0) -> None:
         if depth > 7 or len(out) >= max_docs:
             return
         if isinstance(node, dict):
+            # If adapter already emitted normalized link rows, preserve that row
+            # and its explicit quality metadata instead of reconstructing from keys.
+            direct_url = str(node.get("url", "")).strip()
+            direct_path = str(node.get("path", "")).strip()
+            if direct_url or direct_path:
+                title = _record_title(node) or _record_title(parent or {}) or "document"
+                row: Dict[str, Any] = {
+                    "title": title,
+                    "source_key": str(node.get("source_key", "")).strip(),
+                    "kind": str(node.get("kind", "")).strip() or ("external" if direct_url else "local"),
+                }
+                if direct_url.lower().startswith(("http://", "https://")):
+                    row["url"] = direct_url
+                if direct_path:
+                    local = _resolve_local_artifact(json_path.parent, direct_path)
+                    if local is not None:
+                        row["path"] = str(local)
+                        row["name"] = local.name
+                if node.get("quality_rank") is not None:
+                    row["quality_rank"] = node.get("quality_rank")
+                if node.get("quality_label") is not None:
+                    row["quality_label"] = node.get("quality_label")
+                if node.get("link_type") is not None:
+                    row["link_type"] = node.get("link_type")
+                _append(row)
+                # Continue scanning in case the row also includes nested content.
+
             title = _record_title(node) or _record_title(parent or {})
             for key, value in node.items():
                 if len(out) >= max_docs:
@@ -349,6 +407,13 @@ def _extract_linked_documents_from_json(json_path: Path, max_docs: int = 40) -> 
                 _walk(item, parent, depth + 1)
 
     _walk(payload)
+    out.sort(
+        key=lambda row: (
+            int(row.get("quality_rank", 0)),
+            str(row.get("title", "")),
+        ),
+        reverse=True,
+    )
     return out
 
 
@@ -382,12 +447,16 @@ def _run_document_packets(settings: OrchestratorSettings, rec_row: Dict[str, Any
                 if file_path.suffix.lower() == ".json":
                     linked_documents = _extract_linked_documents_from_json(file_path, max_docs=40)
                 else:
+                    ext = file_path.suffix.lower()
+                    quality_rank = 100 if ext == ".pdf" else 88
                     linked_documents = [
                         {
                             "kind": "local",
                             "title": file_path.name,
                             "path": path_str,
                             "name": file_path.name,
+                            "quality_rank": quality_rank,
+                            "quality_label": "high",
                         }
                     ]
                 packets.append(
@@ -425,6 +494,8 @@ def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], 
                     "artifact_type": packet.get("artifact_type", ""),
                     "name": item.get("name") or item.get("title") or "document",
                     "kind": item.get("kind", ""),
+                    "quality_rank": item.get("quality_rank", 0),
+                    "quality_label": item.get("quality_label", ""),
                 }
                 if item.get("path"):
                     row["path"] = item.get("path")
@@ -446,10 +517,19 @@ def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], 
                 "name": packet.get("name", ""),
                 "raw_packet": True,
                 "kind": "local",
+                "quality_rank": 5,
+                "quality_label": "seed",
             }
         )
         if len(rows) >= max_files:
             return rows
+    rows.sort(
+        key=lambda row: (
+            int(str(row.get("quality_rank", 0)) or "0"),
+            str(row.get("name", "")),
+        ),
+        reverse=True,
+    )
     return rows
 
 

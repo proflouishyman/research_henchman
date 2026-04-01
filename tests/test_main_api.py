@@ -184,3 +184,92 @@ def test_documents_endpoint_extracts_linked_docs_from_json_packet(tmp_path, monk
     docs = payload.get("documents", [])
     assert docs
     assert any(row.get("url") == "https://example.org/paper.pdf" for row in docs)
+    assert any("quality_label" in row for row in docs)
+    assert any("quality_rank" in row for row in docs)
+
+
+def test_documents_endpoint_preserves_quality_metadata_and_order(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state_dir = tmp_path / "state"
+    uploads = state_dir / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+
+    artifact_root = workspace / "pull_outputs" / "run_test_quality" / "AUTO-01-G1" / "ebsco_api"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    (artifact_root / "matched_source.pdf").write_text("pdf", encoding="utf-8")
+    artifact_file = artifact_root / "packet.json"
+    artifact_file.write_text(
+        json.dumps(
+            [
+                {
+                    "title": "ebsco search results",
+                    "url": "https://search.ebscohost.com/login.aspx?direct=true&bquery=test",
+                    "quality_label": "seed",
+                    "quality_rank": 20,
+                },
+                {
+                    "title": "Matched Source",
+                    "path": "matched_source.pdf",
+                    "quality_label": "high",
+                    "quality_rank": 100,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
+    monkeypatch.setenv("ORCH_PULL_OUTPUT_ROOT", "pull_outputs")
+
+    store = OrchestratorStore(state_dir)
+    monkeypatch.setattr(orchestrator_main, "store", store)
+    monkeypatch.setattr(orchestrator_main, "UPLOAD_DIR", uploads)
+
+    rec = RunRecord(
+        run_id="run_test_quality",
+        manuscript_path="Manuscript/sample.txt",
+        status=RunStatus.COMPLETE,
+        stage_detail="Run complete",
+    )
+    rec.pull_results = [
+        GapPullResult(
+            gap_id="AUTO-01-G1",
+            planned_gap=PlannedGap(
+                gap_id="AUTO-01-G1",
+                chapter="Chapter One",
+                claim_text="Claim",
+                gap_type=GapType.IMPLICIT,
+                priority=GapPriority.MEDIUM,
+                search_queries=["example query"],
+                source_types=[SourceType.KEYED_API],
+                preferred_sources=["ebsco_api"],
+            ),
+            results=[
+                SourceResult(
+                    source_id="ebsco_api",
+                    source_type=SourceType.KEYED_API,
+                    query="example query",
+                    gap_id="AUTO-01-G1",
+                    document_count=2,
+                    run_dir=str(artifact_root),
+                    artifact_type="json_records",
+                    status="completed",
+                )
+            ],
+            total_documents=2,
+            sources_attempted=["ebsco_api"],
+            sources_succeeded=["ebsco_api"],
+            sources_failed=[],
+            status="completed",
+        )
+    ]
+    store.upsert_run(run_record_to_dict(rec))
+    client = TestClient(orchestrator_main.app)
+
+    docs_resp = client.get("/api/orchestrator/runs/run_test_quality/documents")
+    assert docs_resp.status_code == 200
+    docs = docs_resp.json().get("documents", [])
+    assert docs
+    assert docs[0].get("quality_label") == "high"
+    assert "matched_source.pdf" in str(docs[0].get("path", ""))

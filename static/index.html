@@ -292,6 +292,36 @@
       margin-top: 8px;
     }
 
+    .quality-pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid var(--line);
+      margin-right: 6px;
+    }
+
+    .quality-high {
+      color: #1e5d46;
+      background: #e8f4ee;
+      border-color: #90c2aa;
+    }
+
+    .quality-medium {
+      color: #6a4f20;
+      background: #fff3de;
+      border-color: #d9bb7f;
+    }
+
+    .quality-seed {
+      color: #5b5550;
+      background: #efe6d8;
+      border-color: #cdb99a;
+    }
+
     .doc-link {
       color: #1f5f47;
       font-weight: 700;
@@ -651,7 +681,20 @@
         const linked = Array.isArray(packet.linked_documents) ? packet.linked_documents.length : 0;
         return acc + linked;
       }, 0);
-      setText("docs_status", `${packets.length || rows.length} source packets · ${linkedCount || rows.length} linked documents.`);
+      const qualityCounts = packets.reduce((acc, packet) => {
+        const linked = Array.isArray(packet.linked_documents) ? packet.linked_documents : [];
+        linked.forEach((item) => {
+          const label = String(item.quality_label || "seed").toLowerCase();
+          if (label === "high") acc.high += 1;
+          else if (label === "medium") acc.medium += 1;
+          else acc.seed += 1;
+        });
+        return acc;
+      }, { high: 0, medium: 0, seed: 0 });
+      setText(
+        "docs_status",
+        `${packets.length || rows.length} source packets · ${linkedCount || rows.length} linked documents · high ${qualityCounts.high} · medium ${qualityCounts.medium} · seed ${qualityCounts.seed}`
+      );
       list.innerHTML = "";
       if (!packets.length) {
         rows.forEach((doc) => {
@@ -698,9 +741,11 @@
               const row = document.createElement("div");
               row.className = "doc-row";
               const href = item.url || (item.path ? `/api/orchestrator/files?path=${encodeURIComponent(item.path)}` : "");
+              const qualityLabel = String(item.quality_label || "seed").toLowerCase();
+              const qualityClass = qualityLabel === "high" ? "quality-high" : (qualityLabel === "medium" ? "quality-medium" : "quality-seed");
               row.innerHTML = `
-                <div>${href ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${href}\">${item.title || item.name || "document"}</a>` : `<strong>${item.title || item.name || "document"}</strong>`}</div>
-                <div class="muted">${item.kind || ""}${item.source_key ? ` · ${item.source_key}` : ""}</div>
+                <div><span class="quality-pill ${qualityClass}">${qualityLabel}</span>${href ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${href}\">${item.title || item.name || "document"}</a>` : `<strong>${item.title || item.name || "document"}</strong>`}</div>
+                <div class="muted">${item.kind || ""}${item.source_key ? ` · ${item.source_key}` : ""}${item.quality_rank ? ` · rank ${item.quality_rank}` : ""}</div>
               `;
               linkList.appendChild(row);
             });

@@ -48,6 +48,7 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - auto-expanded log while active with live event count/stage header
   - post-run document list with click-through links to pulled artifact files
   - pulled documents shown as collapsible source packets; packet JSON is parsed for linked document targets so users see source docs (PDF/web/DOI) first
+  - linked documents are quality-ranked (`high`, `medium`, `seed`) so direct/local PDFs and strong document links appear above provider-search seed links
   - plan cards show route details (`claim_kind`, `evidence_need`, confidence, review status)
 
 ## Configuration
@@ -67,6 +68,7 @@ Environment controls all behavior (`app/config.py`):
 - Source semantics are declared in `SOURCE_CAPABILITIES`; add/update capability tags so routing can match claim type to source family.
 - Pull execution includes a bounded query backoff ladder (split compound queries, then broaden) before marking a source attempt as exhausted.
 - Seed adapters for EBSCO/Playwright now emit normalized click-through links (`url` and best-effort local `path`) so packet extraction can render document links even before full site-specific automation is complete.
+- Document indexing preserves adapter-provided quality metadata (`quality_rank`, `quality_label`) and sorts flattened run-document rows by quality so high-confidence links remain first even when mixed with raw artifact files.
 
 ## University profile coverage
 - Playwright adapter IDs currently implemented for history/library workflows:

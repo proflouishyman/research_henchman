@@ -12,7 +12,7 @@ import os
 import re
 import urllib.parse
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 
 INDEX_REL_PATH = Path("codex/analysis_cache/source_index_summary.txt")
@@ -40,6 +40,29 @@ STOPWORDS = {
     "chapter",
     "manuscript",
     "evidence",
+}
+GENERIC_QUERY_TERMS = {
+    "section",
+    "contains",
+    "unsupported",
+    "claims",
+    "claim",
+    "citation",
+    "citations",
+    "anchors",
+    "assertions",
+    "data",
+    "numbers",
+    "sources",
+    "source",
+    "references",
+    "analysis",
+    "argument",
+    "historical",
+    "narrative",
+    "legal",
+    "regulatory",
+    "text",
 }
 DOC_EXTS = {".pdf", ".PDF", ".doc", ".docx", ".html", ".htm", ".txt", ".md"}
 
@@ -112,14 +135,18 @@ def _load_index_paths(root: Path, max_rows: int = 5000) -> List[Path]:
     return out
 
 
-def local_document_candidates(query: str, limit: int = 5) -> List[Path]:
+def local_document_candidates(query: str, limit: int = 5) -> List[Tuple[Path, float]]:
     """Find best local corpus documents for a query using token overlap."""
 
     root = _workspace_root()
     tokens = _tokenize(query)
     if not tokens:
         return []
-    token_set = set(tokens)
+    informative = [tok for tok in tokens if tok not in GENERIC_QUERY_TERMS and len(tok) >= 4]
+    # Do not manufacture high-quality local links from generic fallback prose.
+    if len(informative) < 2:
+        return []
+    token_set = set(informative)
 
     scored: List[tuple[float, Path]] = []
     for path in _load_index_paths(root):
@@ -129,30 +156,34 @@ def local_document_candidates(query: str, limit: int = 5) -> List[Path]:
         if not overlap:
             continue
         score = float(len(overlap))
+        score += (len(overlap) / max(1, len(token_set))) * 2.0
         if path.suffix.lower() == ".pdf":
             score += 0.5
         if "research" in context.lower():
             score += 0.25
+        if score < 2.0:
+            continue
         scored.append((score, path))
 
     scored.sort(key=lambda row: (row[0], str(row[1])), reverse=True)
-    return [path for _score, path in scored[:limit]]
+    return [(path, score) for score, path in scored[:limit]]
 
 
 def build_link_rows(source_id: str, query: str, gap_id: str, limit_local: int = 5) -> List[Dict[str, str]]:
-    """Build normalized link rows with provider URL plus local document candidates."""
+    """Build normalized link rows ordered by evidence quality.
 
-    rows: List[Dict[str, str]] = [
-        {
-            "title": f"{source_id} search results",
-            "url": provider_search_url(source_id, query),
-            "query": query,
-            "gap_id": gap_id,
-            "link_type": "provider_search",
-        }
-    ]
+    Quality hierarchy:
+    - `local_corpus` PDFs / full docs (highest)
+    - other local corpus docs
+    - provider search links (lowest; fallback seed)
+    """
 
-    for path in local_document_candidates(query, limit=limit_local):
+    rows: List[Dict[str, str]] = []
+
+    for path, score in local_document_candidates(query, limit=limit_local):
+        ext = path.suffix.lower()
+        quality_rank = 100 if ext == ".pdf" else 88
+        quality_rank += int(min(score, 8.0))
         rows.append(
             {
                 "title": path.stem.replace("_", " "),
@@ -160,8 +191,22 @@ def build_link_rows(source_id: str, query: str, gap_id: str, limit_local: int = 
                 "query": query,
                 "gap_id": gap_id,
                 "link_type": "local_corpus",
+                "quality_label": "high",
+                "quality_rank": str(quality_rank),
             }
         )
+
+    rows.append(
+        {
+            "title": f"{source_id} search results",
+            "url": provider_search_url(source_id, query),
+            "query": query,
+            "gap_id": gap_id,
+            "link_type": "provider_search",
+            "quality_label": "seed",
+            "quality_rank": "20",
+        }
+    )
 
     # Dedupe by link target while preserving order.
     out: List[Dict[str, str]] = []
@@ -173,4 +218,12 @@ def build_link_rows(source_id: str, query: str, gap_id: str, limit_local: int = 
             continue
         seen.add(stable)
         out.append(row)
+
+    out.sort(
+        key=lambda row: (
+            int(str(row.get("quality_rank", "0")) or "0"),
+            str(row.get("title", "")),
+        ),
+        reverse=True,
+    )
     return out

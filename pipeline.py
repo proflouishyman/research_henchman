@@ -1,35 +1,42 @@
-"""Pipeline orchestration logic for pull -> ingest -> llm stages."""
+"""Pipeline orchestrator for v2 layered run execution."""
 
 from __future__ import annotations
 
-import os
-import json
-import subprocess
-import sys
+import re
 import traceback
-from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-from .adapters import PullRunArtifact, build_pull_adapter, validate_artifact_run_dir
-from .config import OrchestratorSettings, required_connection_fields
+from .config import OrchestratorSettings
+from .contracts import RunStatus, run_record_from_dict, run_record_to_dict
+from .layers.analysis import analyze_manuscript
+from .layers.fit import fit_gap
+from .layers.ingest import ingest_gap_result
+from .layers.pull import build_source_availability, pull_for_plan
+from .layers.reflection import reflect_on_gaps
 from .store import OrchestratorStore, now_utc
 
 
-def _mask_env_value(value: str) -> str:
-    if not value:
-        return ""
-    if len(value) <= 4:
-        return "*" * len(value)
-    return value[:2] + "*" * (len(value) - 4) + value[-2:]
+SECRET_KEY_RE = re.compile(r"(PASSWORD|KEY|TOKEN|SECRET)", re.IGNORECASE)
 
 
-def _required_env_for_run(settings: OrchestratorSettings, mode: str, provider: str) -> List[str]:
-    fields = required_connection_fields(mode=mode, provider=provider)
-    required_keys = [str(row["key"]) for row in fields if bool(row.get("required"))]
-    return required_keys
+def _scrub_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Redact secret-like fields recursively before event persistence."""
+
+    out: Dict[str, Any] = {}
+    for key, value in meta.items():
+        if SECRET_KEY_RE.search(str(key)):
+            out[str(key)] = "***"
+            continue
+        if isinstance(value, dict):
+            out[str(key)] = _scrub_meta(value)
+        elif isinstance(value, list):
+            out[str(key)] = ["***" if SECRET_KEY_RE.search(str(key)) else item for item in value]
+        else:
+            out[str(key)] = value
+    return out
 
 
-def emit_event(
+def _emit_event(
     store: OrchestratorStore,
     *,
     run_id: str,
@@ -38,163 +45,18 @@ def emit_event(
     message: str,
     meta: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Append structured run event for frontend timeline/log rendering."""
-    event = {
+    """Append one structured run event."""
+
+    payload = {
         "event_id": f"evt_{run_id}_{now_utc()}",
         "run_id": run_id,
         "stage": stage,
         "status": status,
         "message": message,
-        "meta": meta or {},
+        "meta": _scrub_meta(meta or {}),
         "ts_utc": now_utc(),
     }
-    return store.append_event(event)
-
-
-def _update_run_stage(store: OrchestratorStore, run_id: str, *, status: str, stage: str, **extra: Any) -> Dict[str, Any]:
-    rec = store.get_run(run_id) or {"run_id": run_id, "created_at": now_utc()}
-    rec.update(extra)
-    rec["status"] = status
-    rec["stage"] = stage
-    rec["updated_at"] = now_utc()
-    return store.upsert_run(rec)
-
-
-def _validate_preflight(settings: OrchestratorSettings, payload: Dict[str, Any]) -> None:
-    """Fail fast on missing required env and unavailable scripts."""
-    mode = str(payload.get("pull_mode", settings.pull_mode))
-    provider = str(payload.get("pull_provider", settings.pull_provider))
-
-    missing: List[str] = []
-    for key in _required_env_for_run(settings, mode=mode, provider=provider):
-        if not str(os.environ.get(key, "")).strip():
-            missing.append(key)
-    if missing:
-        raise RuntimeError(f"Missing required env keys: {', '.join(sorted(missing))}")
-
-    if settings.auto_ingest:
-        if not settings.ingest_ebsco_script.exists():
-            raise RuntimeError(f"Missing ingest script: {settings.ingest_ebsco_script}")
-        if not settings.ingest_external_script.exists():
-            raise RuntimeError(f"Missing ingest script: {settings.ingest_external_script}")
-    if settings.auto_llm_fit and settings.llm_backend == "ollama" and not settings.llm_script.exists():
-        raise RuntimeError(f"Missing llm script: {settings.llm_script}")
-
-
-def _run_ingest_stage(settings: OrchestratorSettings, artifact: PullRunArtifact) -> Dict[str, Any]:
-    """Run the correct incremental ingester based on artifact type."""
-    validate_artifact_run_dir(settings, artifact)
-    workspace = settings.workspace
-
-    if artifact.artifact_type == "ebsco_manifest_pair":
-        cmd = [
-            sys.executable,
-            str(settings.ingest_ebsco_script),
-            "--workspace",
-            str(workspace),
-            "--run-id",
-            artifact.run_id,
-        ]
-    elif artifact.artifact_type == "external_packet":
-        cmd = [
-            sys.executable,
-            str(settings.ingest_external_script),
-            "--workspace",
-            str(workspace),
-            "--run-id",
-            artifact.run_id,
-        ]
-    else:
-        raise RuntimeError(
-            f"unsupported artifact_type '{artifact.artifact_type}' (expected ebsco_manifest_pair|external_packet)"
-        )
-
-    proc = subprocess.run(
-        cmd,
-        cwd=str(workspace),
-        capture_output=True,
-        text=True,
-        timeout=max(60, int(settings.ingest_timeout_seconds)),
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"ingest failed code={proc.returncode}: {(proc.stderr or '').strip()[:800]}")
-
-    return {
-        "artifact_type": artifact.artifact_type,
-        "run_id": artifact.run_id,
-        "command": " ".join(cmd),
-        "stdout_tail": (proc.stdout or "").strip()[-600:],
-    }
-
-
-def _is_already_ingested(settings: OrchestratorSettings, artifact: PullRunArtifact) -> bool:
-    """Check ingest registry to avoid repeating expensive ingest work.
-
-    Non-obvious logic:
-    - The evidence hub stores ingest records by `run_id` in ingest_runs.json.
-      If the current artifact run already exists there, ingest can be safely
-      skipped for idempotent re-runs.
-    """
-    ingest_registry = settings.workspace / "codex" / "evidence_hub" / "data" / "ingest_runs.json"
-    if not ingest_registry.exists():
-        return False
-    try:
-        payload = json.loads(ingest_registry.read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    if not isinstance(payload, dict):
-        return False
-    rec = payload.get(artifact.run_id)
-    return isinstance(rec, dict)
-
-
-def _run_llm_stage(settings: OrchestratorSettings, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Run LLM fit generation with current environment-driven defaults."""
-    if settings.llm_backend == "none":
-        return {"skipped": True, "reason": "llm_backend=none"}
-    if settings.llm_backend != "ollama":
-        raise RuntimeError(f"Unsupported llm backend for MVP: {settings.llm_backend}")
-
-    cmd = [
-        sys.executable,
-        str(settings.llm_script),
-        "--workspace",
-        str(settings.workspace),
-        "--model",
-        settings.llm_model,
-        "--base-url",
-        settings.ollama_base_url,
-        "--ctx",
-        str(settings.llm_ctx),
-        "--source-char-cap",
-        str(settings.llm_source_char_cap),
-        "--timeout-seconds",
-        str(settings.llm_timeout_seconds),
-        "--temperature",
-        str(settings.llm_temperature),
-    ]
-    gap_id = str(payload.get("gap_id", "")).strip()
-    if gap_id:
-        cmd.extend(["--gap-id", gap_id])
-
-    proc = subprocess.run(
-        cmd,
-        cwd=str(settings.workspace),
-        capture_output=True,
-        text=True,
-        timeout=max(60, int(settings.llm_timeout_seconds) * 20),
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"llm fit failed code={proc.returncode}: {(proc.stderr or '').strip()[:800]}")
-
-    return {
-        "command": " ".join(cmd),
-        "llm_model": settings.llm_model,
-        "llm_backend": settings.llm_backend,
-        "stdout_tail": (proc.stdout or "").strip()[-800:],
-    }
+    return store.append_event(payload)
 
 
 def run_orchestration(
@@ -203,185 +65,169 @@ def run_orchestration(
     *,
     run_id: str,
 ) -> None:
-    """Execute pipeline with strict stage ordering and event logging."""
-    run_rec = store.get_run(run_id)
-    if not run_rec:
+    """Execute full pipeline for one run ID.
+
+    Stage sequence:
+    1. analyze manuscript
+    2. reflect plan
+    3. pull
+    4. ingest
+    5. fit
+    """
+
+    rec_row = store.get_run(run_id)
+    if not isinstance(rec_row, dict):
         return
-    payload = run_rec.get("payload", {})
-    if not isinstance(payload, dict):
-        payload = {}
+    rec = run_record_from_dict(rec_row)
+
+    def emit(stage: str, status: str, message: str, meta: Dict[str, Any] | None = None) -> None:
+        _emit_event(store, run_id=run_id, stage=stage, status=status, message=message, meta=meta)
+
+    def save(status: RunStatus, detail: str = "", **extra: Any) -> None:
+        rec.status = status
+        rec.stage_detail = detail
+        rec.updated_at = now_utc()
+        for key, value in extra.items():
+            setattr(rec, key, value)
+        store.upsert_run(run_record_to_dict(rec))
 
     try:
-        _update_run_stage(store, run_id, status="validating_config", stage="validating_config")
-        emit_event(store, run_id=run_id, stage="validating_config", status="started", message="Validating config")
-        _validate_preflight(settings, payload)
-        emit_event(store, run_id=run_id, stage="validating_config", status="completed", message="Preflight passed")
-
-        _update_run_stage(store, run_id, status="planning", stage="planning")
-        emit_event(store, run_id=run_id, stage="planning", status="started", message="Planning run")
-        emit_event(
-            store,
-            run_id=run_id,
-            stage="planning",
-            status="completed",
-            message="Planning complete",
-            meta={
-                "pull_mode": payload.get("pull_mode", settings.pull_mode),
-                "pull_provider": payload.get("pull_provider", settings.pull_provider),
+        save(RunStatus.ANALYZING, "Reading manuscript and identifying gaps")
+        emit("analyzing", "started", "Starting manuscript analysis")
+        gap_map = analyze_manuscript(rec.manuscript_path, settings, refresh=rec.force)
+        rec.gap_map = gap_map
+        save(RunStatus.ANALYZING, f"Found {len(gap_map.gaps)} gaps")
+        emit(
+            "analyzing",
+            "completed",
+            f"Found {len(gap_map.gaps)} gaps",
+            {
+                "explicit": gap_map.explicit_count,
+                "implicit": gap_map.implicit_count,
+                "analysis_method": gap_map.analysis_method,
+                "analysis_model": gap_map.analysis_model,
+                "fallback_reason": gap_map.fallback_reason,
             },
         )
-
-        _update_run_stage(store, run_id, status="pulling", stage="pulling")
-        adapter = build_pull_adapter(str(payload.get("pull_mode", settings.pull_mode)), settings)
-        emit_event(
-            store,
-            run_id=run_id,
-            stage="pulling",
-            status="started",
-            message="Starting pull stage",
-            meta={
-                "pull_mode": str(payload.get("pull_mode", settings.pull_mode)),
-                "pull_provider": str(payload.get("pull_provider", settings.pull_provider)),
-                "pull_command": getattr(adapter, "command_template", ""),
-            },
-        )
-        artifact = adapter.run(payload=payload, settings=settings)
-        emit_event(
-            store,
-            run_id=run_id,
-            stage="pulling",
-            status="completed",
-            message="Pull stage completed",
-            meta={
-                "run_id": artifact.run_id,
-                "run_dir": artifact.run_dir,
-                "artifact_type": artifact.artifact_type,
-                "provider": artifact.provider,
-                "stats": artifact.stats,
-            },
-        )
-        _update_run_stage(
-            store,
-            run_id,
-            status="pulling_completed",
-            stage="pulling",
-            artifact={
-                "run_id": artifact.run_id,
-                "run_dir": artifact.run_dir,
-                "provider": artifact.provider,
-                "artifact_type": artifact.artifact_type,
-                "stats": artifact.stats,
-            },
-        )
-
-        ingest_result: Dict[str, Any] = {}
-        if settings.auto_ingest:
-            _update_run_stage(store, run_id, status="ingesting", stage="ingesting")
-            emit_event(
-                store,
-                run_id=run_id,
-                stage="ingesting",
-                status="started",
-                message="Starting ingest stage",
-                meta={
-                    "artifact_type": artifact.artifact_type,
-                    "run_id": artifact.run_id,
-                    "run_dir": artifact.run_dir,
-                },
-            )
-            if bool(payload.get("force")):
-                ingest_result = _run_ingest_stage(settings, artifact)
-                emit_event(
-                    store,
-                    run_id=run_id,
-                    stage="ingesting",
-                    status="completed",
-                    message="Ingest stage completed",
-                    meta=ingest_result,
-                )
-            elif _is_already_ingested(settings, artifact):
-                ingest_result = {
-                    "skipped": True,
-                    "reason": "already_ingested",
-                    "run_id": artifact.run_id,
-                    "artifact_type": artifact.artifact_type,
-                }
-                emit_event(
-                    store,
-                    run_id=run_id,
-                    stage="ingesting",
-                    status="skipped",
-                    message="Ingest stage skipped (already ingested run)",
-                    meta=ingest_result,
-                )
-            else:
-                ingest_result = _run_ingest_stage(settings, artifact)
-                emit_event(
-                    store,
-                    run_id=run_id,
-                    stage="ingesting",
-                    status="completed",
-                    message="Ingest stage completed",
-                    meta=ingest_result,
-                )
-
-        llm_result: Dict[str, Any] = {}
-        if settings.auto_llm_fit:
-            _update_run_stage(store, run_id, status="llm_processing", stage="llm_processing")
-            emit_event(
-                store,
-                run_id=run_id,
-                stage="llm_processing",
-                status="started",
-                message="Starting LLM fit stage",
-                meta={"llm_model": settings.llm_model, "llm_backend": settings.llm_backend},
-            )
-            llm_result = _run_llm_stage(settings, payload=payload)
-            emit_event(
-                store,
-                run_id=run_id,
-                stage="llm_processing",
-                status="completed",
-                message="LLM fit stage completed",
-                meta=llm_result,
-            )
-
-        _update_run_stage(
-            store,
-            run_id,
-            status="completed",
-            stage="completed",
-            result={
-                "artifact": artifact.__dict__,
-                "ingest": ingest_result,
-                "llm_fit": llm_result,
-                "masked_config": {
-                    "llm_model": settings.llm_model,
-                    "llm_backend": settings.llm_backend,
-                    "ollama_base_url": settings.ollama_base_url,
-                    "playwright_cdp_url": settings.playwright_cdp_url,
-                    "api_pull_command": _mask_env_value(settings.api_pull_command),
-                    "playwright_pull_command": _mask_env_value(settings.playwright_pull_command),
-                },
-            },
-            error=None,
-        )
-        emit_event(store, run_id=run_id, stage="completed", status="completed", message="Run completed")
-    except Exception as exc:
-        _update_run_stage(
-            store,
-            run_id,
-            status="failed",
-            stage="failed",
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        emit_event(
-            store,
-            run_id=run_id,
-            stage="failed",
-            status="failed",
-            message=f"Run failed: {type(exc).__name__}: {exc}",
-            meta={"traceback": traceback.format_exc()[-4000:]},
-        )
+    except Exception as exc:  # noqa: BLE001 - hard fail stage.
+        save(RunStatus.FAILED, str(exc)[:200], error=str(exc)[:200])
+        emit("analyzing", "failed", str(exc)[:200], {"traceback": traceback.format_exc()[-1200:]})
         if settings.fail_fast:
             raise
+        return
+
+    availability = build_source_availability(settings)
+    if availability.playwright_unavailable_reason:
+        emit("setup", "warning", availability.playwright_unavailable_reason)
+    if availability.missing_keys:
+        emit("setup", "warning", "Some keyed API credentials are missing", {"missing_keys": availability.missing_keys})
+
+    try:
+        save(RunStatus.PLANNING, "Local LLM reviewing gap map and planning research")
+        emit("planning", "started", "LLM reflecting on gaps and source availability")
+
+        plan = reflect_on_gaps(gap_map, availability, run_id, settings)
+        rec.research_plan = plan
+        active = sum(1 for gap in plan.gaps if not gap.skip)
+        skipped = sum(1 for gap in plan.gaps if gap.skip)
+        save(RunStatus.PLANNING, f"Plan ready: {active} gaps to pull, {skipped} skipped")
+        emit(
+            "planning",
+            "completed",
+            plan.plan_summary,
+            {
+                "active_gaps": active,
+                "skipped_gaps": skipped,
+                "estimated_pulls": plan.estimated_pull_count,
+                "method": plan.reflection_method,
+                "routing_method": plan.routing_method,
+                "review_required": plan.review_required_count,
+                "review_resolved": plan.review_resolved_count,
+            },
+        )
+        if plan.review_required_count:
+            emit(
+                "planning",
+                "warning",
+                f"Routing review flagged {plan.review_required_count} gap(s)",
+                {"review_required": plan.review_required_count, "review_resolved": plan.review_resolved_count},
+            )
+    except Exception as exc:  # noqa: BLE001 - hard fail stage.
+        save(RunStatus.FAILED, str(exc)[:200], error=str(exc)[:200])
+        emit("planning", "failed", str(exc)[:200], {"traceback": traceback.format_exc()[-1200:]})
+        if settings.fail_fast:
+            raise
+        return
+
+    try:
+        save(RunStatus.PULLING, "Executing research pulls")
+        emit("pulling", "started", "Starting pull stage")
+
+        def emit_pull(stage: str, status: str, message: str, meta: Dict[str, Any] | None = None) -> None:
+            emit(stage, status, message, meta)
+            if stage == "pulling" and status == "progress":
+                save(RunStatus.PULLING, message)
+
+        pull_results = pull_for_plan(plan, settings, emit_pull, run_id)
+        rec.pull_results = pull_results
+
+        unresolvable = sum(1 for row in pull_results if row.status == "unresolvable")
+        total_docs = sum(row.total_documents for row in pull_results)
+        save(RunStatus.PULLING, f"Pulled {total_docs} documents, {unresolvable} gaps unresolvable")
+        emit(
+            "pulling",
+            "completed",
+            "Pull complete",
+            {"total_documents": total_docs, "unresolvable_gaps": unresolvable},
+        )
+    except Exception as exc:  # noqa: BLE001 - hard fail stage.
+        save(RunStatus.FAILED, str(exc)[:200], error=str(exc)[:200])
+        emit("pulling", "failed", str(exc)[:200], {"traceback": traceback.format_exc()[-1200:]})
+        if settings.fail_fast:
+            raise
+        return
+
+    ingest_results = []
+    try:
+        save(RunStatus.INGESTING, "Ingesting pulled documents")
+        emit("ingesting", "started", f"Ingesting {len(pull_results)} gap result sets")
+
+        for idx, result in enumerate(pull_results, start=1):
+            detail = f"Ingesting gap {idx}/{len(pull_results)}: {result.gap_id}"
+            save(RunStatus.INGESTING, detail)
+            emit("ingesting", "progress", detail, {"gap_id": result.gap_id, "position": f"{idx}/{len(pull_results)}"})
+            ingest_results.append(ingest_gap_result(result, settings, run_id))
+
+        rec.ingest_results = ingest_results
+        ingested = sum(1 for row in ingest_results if row.ingested)
+        save(RunStatus.INGESTING, f"Ingested {ingested}/{len(ingest_results)} gaps")
+        emit("ingesting", "completed", "Ingestion complete", {"ingested": ingested, "total": len(ingest_results)})
+    except Exception as exc:  # noqa: BLE001 - hard fail stage.
+        save(RunStatus.FAILED, str(exc)[:200], error=str(exc)[:200])
+        emit("ingesting", "failed", str(exc)[:200], {"traceback": traceback.format_exc()[-1200:]})
+        if settings.fail_fast:
+            raise
+        return
+
+    fit_results = []
+    if settings.auto_llm_fit:
+        try:
+            save(RunStatus.FITTING, "Running LLM fit scoring")
+            emit("fitting", "started", "Scoring document-gap fit with LLM")
+
+            for idx, ingest_result in enumerate(ingest_results, start=1):
+                detail = f"Scoring fit for gap {idx}/{len(ingest_results)}: {ingest_result.gap_id}"
+                save(RunStatus.FITTING, detail)
+                emit("fitting", "progress", detail, {"gap_id": ingest_result.gap_id, "position": f"{idx}/{len(ingest_results)}"})
+                fit_results.append(fit_gap(ingest_result, settings, run_id))
+
+            rec.fit_results = fit_results
+            links_scored = sum(row.links_scored for row in fit_results)
+            emit("fitting", "completed", "Fit scoring complete", {"links_scored": links_scored})
+        except Exception as exc:  # noqa: BLE001 - fit failure does not fail run.
+            emit("fitting", "failed", str(exc)[:200], {"traceback": traceback.format_exc()[-1200:]})
+
+    had_unresolvable = any(row.status == "unresolvable" for row in pull_results)
+    final_status = RunStatus.PARTIAL if had_unresolvable else RunStatus.COMPLETE
+    save(final_status, "Run complete")
+    emit("complete", "completed", f"Pipeline finished with status: {final_status.value}")

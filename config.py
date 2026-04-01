@@ -157,6 +157,7 @@ class OrchestratorSettings:
     pull_noise_threshold_keyed_api: int
     pull_noise_threshold_playwright: int
     pull_min_accept_docs: int
+    pull_early_accept_docs: int
     pull_max_query_attempts: int
     pull_synonym_cap: int
     pull_output_root: Path
@@ -224,6 +225,7 @@ class OrchestratorSettings:
                 os.getenv("ORCH_PULL_NOISE_THRESHOLD_PLAYWRIGHT", os.getenv("ORCH_PULL_NOISE_THRESHOLD", "50"))
             ),
             pull_min_accept_docs=int(os.getenv("ORCH_PULL_MIN_ACCEPT_DOCS", "2")),
+            pull_early_accept_docs=int(os.getenv("ORCH_PULL_EARLY_ACCEPT_DOCS", "0")),
             pull_max_query_attempts=int(os.getenv("ORCH_PULL_MAX_QUERY_ATTEMPTS", "4")),
             pull_synonym_cap=int(os.getenv("ORCH_PULL_SYNONYM_CAP", "4")),
             pull_output_root=_as_abs(

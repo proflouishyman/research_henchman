@@ -156,3 +156,24 @@ def test_reflection_splits_compound_queries_for_pull_backoff(settings_factory) -
     assert gap.search_queries
     assert any("|" not in query for query in gap.search_queries)
     assert any("john mcdonogh supercargo" in query for query in gap.search_queries)
+
+
+def test_seed_only_sources_receive_lower_route_confidence() -> None:
+    seed_only = reflection._calibrated_route_confidence(
+        claim_conf=0.9,
+        query_conf=0.9,
+        has_sources=True,
+        preferred_sources=["ebsco_api"],
+        claim_kind=reflection.ClaimKind.HISTORICAL_NARRATIVE,
+        evidence_need=reflection.EvidenceNeed.SCHOLARLY_SECONDARY,
+    )
+    full_text_mix = reflection._calibrated_route_confidence(
+        claim_conf=0.9,
+        query_conf=0.9,
+        has_sources=True,
+        preferred_sources=["jstor", "project_muse"],
+        claim_kind=reflection.ClaimKind.HISTORICAL_NARRATIVE,
+        evidence_need=reflection.EvidenceNeed.SCHOLARLY_SECONDARY,
+    )
+
+    assert seed_only < full_text_mix

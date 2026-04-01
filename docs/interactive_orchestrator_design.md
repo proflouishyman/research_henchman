@@ -1,5 +1,7 @@
 # Interactive Research Orchestrator Design
 
+> Legacy MVP design reference. Current implementation guide is `app/docs/orchestrator_app.md` (v2 contract pipeline).
+
 ## Status
 Proposed architecture for unifying puller -> ingestor -> LLM-fit -> frontend into one interactive app.
 

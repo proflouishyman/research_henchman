@@ -6,16 +6,14 @@ services:
     container_name: research-orchestrator-app
     ports:
       - "8876:8876"
+    env_file:
+      - ../.env
     environment:
       ORCH_WORKSPACE: /workspace
-      ORCH_PULL_MODE: auto
-      ORCH_PULL_PROVIDER: ebscohost
-      ORCH_AUTO_INGEST: "true"
-      ORCH_AUTO_LLM_FIT: "true"
-      ORCH_LLM_BACKEND: ollama
-      ORCH_OLLAMA_BASE_URL: http://host.docker.internal:11434
+      ORCH_PLAYWRIGHT_CDP_URL: ${ORCH_PLAYWRIGHT_CDP_URL:-http://host.docker.internal:9222}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ../:/workspace
       - ./data:/srv/app/data
     restart: unless-stopped
-

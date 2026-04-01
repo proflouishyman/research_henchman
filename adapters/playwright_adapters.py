@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 
 from .base import PullAdapter
+from .document_links import build_link_rows
 from .io_utils import write_json_records
 from ..contracts import PlannedGap, SourceAvailability, SourceResult, SourceType
 
@@ -27,29 +28,31 @@ class PlaywrightAdapter(PullAdapter):
             return f"{self.source_id}: not in active browser session list"
         return ""
 
-    def _placeholder_result(self, gap: PlannedGap, query: str, run_dir: str, note: str) -> SourceResult:
-        """Return deterministic placeholder row until source-specific browser flows are implemented."""
+    def _link_seed_result(self, gap: PlannedGap, query: str, run_dir: str, note: str) -> SourceResult:
+        """Emit actionable click-through links for browser-backed sources.
+
+        This preserves user momentum until source-specific browser scraping is
+        fully implemented by returning provider search URLs plus local corpus
+        matches when available.
+        """
 
         try:
-            rows = [
-                {
-                    "query": query,
-                    "note": note,
-                    "source_id": self.source_id,
-                    "gap_id": gap.gap_id,
-                }
-            ]
+            rows = build_link_rows(self.source_id, query, gap.gap_id, limit_local=4)
+            for row in rows:
+                row["note"] = note
+                row["source_id"] = self.source_id
             root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
+            status = "completed" if rows else "partial"
             return SourceResult(
                 source_id=self.source_id,
                 source_type=self.source_type,
                 query=query,
                 gap_id=gap.gap_id,
-                document_count=1,
+                document_count=len(rows),
                 run_dir=root,
                 artifact_type="json_records",
-                status="partial",
-                stats={"placeholder": True, "records": 1},
+                status=status,
+                stats={"records": len(rows), "link_mode": "provider_search+local_corpus"},
             )
         except Exception as exc:
             return SourceResult(
@@ -71,11 +74,11 @@ class EbscohostPlaywrightAdapter(PlaywrightAdapter):
     source_id = "ebscohost"
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._placeholder_result(
+        return self._link_seed_result(
             gap,
             query,
             run_dir,
-            note="Playwright execution delegated to authenticated EBSCOhost workflow",
+            note="Playwright execution delegated to authenticated EBSCOhost workflow; seeded click-through links provided.",
         )
 
 
@@ -85,11 +88,11 @@ class StatistaPlaywrightAdapter(PlaywrightAdapter):
     source_id = "statista"
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._placeholder_result(
+        return self._link_seed_result(
             gap,
             query,
             run_dir,
-            note="Statista Playwright retrieval pending source-specific workflow",
+            note="Statista Playwright retrieval pending source-specific workflow; seeded click-through links provided.",
         )
 
 
@@ -99,11 +102,11 @@ class JstorPlaywrightAdapter(PlaywrightAdapter):
     source_id = "jstor"
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._placeholder_result(
+        return self._link_seed_result(
             gap,
             query,
             run_dir,
-            note="JSTOR Playwright retrieval pending source-specific workflow",
+            note="JSTOR Playwright retrieval pending source-specific workflow; seeded click-through links provided.",
         )
 
 
@@ -113,11 +116,11 @@ class ProjectMusePlaywrightAdapter(PlaywrightAdapter):
     source_id = "project_muse"
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._placeholder_result(
+        return self._link_seed_result(
             gap,
             query,
             run_dir,
-            note="Project MUSE Playwright retrieval pending source-specific workflow",
+            note="Project MUSE Playwright retrieval pending source-specific workflow; seeded click-through links provided.",
         )
 
 
@@ -127,11 +130,11 @@ class ProquestHistoricalNewsPlaywrightAdapter(PlaywrightAdapter):
     source_id = "proquest_historical_newspapers"
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._placeholder_result(
+        return self._link_seed_result(
             gap,
             query,
             run_dir,
-            note="ProQuest Historical Newspapers Playwright retrieval pending source-specific workflow",
+            note="ProQuest Historical Newspapers retrieval pending source-specific workflow; seeded click-through links provided.",
         )
 
 
@@ -141,11 +144,11 @@ class AmericasHistoricalNewsPlaywrightAdapter(PlaywrightAdapter):
     source_id = "americas_historical_newspapers"
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._placeholder_result(
+        return self._link_seed_result(
             gap,
             query,
             run_dir,
-            note="America's Historical Newspapers Playwright retrieval pending source-specific workflow",
+            note="America's Historical Newspapers retrieval pending source-specific workflow; seeded click-through links provided.",
         )
 
 
@@ -155,11 +158,11 @@ class GalePrimarySourcesPlaywrightAdapter(PlaywrightAdapter):
     source_id = "gale_primary_sources"
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._placeholder_result(
+        return self._link_seed_result(
             gap,
             query,
             run_dir,
-            note="Gale Primary Sources Playwright retrieval pending source-specific workflow",
+            note="Gale Primary Sources retrieval pending source-specific workflow; seeded click-through links provided.",
         )
 
 

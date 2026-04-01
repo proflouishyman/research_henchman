@@ -12,6 +12,7 @@ Contract-enforced automated pipeline for manuscript research runs.
 - Results document panel now renders collapsible source packets and prioritizes extracted linked documents (PDF/HTML/DOI/record URLs) over raw JSON artifact filenames.
 - Plan routing is now claim-aware: historical/scholarly gaps are routed away from macro-stat APIs unless they semantically fit.
 - Query execution now uses bounded backoff attempts (specific -> broader terms) so failed tight queries can recover without manual reruns.
+- EBSCO/Playwright seed adapters now emit clickable provider/local document links so pulled-document panels show actionable links instead of packet-only placeholders.
 
 ## Core architecture
 - `app/contracts.py`: layer dataclasses and enums.

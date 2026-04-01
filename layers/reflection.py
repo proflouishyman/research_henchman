@@ -24,6 +24,9 @@ from .pull import rank_sources_for_claim, source_capability_catalog, source_fit_
 from .search_policy import AccordionLadder, classify_and_build_ladder, query_quality_score
 
 STATISTICAL_SOURCE_IDS = {"world_bank", "fred", "oecd", "bea", "census", "bls", "ilostat"}
+# Seed-only sources provide discovery links without verified full-document retrieval.
+# Confidence should account for this additional retrieval uncertainty.
+SEED_ONLY_SOURCE_IDS = {"ebsco_api"}
 QUALITATIVE_CLAIM_KINDS = {
     ClaimKind.HISTORICAL_NARRATIVE,
     ClaimKind.LEGAL_REGULATORY,
@@ -677,6 +680,12 @@ def _calibrated_route_confidence(
     if source_diversity >= 3:
         diversity_bonus += 0.10
 
+    seed_penalty = 0.0
+    if preferred_sources and all(source_id in SEED_ONLY_SOURCE_IDS for source_id in preferred_sources):
+        seed_penalty = 0.28
+    elif preferred_sources and any(source_id in SEED_ONLY_SOURCE_IDS for source_id in preferred_sources):
+        seed_penalty = 0.12
+
     only_stat_sources = bool(preferred_sources) and all(source_id in STATISTICAL_SOURCE_IDS for source_id in preferred_sources)
     mismatch_penalty = 0.0
     if evidence_need in {
@@ -689,7 +698,7 @@ def _calibrated_route_confidence(
     if claim_kind in QUALITATIVE_CLAIM_KINDS and only_stat_sources:
         mismatch_penalty += 0.65
 
-    z = centered_claim + centered_query + source_term + diversity_bonus - mismatch_penalty
+    z = centered_claim + centered_query + source_term + diversity_bonus - mismatch_penalty - seed_penalty
     confidence = 1.0 / (1.0 + math.exp(-z))
     return max(0.0, min(1.0, confidence))
 

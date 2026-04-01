@@ -42,6 +42,33 @@ class _FakeAdapter(PullAdapter):
         )
 
 
+class _DocCountAdapter(PullAdapter):
+    source_id = "doc_source"
+    source_type = SourceType.KEYED_API
+
+    def __init__(self, count: int) -> None:
+        self.count = count
+        self.queries: list[str] = []
+
+    def is_available(self, availability: SourceAvailability) -> bool:
+        return self.source_id in availability.keyed_apis
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
+        self.queries.append(query)
+        root = Path(run_dir) / gap.gap_id / self.source_id
+        root.mkdir(parents=True, exist_ok=True)
+        return SourceResult(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            query=query,
+            gap_id=gap.gap_id,
+            document_count=self.count,
+            run_dir=str(root),
+            artifact_type="json_records",
+            status="completed",
+        )
+
+
 def test_build_source_availability_marks_missing_keys(settings_factory, monkeypatch) -> None:
     settings = settings_factory(
         BLS_API_KEY="",
@@ -235,3 +262,58 @@ def test_query_attempt_chain_splits_compound_query_and_adds_backoff() -> None:
     assert attempts
     assert any("john mcdonogh supercargo" in q for q in attempts)
     assert any("taylor merchant company" in q for q in attempts)
+
+
+def test_execute_with_accordion_early_accept_skips_synonyms(settings_factory, monkeypatch, tmp_path) -> None:
+    settings = settings_factory(
+        ORCH_PULL_MIN_ACCEPT_DOCS="10",
+        ORCH_PULL_EARLY_ACCEPT_DOCS="5",
+        ORCH_PULL_MAX_QUERY_ATTEMPTS="4",
+        ORCH_PULL_SYNONYM_CAP="4",
+    )
+    adapter = _DocCountAdapter(count=6)
+    availability = SourceAvailability(keyed_apis=["doc_source"])
+
+    monkeypatch.setattr(pull, "SOURCE_REGISTRY", {"doc_source": adapter})
+
+    gap = PlannedGap(
+        gap_id="AUTO-01-G1",
+        chapter="Chapter One: Merchant",
+        claim_text="John McDonogh worked as a supercargo for Taylor Merchant Company.",
+        gap_type=GapType.IMPLICIT,
+        priority=GapPriority.HIGH,
+        claim_kind=ClaimKind.HISTORICAL_NARRATIVE,
+        evidence_need=EvidenceNeed.SCHOLARLY_SECONDARY,
+        source_types=[SourceType.KEYED_API],
+        preferred_sources=["doc_source"],
+        query_ladder={
+            "constrained": "{PRIMARY} newspaper periodical historical press",
+            "contextual": "{PRIMARY} historical",
+            "broad": "{PRIMARY}",
+            "fallback": "merchant history",
+            "primary_term": "John McDonogh",
+            "synonym_ring": {
+                "terminology_shifts": ["Taylor Merchant Company", "supercargo duties"],
+                "institutional_names": [],
+                "era_modifiers": [],
+            },
+            "claim_kind": "historical_narrative",
+            "evidence_need": "scholarly_secondary",
+            "archival_suffix": "newspaper periodical historical press",
+            "generation_method": "llm",
+        },
+    )
+
+    events: list[dict] = []
+
+    result = pull._pull_gap(
+        gap,
+        availability,
+        settings,
+        run_id="run_1",
+        emit_event=lambda **kwargs: events.append(kwargs),
+    )
+
+    assert result.total_documents == 6
+    assert len(adapter.queries) == 1
+    assert any((row.get("meta") or {}).get("action") == "early_accept" for row in events)

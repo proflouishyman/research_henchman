@@ -60,6 +60,7 @@ Environment controls all behavior (`app/config.py`):
 - routing/review gates: `ORCH_ROUTING_MIN_CONFIDENCE`, `ORCH_PLAN_REVIEW_USE_OLLAMA`, `ORCH_PLAN_REVIEW_MODEL`, `ORCH_PLAN_REVIEW_TIMEOUT_SECONDS`
 - pull/router: `ORCH_PULL_TIMEOUT_SECONDS`, `ORCH_PULL_OUTPUT_ROOT`, `ORCH_PLAYWRIGHT_CDP_URL`, `ORCH_PULL_MAX_QUERY_ATTEMPTS`, `ORCH_PULL_SYNONYM_CAP`, `ORCH_PULL_NOISE_THRESHOLD*`
 - pull acceptance floor: `ORCH_PULL_MIN_ACCEPT_DOCS` (minimum per-query hits before accordion stops widening; default `2`)
+- pull early-stop floor: `ORCH_PULL_EARLY_ACCEPT_DOCS` (if primary query returns >= N docs, skip synonym traversal; default `0` = disabled)
 - library profile routing: `ORCH_LIBRARY_SYSTEM`, `ORCH_LIBRARY_PROFILES_PATH`, `ORCH_PLAYWRIGHT_EXTRA_SOURCES`
 - ingest/fit: `ORCH_AUTO_INGEST`, `ORCH_AUTO_LLM_FIT`, `ORCH_LLM_*`, `ORCH_OLLAMA_BASE_URL`
 - keyed credential aliases: `BLS_REGISTRATION_KEY` can substitute for `BLS_API_KEY`; EBSCO profile credentials (`EBSCO_PROF` + `EBSCO_PWD`, or `EBSCO_PROFILE_ID` + `EBSCO_PROFILE_PASSWORD`) can satisfy `ebsco_api` availability.
@@ -71,6 +72,7 @@ Environment controls all behavior (`app/config.py`):
 - Source semantics are declared in `SOURCE_CAPABILITIES`; add/update capability tags so routing can match claim type to source family.
 - Pull execution includes accordion traversal using rung/synonym state (`lateral`, `widen`, `tighten`, `accept`, `exhausted`) with bounded attempts, per-source noise thresholds, minimum-hit acceptance floor, and a final entity-only retry before marking needs-review.
 - Capability ranking now applies light provider diversity constraints so one source family does not dominate all selected routes when equally strong alternatives are available.
+- Route confidence includes a seed-source penalty for discovery-only adapters (for example `ebsco_api`) so plan confidence reflects retrieval uncertainty when full-text sources are unavailable.
 - Seed adapters for EBSCO/Playwright now emit normalized click-through links (`url` and best-effort local `path`) so packet extraction can render document links even before full site-specific automation is complete.
 - Document indexing preserves adapter-provided quality metadata (`quality_rank`, `quality_label`) and sorts flattened run-document rows by quality so high-confidence links remain first even when mixed with raw artifact files.
 

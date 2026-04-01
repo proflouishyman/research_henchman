@@ -717,6 +717,34 @@ def _execute_with_accordion(
             synonym_cap=synonym_cap,
         )
 
+        # If the primary term already produced a strong hit count, stop before
+        # spending attempts on lateral synonym traversal.
+        early_accept = max(0, int(settings.pull_early_accept_docs))
+        if (
+            current_synonym_idx == 0
+            and early_accept > 0
+            and doc_count >= early_accept
+            and move.action in {"accept", "lateral"}
+        ):
+            if emit_fn:
+                emit_fn(
+                    stage="pulling",
+                    status="progress",
+                    message=(
+                        f"[{gap.gap_id}] {adapter.source_id}: "
+                        f"early accept ({doc_count} docs >= {early_accept}), skipping synonyms"
+                    ),
+                    meta={
+                        "gap_id": gap.gap_id,
+                        "source_id": adapter.source_id,
+                        "doc_count": doc_count,
+                        "action": "early_accept",
+                        "attempt_index": attempts_used,
+                        "attempt_total": max_attempts,
+                    },
+                )
+            break
+
         if emit_fn:
             emit_fn(
                 stage="pulling",

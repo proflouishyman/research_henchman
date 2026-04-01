@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -649,6 +650,50 @@ def _clean_queries(
     return (ordered[: max(4, settings.pull_synonym_cap)], avg)
 
 
+def _calibrated_route_confidence(
+    claim_conf: float,
+    query_conf: float,
+    has_sources: bool,
+    preferred_sources: List[str],
+    claim_kind: ClaimKind,
+    evidence_need: EvidenceNeed,
+) -> float:
+    """Convert raw policy signals into a calibrated [0,1] route confidence.
+
+    Non-obvious logic:
+    - Uses logistic blending to avoid hard-clipping to 1.0.
+    - Rewards evidence/source diversity when semantically appropriate.
+    - Applies hard penalties for qualitative claims routed only to stats APIs.
+    """
+
+    centered_claim = (max(0.0, min(1.0, claim_conf)) - 0.5) * 1.8
+    centered_query = (max(0.0, min(1.0, query_conf)) - 0.5) * 1.4
+    source_term = 0.75 if has_sources else -1.1
+
+    source_diversity = len(set(preferred_sources))
+    diversity_bonus = 0.0
+    if source_diversity >= 2:
+        diversity_bonus += 0.18
+    if source_diversity >= 3:
+        diversity_bonus += 0.10
+
+    only_stat_sources = bool(preferred_sources) and all(source_id in STATISTICAL_SOURCE_IDS for source_id in preferred_sources)
+    mismatch_penalty = 0.0
+    if evidence_need in {
+        EvidenceNeed.SCHOLARLY_SECONDARY,
+        EvidenceNeed.PRIMARY_SOURCE,
+        EvidenceNeed.NEWS_ARCHIVE,
+        EvidenceNeed.LEGAL_TEXT,
+    } and any(source_id in STATISTICAL_SOURCE_IDS for source_id in preferred_sources):
+        mismatch_penalty += 0.55
+    if claim_kind in QUALITATIVE_CLAIM_KINDS and only_stat_sources:
+        mismatch_penalty += 0.65
+
+    z = centered_claim + centered_query + source_term + diversity_bonus - mismatch_penalty
+    confidence = 1.0 / (1.0 + math.exp(-z))
+    return max(0.0, min(1.0, confidence))
+
+
 def _apply_routing_policy(plan: ResearchPlan, availability: SourceAvailability, settings: OrchestratorSettings) -> None:
     """Assign claim/evidence types and enforce capability-based source routing."""
 
@@ -687,19 +732,14 @@ def _apply_routing_policy(plan: ResearchPlan, availability: SourceAvailability, 
 
         has_sources = bool(gap.preferred_sources)
         only_stat_sources = has_sources and all(src in STATISTICAL_SOURCE_IDS for src in gap.preferred_sources)
-        source_conf = 0.2 if has_sources else -0.35
-        conf = max(0.0, min(1.0, claim_conf + (query_conf - 0.5) * 0.4 + source_conf))
-
-        # If route appears semantically mismatched, lower confidence hard.
-        if gap.evidence_need in {
-            EvidenceNeed.SCHOLARLY_SECONDARY,
-            EvidenceNeed.PRIMARY_SOURCE,
-            EvidenceNeed.NEWS_ARCHIVE,
-            EvidenceNeed.LEGAL_TEXT,
-        } and any(src in STATISTICAL_SOURCE_IDS for src in gap.preferred_sources):
-            conf = max(0.0, conf - 0.35)
-        if gap.claim_kind in QUALITATIVE_CLAIM_KINDS and only_stat_sources:
-            conf = max(0.0, conf - 0.4)
+        conf = _calibrated_route_confidence(
+            claim_conf=claim_conf,
+            query_conf=query_conf,
+            has_sources=has_sources,
+            preferred_sources=gap.preferred_sources,
+            claim_kind=gap.claim_kind,
+            evidence_need=gap.evidence_need,
+        )
 
         gap.route_confidence = conf
         gap.route_reason = source_fit_reason(gap.claim_kind, gap.evidence_need, gap.preferred_sources)

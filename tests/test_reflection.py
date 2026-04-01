@@ -92,6 +92,7 @@ def test_reflection_routes_historical_claims_to_scholarly_sources(settings_facto
     assert "ebsco_api" in gap.preferred_sources
     assert gap.evidence_need.value in {"scholarly_secondary", "news_archive", "primary_source"}
     assert gap.needs_review is False
+    assert gap.route_confidence < 0.95
 
 
 def test_reflection_marks_low_confidence_historical_meta_claim_for_review(settings_factory) -> None:

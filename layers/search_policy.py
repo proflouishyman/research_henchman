@@ -303,6 +303,7 @@ def get_accordion_move(
     current_synonym_idx: int,
     result_count: int,
     noise_threshold: int = 50,
+    min_accept_results: int = 1,
     synonym_cap: int = DEFAULT_SYNONYM_CAP,
 ) -> AccordionMove:
     """Decide the next accordion move based on result count at current position.
@@ -315,8 +316,9 @@ def get_accordion_move(
     """
     rung_order = ladder.rung_order()
 
-    # Acceptable
-    if 0 < result_count <= noise_threshold:
+    # Acceptable. Allow callers to require a minimum evidence floor
+    # before accepting and stopping ladder expansion.
+    if min_accept_results <= result_count <= noise_threshold:
         return AccordionMove(
             action="accept", next_queries=[], rung=current_rung,
             synonym_idx=current_synonym_idx,
@@ -339,7 +341,11 @@ def get_accordion_move(
             reason=f"{result_count} results exceeds noise threshold; tightening to constrained rung",
         )
 
-    # Zero results — try lateral synonym first
+    # Insufficient (non-zero but below min_accept_results) is treated as
+    # "continue searching" rather than immediate accept.
+    insufficient = 0 < result_count < max(1, min_accept_results)
+
+    # Zero/insufficient results — try lateral synonym first
     next_synonym_idx = current_synonym_idx + 1
     rung_queries = ladder.queries_for_rung(current_rung, synonym_cap)
     if next_synonym_idx < len(rung_queries):
@@ -349,7 +355,7 @@ def get_accordion_move(
             rung=current_rung,
             synonym_idx=next_synonym_idx,
             reason=(
-                f"0 results at rung={current_rung} synonym={current_synonym_idx}; "
+                f"{result_count} results at rung={current_rung} synonym={current_synonym_idx}; "
                 f"trying synonym variant {next_synonym_idx}"
             ),
         )
@@ -379,7 +385,10 @@ def get_accordion_move(
         action="widen",
         next_queries=next_queries[:1],
         rung=next_rung, synonym_idx=0,
-        reason=f"synonyms exhausted at rung={current_rung}; widening to rung={next_rung}",
+        reason=(
+            f"{'insufficient results' if insufficient else 'synonyms exhausted'} "
+            f"at rung={current_rung}; widening to rung={next_rung}"
+        ),
     )
 
 

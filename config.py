@@ -152,6 +152,13 @@ class OrchestratorSettings:
     plan_review_timeout_seconds: int
 
     pull_timeout_seconds: int
+    pull_noise_threshold: int
+    pull_noise_threshold_free_api: int
+    pull_noise_threshold_keyed_api: int
+    pull_noise_threshold_playwright: int
+    pull_min_accept_docs: int
+    pull_max_query_attempts: int
+    pull_synonym_cap: int
     pull_output_root: Path
     playwright_cdp_url: str
     library_system: str
@@ -206,6 +213,19 @@ class OrchestratorSettings:
             plan_review_model=os.getenv("ORCH_PLAN_REVIEW_MODEL", os.getenv("ORCH_REFLECTION_MODEL", "qwen2.5:7b")).strip(),
             plan_review_timeout_seconds=int(os.getenv("ORCH_PLAN_REVIEW_TIMEOUT_SECONDS", "90")),
             pull_timeout_seconds=int(os.getenv("ORCH_PULL_TIMEOUT_SECONDS", "60")),
+            pull_noise_threshold=int(os.getenv("ORCH_PULL_NOISE_THRESHOLD", "50")),
+            pull_noise_threshold_free_api=int(
+                os.getenv("ORCH_PULL_NOISE_THRESHOLD_FREE_API", os.getenv("ORCH_PULL_NOISE_THRESHOLD", "50"))
+            ),
+            pull_noise_threshold_keyed_api=int(
+                os.getenv("ORCH_PULL_NOISE_THRESHOLD_KEYED_API", os.getenv("ORCH_PULL_NOISE_THRESHOLD", "50"))
+            ),
+            pull_noise_threshold_playwright=int(
+                os.getenv("ORCH_PULL_NOISE_THRESHOLD_PLAYWRIGHT", os.getenv("ORCH_PULL_NOISE_THRESHOLD", "50"))
+            ),
+            pull_min_accept_docs=int(os.getenv("ORCH_PULL_MIN_ACCEPT_DOCS", "2")),
+            pull_max_query_attempts=int(os.getenv("ORCH_PULL_MAX_QUERY_ATTEMPTS", "4")),
+            pull_synonym_cap=int(os.getenv("ORCH_PULL_SYNONYM_CAP", "4")),
             pull_output_root=_as_abs(
                 workspace,
                 os.getenv("ORCH_PULL_OUTPUT_ROOT", "codex/add_to_cart_audit/external_sources"),

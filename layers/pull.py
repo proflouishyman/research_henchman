@@ -22,6 +22,7 @@ from ..adapters.playwright_adapters import (
 from ..config import OrchestratorSettings
 from ..contracts import ClaimKind, EvidenceNeed, GapPullResult, PlannedGap, ResearchPlan, SourceAvailability, SourceResult, SourceType
 from ..library_profiles import get_active_playwright_source_ids, get_active_university_databases
+from .search_policy import AccordionLadder, get_accordion_move
 
 QUERY_SPLIT_RE = re.compile(r"\s*[|;\n]+\s*")
 QUERY_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'-]{2,}")
@@ -47,6 +48,16 @@ QUERY_STOPWORDS = {
     "company",
     "merchant",
     "chapter",
+}
+
+_SOURCE_FAMILY_BY_PREFIX: Dict[str, str] = {
+    "ebsco_api": "ebsco",
+    "ebscohost": "ebsco",
+    "jstor": "jstor",
+    "project_muse": "muse",
+    "proquest_historical_newspapers": "proquest",
+    "americas_historical_newspapers": "readex",
+    "gale_primary_sources": "gale",
 }
 
 
@@ -356,10 +367,85 @@ def rank_sources_for_claim(
         scored.append((score, source_id))
 
     scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
-    preferred = [source_id for score, source_id in scored if score >= 1.5]
+    preferred = _diversified_ranked_sources(
+        scored,
+        source_types=list(source_types or [SourceType.KEYED_API, SourceType.PLAYWRIGHT, SourceType.FREE_API]),
+        max_sources=max_sources,
+    )
     if preferred:
-        return preferred[:max_sources]
+        return preferred
     return []
+
+
+def _source_family(source_id: str) -> str:
+    """Map source IDs into coarse provider families for diversity balancing."""
+
+    source_id = source_id.strip().lower()
+    if source_id in _SOURCE_FAMILY_BY_PREFIX:
+        return _SOURCE_FAMILY_BY_PREFIX[source_id]
+    return source_id.split("_")[0] if "_" in source_id else source_id
+
+
+def _diversified_ranked_sources(
+    scored: List[tuple[float, str]],
+    source_types: List[SourceType],
+    max_sources: int,
+) -> List[str]:
+    """Select ranked sources with light diversity constraints.
+
+    Non-obvious logic:
+    - First pass picks the best semantic match per requested source type.
+    - Second pass fills remaining slots by score while limiting one family
+      from dominating all selected routes.
+    """
+
+    if max_sources <= 0:
+        return []
+
+    typed_rows: List[tuple[float, str, SourceType]] = []
+    for score, source_id in scored:
+        if score < 1.5:
+            continue
+        adapter = SOURCE_REGISTRY.get(source_id)
+        if adapter is None:
+            continue
+        typed_rows.append((score, source_id, adapter.source_type))
+
+    if not typed_rows:
+        return []
+
+    selected: List[str] = []
+    selected_set: set[str] = set()
+    family_counts: Dict[str, int] = {}
+
+    def _append(source_id: str) -> None:
+        if source_id in selected_set or len(selected) >= max_sources:
+            return
+        family = _source_family(source_id)
+        selected.append(source_id)
+        selected_set.add(source_id)
+        family_counts[family] = family_counts.get(family, 0) + 1
+
+    # Prioritize one best source per requested source type when available.
+    for source_type in source_types:
+        for _score, source_id, row_type in typed_rows:
+            if row_type != source_type:
+                continue
+            _append(source_id)
+            break
+        if len(selected) >= max_sources:
+            return selected
+
+    # Fill remaining slots with highest-ranked rows, capped at two per family.
+    for _score, source_id, _row_type in typed_rows:
+        family = _source_family(source_id)
+        if family_counts.get(family, 0) >= 2:
+            continue
+        _append(source_id)
+        if len(selected) >= max_sources:
+            break
+
+    return selected
 
 
 def source_fit_reason(claim_kind: ClaimKind, evidence_need: EvidenceNeed, preferred_sources: List[str]) -> str:
@@ -526,6 +612,177 @@ def _query_attempt_chain(gap: PlannedGap, query: str, max_attempts: int = 3) -> 
     return out[:max_attempts]
 
 
+def _noise_threshold_for_adapter(adapter: PullAdapter, settings: OrchestratorSettings) -> int:
+    """Return source-family threshold for deciding when result sets are too noisy."""
+
+    if adapter.source_type == SourceType.PLAYWRIGHT:
+        return max(1, settings.pull_noise_threshold_playwright)
+    if adapter.source_type == SourceType.KEYED_API:
+        return max(1, settings.pull_noise_threshold_keyed_api)
+    if adapter.source_type == SourceType.FREE_API:
+        return max(1, settings.pull_noise_threshold_free_api)
+    return max(1, settings.pull_noise_threshold)
+
+
+def _execute_with_accordion(
+    adapter: PullAdapter,
+    gap: PlannedGap,
+    run_dir: str,
+    timeout_seconds: int,
+    emit_fn: Callable[..., None] | None,
+    settings: OrchestratorSettings,
+) -> List[SourceResult]:
+    """Execute one gap/source with ladder traversal and bounded retries.
+
+    Assumptions:
+    - `gap.query_ladder` stores a serialized AccordionLadder from reflection.
+    - We cap attempts per gap/source for predictable runtime behavior.
+    - If all ladder paths fail, we run one final entity-only retry before review.
+    """
+
+    ladder_dict = getattr(gap, "query_ladder", {}) or {}
+    if isinstance(ladder_dict, dict) and ladder_dict:
+        ladder = AccordionLadder.from_dict(ladder_dict)
+    else:
+        # Contract-preserving fallback when older records lack query_ladder.
+        seed_query = (gap.search_queries[0] if gap.search_queries else gap.claim_text[:120]).strip()
+        ladder = AccordionLadder(
+            constrained=seed_query,
+            contextual=seed_query,
+            broad=seed_query,
+            fallback=seed_query,
+            primary_term=seed_query.split()[0] if seed_query else "claim",
+            claim_kind=gap.claim_kind.value,
+            evidence_need=gap.evidence_need.value,
+            generation_method="legacy_fallback",
+        )
+
+    max_attempts = max(1, settings.pull_max_query_attempts)
+    synonym_cap = max(1, settings.pull_synonym_cap)
+    noise_threshold = _noise_threshold_for_adapter(adapter, settings)
+    attempted_queries: set[str] = set()
+    source_results: List[SourceResult] = []
+    attempts_used = 0
+
+    current_rung = "constrained"
+    current_synonym_idx = 0
+    current_queries = ladder.queries_for_rung(current_rung, synonym_cap=synonym_cap)
+    if not current_queries:
+        current_rung = "contextual"
+        current_queries = ladder.queries_for_rung(current_rung, synonym_cap=synonym_cap)
+    if not current_queries:
+        return source_results
+
+    current_query = current_queries[0]
+
+    while attempts_used < max_attempts and current_query:
+        query_key = current_query.strip().lower()
+        if not query_key or query_key in attempted_queries:
+            break
+        attempted_queries.add(query_key)
+        attempts_used += 1
+
+        if emit_fn:
+            emit_fn(
+                stage="pulling",
+                status="progress",
+                message=f"[{gap.gap_id}] querying {adapter.source_id} ({attempts_used}/{max_attempts}): {current_query[:160]}",
+                meta={
+                    "gap_id": gap.gap_id,
+                    "source_id": adapter.source_id,
+                    "query": current_query,
+                    "attempt_index": attempts_used,
+                    "attempt_total": max_attempts,
+                    "rung": current_rung,
+                    "synonym_idx": current_synonym_idx,
+                },
+            )
+
+        result = adapter.pull(
+            gap=gap,
+            query=current_query,
+            run_dir=run_dir,
+            timeout_seconds=timeout_seconds,
+        )
+        source_results.append(result)
+        doc_count = int(result.document_count or 0)
+
+        move = get_accordion_move(
+            ladder,
+            current_rung,
+            current_synonym_idx,
+            doc_count,
+            noise_threshold=noise_threshold,
+            min_accept_results=max(1, settings.pull_min_accept_docs),
+            synonym_cap=synonym_cap,
+        )
+
+        if emit_fn:
+            emit_fn(
+                stage="pulling",
+                status=move.action,
+                message=f"[{gap.gap_id}] {adapter.source_id}: {move.reason}",
+                meta={
+                    "gap_id": gap.gap_id,
+                    "source_id": adapter.source_id,
+                    "query": current_query,
+                    "doc_count": doc_count,
+                    "result_status": result.status,
+                    "rung": current_rung,
+                    "synonym_idx": current_synonym_idx,
+                    "action": move.action,
+                    "attempt_index": attempts_used,
+                    "attempt_total": max_attempts,
+                },
+            )
+
+        if move.action == "accept":
+            break
+
+        # Structural adapter errors should not consume additional ladder hops.
+        if result.status == "failed":
+            break
+
+        if move.action == "exhausted":
+            primary = (ladder.primary_term or "").strip()
+            primary_key = primary.lower()
+            if primary and primary_key not in attempted_queries and attempts_used < max_attempts:
+                current_query = primary
+                current_rung = "broad"
+                current_synonym_idx = 0
+                if emit_fn:
+                    emit_fn(
+                        stage="pulling",
+                        status="progress",
+                        message=f"[{gap.gap_id}] final entity-only retry: {primary}",
+                        meta={
+                            "gap_id": gap.gap_id,
+                            "source_id": adapter.source_id,
+                            "query": primary,
+                            "action": "entity_retry",
+                            "attempt_index": attempts_used + 1,
+                            "attempt_total": max_attempts,
+                        },
+                    )
+                continue
+
+            gap.needs_review = True
+            note = "Accordion exhausted all rungs for this source."
+            if note not in (gap.review_notes or ""):
+                gap.review_notes = f"{gap.review_notes} {note}".strip()
+            break
+
+        if move.action in {"lateral", "widen", "tighten"}:
+            current_rung = move.rung
+            current_synonym_idx = move.synonym_idx
+            current_query = move.next_queries[0] if move.next_queries else ""
+            continue
+
+        break
+
+    return source_results
+
+
 def _pull_gap(
     gap: PlannedGap,
     availability: SourceAvailability,
@@ -547,58 +804,67 @@ def _pull_gap(
         adapter = SOURCE_REGISTRY.get(source_id)
         if adapter is None or not adapter.is_available(availability):
             continue
+        attempted.append(source_id)
+        has_ladder = isinstance(getattr(gap, "query_ladder", {}), dict) and bool(getattr(gap, "query_ladder", {}))
 
-        for query in (gap.search_queries or [gap.claim_text[:120]]):
-            attempts = _query_attempt_chain(gap, query, max_attempts=3)
-            for attempt_index, attempt_query in enumerate(attempts, start=1):
-                attempted.append(source_id)
-                if emit_event:
-                    emit_event(
-                        stage="pulling",
-                        status="progress",
-                        message=f"[{gap.gap_id}] querying {source_id} ({attempt_index}/{len(attempts)}): {attempt_query[:160]}",
-                        meta={
-                            "gap_id": gap.gap_id,
-                            "source_id": source_id,
-                            "query": attempt_query,
-                            "attempt_index": attempt_index,
-                            "attempt_total": len(attempts),
-                        },
+        if has_ladder:
+            results_for_source = _execute_with_accordion(
+                adapter=adapter,
+                gap=gap,
+                run_dir=run_dir,
+                timeout_seconds=settings.pull_timeout_seconds,
+                emit_fn=emit_event,
+                settings=settings,
+            )
+        else:
+            results_for_source = []
+            for query in (gap.search_queries or [gap.claim_text[:120]]):
+                attempts = _query_attempt_chain(gap, query, max_attempts=settings.pull_max_query_attempts)
+                for attempt_index, attempt_query in enumerate(attempts, start=1):
+                    if emit_event:
+                        emit_event(
+                            stage="pulling",
+                            status="progress",
+                            message=f"[{gap.gap_id}] querying {source_id} ({attempt_index}/{len(attempts)}): {attempt_query[:160]}",
+                            meta={
+                                "gap_id": gap.gap_id,
+                                "source_id": source_id,
+                                "query": attempt_query,
+                                "attempt_index": attempt_index,
+                                "attempt_total": len(attempts),
+                            },
+                        )
+                    result = adapter.pull(
+                        gap=gap,
+                        query=attempt_query,
+                        run_dir=run_dir,
+                        timeout_seconds=settings.pull_timeout_seconds,
                     )
-                result = adapter.pull(
-                    gap=gap,
-                    query=attempt_query,
-                    run_dir=run_dir,
-                    timeout_seconds=settings.pull_timeout_seconds,
-                )
-                source_results.append(result)
-                if result.status in {"completed", "partial"}:
-                    succeeded.append(source_id)
-                else:
-                    failed.append(source_id)
-                if emit_event:
-                    emit_event(
-                        stage="pulling",
-                        status="progress",
-                        message=f"[{gap.gap_id}] {source_id} -> {result.status} ({result.document_count} docs)",
-                        meta={
-                            "gap_id": gap.gap_id,
-                            "source_id": source_id,
-                            "query": attempt_query,
-                            "result_status": result.status,
-                            "document_count": result.document_count,
-                            "artifact_type": result.artifact_type,
-                            "attempt_index": attempt_index,
-                            "attempt_total": len(attempts),
-                        },
-                    )
+                    results_for_source.append(result)
+                    if emit_event:
+                        emit_event(
+                            stage="pulling",
+                            status="progress",
+                            message=f"[{gap.gap_id}] {source_id} -> {result.status} ({result.document_count} docs)",
+                            meta={
+                                "gap_id": gap.gap_id,
+                                "source_id": source_id,
+                                "query": attempt_query,
+                                "result_status": result.status,
+                                "document_count": result.document_count,
+                                "artifact_type": result.artifact_type,
+                                "attempt_index": attempt_index,
+                                "attempt_total": len(attempts),
+                            },
+                        )
+                    if result.document_count > 0 or result.status == "failed":
+                        break
 
-                # Stop backing off once one attempt yields documents.
-                if result.document_count > 0:
-                    break
-                # If adapter failed structurally, do not repeat with broader text.
-                if result.status == "failed":
-                    break
+        source_results.extend(results_for_source)
+        if any(r.status in {"completed", "partial"} for r in results_for_source):
+            succeeded.append(source_id)
+        if any(r.status == "failed" for r in results_for_source):
+            failed.append(source_id)
 
     total_docs = sum(result.document_count for result in source_results)
     status = "unresolvable" if total_docs == 0 else ("partial" if failed else "completed")

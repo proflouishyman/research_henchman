@@ -192,6 +192,29 @@ def test_rank_sources_prefers_jstor_family_over_macro_for_history() -> None:
     assert "world_bank" not in ranked[:2]
 
 
+def test_rank_sources_diversifies_provider_families_for_history() -> None:
+    availability = SourceAvailability(
+        free_apis=["world_bank"],
+        keyed_apis=["ebsco_api"],
+        playwright_sources=["ebscohost", "jstor", "project_muse"],
+    )
+
+    ranked = pull.rank_sources_for_claim(
+        ClaimKind.HISTORICAL_NARRATIVE,
+        EvidenceNeed.SCHOLARLY_SECONDARY,
+        availability,
+        source_types=[SourceType.PLAYWRIGHT, SourceType.KEYED_API, SourceType.FREE_API],
+        max_sources=3,
+    )
+
+    assert ranked
+    assert len(ranked) == 3
+    # Ensure one source from the JSTOR/Muse family is retained,
+    # not only EBSCO variants.
+    assert any(source_id in {"jstor", "project_muse"} for source_id in ranked)
+    assert any(source_id.startswith("ebsco") for source_id in ranked)
+
+
 def test_query_attempt_chain_splits_compound_query_and_adds_backoff() -> None:
     gap = PlannedGap(
         gap_id="AUTO-01-G1",

@@ -146,6 +146,7 @@ class PlannedGap:
     route_reason: str = ""
     needs_review: bool = False
     review_notes: str = ""
+    query_ladder: Dict[str, object] = field(default_factory=dict)
     review_method: str = ""
 
 

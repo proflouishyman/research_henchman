@@ -86,7 +86,7 @@ Environment controls all behavior (`config.py`):
   - `proquest_historical_newspapers`
   - `americas_historical_newspapers`
   - `gale_primary_sources`
-- Default profile file: `library_profiles.default.json` (contains `jhu` and `generic` examples).
+- Default profile file: `library_profiles.default.json` (contains `jhu`, `harvard`, `yale`, `stanford`, `nypl`, and `generic` examples).
 - `GET /api/orchestrator/sources/catalog` returns active-profile `university_databases` rows (`name`, `source_id`, `url`, `categories`, `claim_kinds`, `evidence_needs`) plus `library_system` metadata.
 - Runtime routing uses profile metadata to constrain Playwright availability by active university system, while API sources remain global/config-driven.
 

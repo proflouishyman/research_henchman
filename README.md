@@ -68,8 +68,52 @@ For historical narrative gaps, routing prefers these scholarly/archive sources o
 - `ORCH_LIBRARY_SYSTEM` selects the active university profile (default `jhu`).
 - `ORCH_LIBRARY_PROFILES_PATH` points to profile JSON (default `library_profiles.default.json`).
 - `ORCH_PLAYWRIGHT_EXTRA_SOURCES` optionally appends comma-separated source IDs.
+- Bundled example systems now include: `jhu`, `harvard`, `yale`, `stanford`, `nypl`, `generic`.
 
 `/api/orchestrator/sources/catalog` now reads `university_databases` from the active profile, including `categories`, `claim_kinds`, and `evidence_needs`. This replaces hardcoded university database lists so other institutions can adapt by editing profile JSON only.
+
+### Prompt Template For Generating A New Library Profile
+Copy/paste this to an AI agent and replace placeholders:
+
+```text
+You are editing a JSON file at `library_profiles.default.json`.
+
+Task:
+Generate one new library profile object under `systems` with key `<PROFILE_KEY>` and name `<LIBRARY_NAME>`.
+
+Requirements:
+1. Output valid JSON for only the new profile object (do not include markdown).
+2. Use this exact schema:
+   {
+     "name": "Library Display Name",
+     "databases": [
+       {
+         "source_id": "<SUPPORTED_SOURCE_ID>",
+         "name": "Database Display Name",
+         "url": "https://...",
+         "source_type": "playwright",
+         "categories": ["history", "newspapers"],
+         "claim_kinds": ["historical_narrative", "company_operations", "biographical", "legal_regulatory", "other"],
+         "evidence_needs": ["scholarly_secondary", "primary_source", "news_archive", "legal_text", "mixed"]
+       }
+     ]
+   }
+3. Only use currently supported Playwright source IDs:
+   - jstor
+   - project_muse
+   - ebscohost
+   - proquest_historical_newspapers
+   - americas_historical_newspapers
+   - gale_primary_sources
+   - statista
+4. Include 4-7 realistic databases for the library.
+5. Reuse claim_kinds/evidence_needs patterns consistent with existing profiles.
+6. Keep all strings lowercase for `source_id` and list values.
+
+Context:
+- This profile is used by orchestrator routing and the Settings UI.
+- Unknown `source_id` values will not be runnable until adapters exist.
+```
 
 ## Key alias support
 - BLS credentials accept either `BLS_API_KEY` or `BLS_REGISTRATION_KEY`.

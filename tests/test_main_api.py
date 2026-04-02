@@ -298,6 +298,10 @@ def test_library_profiles_endpoint_lists_available_systems(tmp_path, monkeypatch
     assert payload.get("library_system") == "generic"
     systems = payload.get("systems", [])
     assert any(row.get("key") == "generic" for row in systems)
+    assert any(row.get("key") == "harvard" for row in systems)
+    assert any(row.get("key") == "yale" for row in systems)
+    assert any(row.get("key") == "stanford" for row in systems)
+    assert any(row.get("key") == "nypl" for row in systems)
     assert all("database_count" in row for row in systems)
 
 

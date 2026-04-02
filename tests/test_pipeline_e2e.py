@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.adapters.base import PullAdapter
-from app.contracts import RunRecord, RunStatus, SourceAvailability, SourceResult, SourceType, run_record_to_dict
-from app.layers import pull
-from app.pipeline import run_orchestration
-from app.store import OrchestratorStore
+from adapters.base import PullAdapter
+from contracts import RunRecord, RunStatus, SourceAvailability, SourceResult, SourceType, run_record_to_dict
+from layers import pull
+from pipeline import run_orchestration
+from store import OrchestratorStore
 
 
 class _FakeSource(PullAdapter):

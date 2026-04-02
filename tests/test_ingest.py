@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.contracts import GapPullResult, IngestResult, PlannedGap, SourceResult, SourceType
-from app.layers.ingest import ingest_gap_result
+from contracts import GapPullResult, IngestResult, PlannedGap, SourceResult, SourceType
+from layers.ingest import ingest_gap_result
 
 
 def test_ingest_skips_unresolvable_gap(settings_factory) -> None:

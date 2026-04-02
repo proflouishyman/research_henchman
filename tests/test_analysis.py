@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.layers import analysis
+from layers import analysis
 
 
 def test_analysis_heuristic_detects_explicit_and_implicit(settings_factory, write_docx) -> None:

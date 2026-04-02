@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.layers import search_policy
-from app.layers.search_policy import (
+from layers import search_policy
+from layers.search_policy import (
     CLAIM_BIOGRAPHICAL,
     CLAIM_COMPANY_OPERATIONS,
     CLAIM_HISTORICAL_NARRATIVE,

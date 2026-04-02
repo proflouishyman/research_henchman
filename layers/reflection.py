@@ -7,8 +7,8 @@ import math
 import re
 from typing import Dict, List, Optional, Tuple
 
-from ..config import OrchestratorSettings
-from ..contracts import (
+from config import OrchestratorSettings
+from contracts import (
     ClaimKind,
     EvidenceNeed,
     GapMap,
@@ -18,7 +18,7 @@ from ..contracts import (
     SourceAvailability,
     SourceType,
 )
-from ..store import now_utc
+from store import now_utc
 from .analysis import _call_ollama
 from .pull import rank_sources_for_claim, source_capability_catalog, source_fit_reason
 from .search_policy import AccordionLadder, classify_and_build_ladder, query_quality_score

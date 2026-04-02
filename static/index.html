@@ -54,6 +54,36 @@
       font-size: 15px;
     }
 
+    .tabs {
+      margin-top: 16px;
+      display: inline-flex;
+      gap: 8px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #f8efe0;
+    }
+
+    .tab-btn {
+      border: 1px solid transparent;
+      border-radius: 10px;
+      padding: 8px 14px;
+      margin: 0;
+      background: transparent;
+      color: var(--muted);
+      width: auto;
+      min-width: 120px;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .tab-btn.active {
+      background: #fff;
+      border-color: var(--line);
+      color: var(--ink);
+    }
+
     .layout {
       margin-top: 20px;
       display: grid;
@@ -265,6 +295,22 @@
 
     .doc-row:last-child { margin-bottom: 0; }
 
+    .settings-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .settings-row {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 10px;
+    }
+
+    .settings-row .muted {
+      margin-top: 4px;
+    }
+
     .doc-packet {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -382,7 +428,12 @@
     <h1>Research Orchestrator</h1>
     <div class="subtitle">Select manuscript, run once, inspect reflected plan, and watch the pipeline execute end-to-end with live structured events.</div>
 
-    <div class="layout">
+    <div class="tabs" role="tablist" aria-label="Orchestrator sections">
+      <button id="tab_run" class="tab-btn active" title="Run and monitor orchestrator jobs.">Run</button>
+      <button id="tab_settings" class="tab-btn" title="Manage library profile and API credentials.">Settings</button>
+    </div>
+
+    <div id="page_run" class="layout">
       <section class="panel">
         <h2>Launch</h2>
         <div id="launch_status" class="status-line">Choose a manuscript and start a run.</div>
@@ -440,6 +491,33 @@
         </details>
       </section>
     </div>
+
+    <div id="page_settings" class="layout hidden">
+      <section class="panel">
+        <h2>Library Settings</h2>
+        <div id="settings_status" class="status-line">Load and save settings for this workspace.</div>
+
+        <label for="library_system_select">Base University Library</label>
+        <select id="library_system_select" title="Select the base university library profile used for Playwright database routing."></select>
+        <button id="save_library_btn" class="primary" title="Save selected library profile to .env.">Save Library Profile</button>
+        <div id="library_summary" class="muted"></div>
+
+        <div class="event-box">
+          <div><strong>Detected Library Databases</strong></div>
+          <div id="library_db_status" class="muted">Choose a library profile to view available databases.</div>
+          <div id="library_db_list" class="plan-list"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>API Credentials</h2>
+        <div class="muted">Keys are saved to project `.env` and used by adapter availability checks.</div>
+        <div id="api_fields" class="settings-grid"></div>
+        <button id="save_api_btn" class="primary" title="Save API key updates to .env.">Save API Keys</button>
+        <button id="refresh_settings_btn" title="Reload settings from API and .env.">Refresh Settings</button>
+        <div id="api_save_status" class="status-line"></div>
+      </section>
+    </div>
   </div>
 
   <script>
@@ -447,6 +525,23 @@
     const STORAGE_LAST_MANUSCRIPT = "orchestrator_v2_last_manuscript";
     const STAGES = ["analyzing", "planning", "pulling", "ingesting", "fitting", "complete"];
     const TERMINAL = new Set(["complete", "partial", "failed"]);
+    const SETTINGS_FIELDS = [
+      { key: "BEA_USER_ID", label: "BEA User ID" },
+      { key: "BLS_REGISTRATION_KEY", label: "BLS Registration Key", secret: true },
+      { key: "BLS_API_KEY", label: "BLS API Key (optional alias)", secret: true },
+      { key: "CENSUS_API_KEY", label: "Census API Key", secret: true },
+      { key: "FRED_API_KEY", label: "FRED API Key", secret: true },
+      { key: "USITC_DATAWEB_TOKEN", label: "USITC DataWeb Token", secret: true },
+      { key: "UNCOMTRADE_API_KEY", label: "UN Comtrade API Key", secret: true },
+      { key: "STATISTA_CONNECT_KEY", label: "Statista Connect Key", secret: true },
+      { key: "EBSCO_DB", label: "EBSCO Database" },
+      { key: "EBSCO_PROF", label: "EBSCO Profile Email/User" },
+      { key: "EBSCO_PWD", label: "EBSCO Profile Password", secret: true },
+      { key: "EBSCO_PROFILE_ID", label: "EBSCO Profile ID" },
+      { key: "EBSCO_PROFILE_PASSWORD", label: "EBSCO Profile Password", secret: true },
+      { key: "EBSCO_API_KEY", label: "EBSCO API Key (optional)", secret: true },
+      { key: "ORCH_PLAYWRIGHT_CDP_URL", label: "Playwright CDP URL" },
+    ];
 
     const state = {
       manuscripts: [],
@@ -456,6 +551,8 @@
       currentRun: null,
       lastPollTs: 0,
       docsRunId: "",
+      settingsValues: {},
+      selectedPage: "run",
     };
 
     async function api(path, method = "GET", body = null) {
@@ -472,6 +569,159 @@
     function setText(id, text) {
       const node = q(id);
       if (node) node.textContent = text || "";
+    }
+
+    function setActivePage(page) {
+      state.selectedPage = page === "settings" ? "settings" : "run";
+      q("page_run")?.classList.toggle("hidden", state.selectedPage !== "run");
+      q("page_settings")?.classList.toggle("hidden", state.selectedPage !== "settings");
+      q("tab_run")?.classList.toggle("active", state.selectedPage === "run");
+      q("tab_settings")?.classList.toggle("active", state.selectedPage === "settings");
+    }
+
+    function toValueMap(rows) {
+      const out = {};
+      (rows || []).forEach((row) => {
+        out[String(row.key || "")] = String(row.raw_value ?? row.value ?? "");
+      });
+      return out;
+    }
+
+    function renderApiFields(values) {
+      const root = q("api_fields");
+      if (!root) return;
+      root.innerHTML = "";
+      SETTINGS_FIELDS.forEach((field) => {
+        const row = document.createElement("div");
+        row.className = "settings-row";
+
+        const label = document.createElement("label");
+        label.htmlFor = `field_${field.key}`;
+        label.textContent = field.label;
+
+        const input = document.createElement("input");
+        input.id = `field_${field.key}`;
+        input.type = field.secret ? "password" : "text";
+        input.autocomplete = "off";
+        input.value = String(values[field.key] || "");
+        input.placeholder = field.key;
+        input.dataset.envKey = field.key;
+
+        const hint = document.createElement("div");
+        hint.className = "muted";
+        hint.textContent = field.key;
+
+        row.appendChild(label);
+        row.appendChild(input);
+        row.appendChild(hint);
+        root.appendChild(row);
+      });
+    }
+
+    function renderLibraryDatabases(rows) {
+      const list = q("library_db_list");
+      if (!list) return;
+      list.innerHTML = "";
+
+      const items = Array.isArray(rows) ? rows : [];
+      if (!items.length) {
+        setText("library_db_status", "No university databases configured for this profile.");
+        return;
+      }
+
+      setText("library_db_status", `${items.length} databases detected for this library profile.`);
+      items.forEach((db) => {
+        const card = document.createElement("div");
+        card.className = "plan-gap";
+        const categories = Array.isArray(db.categories) ? db.categories.join(", ") : "";
+        const claimKinds = Array.isArray(db.claim_kinds) ? db.claim_kinds.join(", ") : "";
+        card.innerHTML = `
+          <div><strong>${db.name || db.source_id || "database"}</strong></div>
+          <div class="muted">${db.source_id || ""}${db.provider ? ` · ${db.provider}` : ""}</div>
+          <div class="muted">${categories ? `categories: ${categories}` : ""}</div>
+          <div class="muted">${claimKinds ? `claim kinds: ${claimKinds}` : ""}</div>
+          <div class="muted">${db.url ? `<a class="doc-link" href="${db.url}" target="_blank" rel="noopener noreferrer">${db.url}</a>` : ""}</div>
+        `;
+        list.appendChild(card);
+      });
+    }
+
+    function populateLibrarySystems(profiles, activeKey) {
+      const select = q("library_system_select");
+      if (!select) return;
+      select.innerHTML = "";
+      const systems = Array.isArray(profiles?.systems) ? profiles.systems : [];
+      systems.forEach((row) => {
+        const option = document.createElement("option");
+        option.value = String(row.key || "");
+        option.textContent = `${row.name || row.key} (${row.database_count || 0} dbs)`;
+        select.appendChild(option);
+      });
+      if (activeKey) {
+        select.value = activeKey;
+      }
+      if (!select.value && systems.length) {
+        select.value = String(systems[0].key || "");
+      }
+    }
+
+    async function loadSettings() {
+      setText("settings_status", "Loading settings...");
+      const [profiles, catalog, valuesOut] = await Promise.all([
+        api("/api/orchestrator/library/profiles"),
+        api("/api/orchestrator/sources/catalog"),
+        api("/api/orchestrator/connections/values?mask_secrets=false"),
+      ]);
+
+      const valueMap = toValueMap(valuesOut.values || []);
+      state.settingsValues = valueMap;
+      renderApiFields(valueMap);
+      populateLibrarySystems(profiles, String(catalog.library_system || profiles.library_system || valueMap.ORCH_LIBRARY_SYSTEM || ""));
+      renderLibraryDatabases(catalog.university_databases || []);
+
+      const activeName = String(catalog.library_name || profiles.library_name || "");
+      const activeKey = String(catalog.library_system || profiles.library_system || "");
+      setText("library_summary", activeName ? `${activeName} (${activeKey})` : (activeKey || "No active library profile"));
+      setText("settings_status", `Settings loaded from ${valuesOut.env_path || ".env"}.`);
+      setText("api_save_status", "");
+    }
+
+    async function saveLibraryProfile() {
+      const select = q("library_system_select");
+      const key = select ? String(select.value || "").trim().toLowerCase() : "";
+      if (!key) {
+        setText("settings_status", "Select a library profile first.");
+        return;
+      }
+      setButtonBusy("save_library_btn", true, "Saving...", "Save Library Profile");
+      try {
+        await api("/api/orchestrator/connections/save", "POST", { updates: { ORCH_LIBRARY_SYSTEM: key } });
+        appendLog(`[${new Date().toLocaleTimeString()}] saved ORCH_LIBRARY_SYSTEM=${key}`, "ok");
+        await loadSettings();
+        setText("settings_status", `Saved library profile: ${key}`);
+      } finally {
+        setButtonBusy("save_library_btn", false, "Saving...", "Save Library Profile");
+      }
+    }
+
+    async function saveApiSettings() {
+      const updates = {};
+      SETTINGS_FIELDS.forEach((field) => {
+        const node = q(`field_${field.key}`);
+        if (!node) return;
+        updates[field.key] = String(node.value || "").trim();
+      });
+
+      setButtonBusy("save_api_btn", true, "Saving...", "Save API Keys");
+      try {
+        const out = await api("/api/orchestrator/connections/save", "POST", { updates });
+        const count = Array.isArray(out.updated_keys) ? out.updated_keys.length : 0;
+        setText("api_save_status", `Saved ${count} settings to ${out.env_path || ".env"}.`);
+        appendLog(`[${new Date().toLocaleTimeString()}] saved settings (${count} keys)`, "ok");
+        await loadSettings();
+      } finally {
+        setButtonBusy("save_api_btn", false, "Saving...", "Save API Keys");
+      }
     }
 
     function setRunButtonBusy(busy) {
@@ -914,6 +1164,11 @@
     }
 
     function bindEvents() {
+      q("tab_run")?.addEventListener("click", () => setActivePage("run"));
+      q("tab_settings")?.addEventListener("click", () => {
+        setActivePage("settings");
+        loadSettings().catch((err) => setText("settings_status", `Settings load failed: ${err.message}`));
+      });
       q("refresh_manuscripts_btn")?.addEventListener("click", async () => {
         setButtonBusy("refresh_manuscripts_btn", true, "Refreshing...", "Refresh Manuscripts");
         try {
@@ -928,11 +1183,16 @@
       q("upload_manuscript_btn")?.addEventListener("click", () => uploadManuscript().catch((err) => setText("launch_status", err.message)));
       q("run_btn")?.addEventListener("click", () => startRun().catch((err) => setText("launch_status", err.message)));
       q("manuscript_select")?.addEventListener("change", (evt) => saveLastManuscript(String(evt.target.value || "")));
+      q("save_library_btn")?.addEventListener("click", () => saveLibraryProfile().catch((err) => setText("settings_status", err.message)));
+      q("save_api_btn")?.addEventListener("click", () => saveApiSettings().catch((err) => setText("api_save_status", err.message)));
+      q("refresh_settings_btn")?.addEventListener("click", () => loadSettings().catch((err) => setText("settings_status", err.message)));
     }
 
     async function init() {
+      setActivePage("run");
       bindEvents();
       await loadManuscripts();
+      await loadSettings();
       const runs = await api("/api/orchestrator/runs?limit=1");
       const first = Array.isArray(runs.runs) && runs.runs.length ? runs.runs[0] : null;
       if (first && !TERMINAL.has(String(first.status || ""))) {

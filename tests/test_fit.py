@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from app.contracts import IngestResult
-from app.layers.fit import fit_gap
+from contracts import IngestResult
+from layers.fit import fit_gap
 
 
 def test_fit_skips_when_backend_none(settings_factory) -> None:

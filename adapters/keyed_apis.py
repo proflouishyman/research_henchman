@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from .base import PullAdapter
 from .document_links import build_link_rows
 from .io_utils import write_json_records
-from ..contracts import PlannedGap, SourceAvailability, SourceResult, SourceType
+from contracts import PlannedGap, SourceAvailability, SourceResult, SourceType
 
 
 class KeyedApiAdapter(PullAdapter):

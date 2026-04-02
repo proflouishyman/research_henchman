@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.adapters.base import PullAdapter
-from app.contracts import (
+from adapters.base import PullAdapter
+from contracts import (
     ClaimKind,
     EvidenceNeed,
     GapPriority,
@@ -16,7 +16,7 @@ from app.contracts import (
     SourceResult,
     SourceType,
 )
-from app.layers import pull
+from layers import pull
 
 
 class _FakeAdapter(PullAdapter):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.contracts import (
+from contracts import (
     Gap,
     GapMap,
     GapPriority,

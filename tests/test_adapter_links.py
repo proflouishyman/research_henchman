@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.adapters import document_links
-from app.adapters.document_links import build_link_rows, provider_search_url
-from app.adapters.keyed_apis import EbscoApiAdapter
-from app.adapters.playwright_adapters import JstorPlaywrightAdapter
-from app.contracts import GapPriority, GapType, PlannedGap
+from adapters import document_links
+from adapters.document_links import build_link_rows, provider_search_url
+from adapters.keyed_apis import EbscoApiAdapter
+from adapters.playwright_adapters import JstorPlaywrightAdapter
+from contracts import GapPriority, GapType, PlannedGap
 
 
 def _gap() -> PlannedGap:

@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-from ..config import OrchestratorSettings
-from ..contracts import FitResult, IngestResult
+from config import OrchestratorSettings
+from contracts import FitResult, IngestResult
 
 
 INGEST_INDEX_FILE = "ingest_index.jsonl"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ..contracts import PlannedGap, SourceAvailability, SourceResult
+from contracts import PlannedGap, SourceAvailability, SourceResult
 
 
 class PullAdapter(ABC):

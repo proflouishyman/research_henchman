@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from app.contracts import Gap, GapMap, GapPriority, GapType, SourceAvailability
-from app.layers import reflection
+from contracts import Gap, GapMap, GapPriority, GapType, SourceAvailability
+from layers import reflection
 
 
 def _gap_map() -> GapMap:

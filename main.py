@@ -16,12 +16,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .config import OrchestratorSettings, load_runtime_env, read_env_values, write_env_updates
-from .contracts import ConnectionSaveInput, RetryInput, RunCreateInput, RunRecord, RunStatus, run_record_from_dict, run_record_to_dict
-from .library_profiles import get_active_library_profile, get_active_university_databases
-from .layers.pull import SOURCE_REGISTRY, build_source_availability, source_capability_catalog
-from .pipeline import run_orchestration
-from .store import OrchestratorStore, now_utc
+from config import OrchestratorSettings, load_runtime_env, read_env_values, write_env_updates
+from contracts import ConnectionSaveInput, RetryInput, RunCreateInput, RunRecord, RunStatus, run_record_from_dict, run_record_to_dict
+from library_profiles import get_active_library_profile, get_active_university_databases, load_library_profiles
+from layers.pull import SOURCE_REGISTRY, build_source_availability, source_capability_catalog
+from pipeline import run_orchestration
+from store import OrchestratorStore, now_utc
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -711,11 +711,49 @@ def api_connection_values(mask_secrets: bool = Query(default=True)) -> Dict[str,
 def api_connection_save(inp: ConnectionSaveInput) -> Dict[str, Any]:
     settings = _settings()
     write_env_updates(settings.env_path, inp.updates)
+    # Ensure edited keys are re-read from `.env` on the next settings load.
+    for key in inp.updates.keys():
+        if key in os.environ:
+            os.environ.pop(key, None)
     refreshed = _settings()
     return {
         "saved": True,
         "env_path": str(refreshed.env_path),
         "updated_keys": sorted(inp.updates.keys()),
+    }
+
+
+@app.get("/api/orchestrator/library/profiles")
+def api_library_profiles() -> Dict[str, Any]:
+    settings = _settings()
+    payload = load_library_profiles(settings)
+    systems = payload.get("systems", {}) if isinstance(payload, dict) else {}
+    if not isinstance(systems, dict):
+        systems = {}
+
+    rows = []
+    for key, value in sorted(systems.items(), key=lambda item: str(item[0])):
+        if not isinstance(value, dict):
+            continue
+        db_rows = value.get("databases", [])
+        db_count = (
+            len([row for row in db_rows if isinstance(row, dict) and str(row.get("source_id", "")).strip()])
+            if isinstance(db_rows, list)
+            else 0
+        )
+        rows.append(
+            {
+                "key": str(key).strip().lower(),
+                "name": str(value.get("name", key)).strip() or str(key),
+                "database_count": db_count,
+            }
+        )
+
+    active = get_active_library_profile(settings)
+    return {
+        "library_system": str(active.get("key", settings.library_system)),
+        "library_name": str(active.get("name", "")),
+        "systems": rows,
     }
 
 

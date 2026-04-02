@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import socket
+import threading
+from contextlib import closing
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from artifact_export import export_run_bundle
@@ -181,3 +185,196 @@ def test_export_run_bundle_returns_none_for_missing_manuscript(settings_factory)
         manuscript_path="Manuscript/does_not_exist.docx",
     )
     assert export_run_bundle(rec, settings) is None
+
+
+def test_export_run_bundle_fetches_seed_urls(settings_factory, write_docx, tmp_path):
+    settings = settings_factory(
+        ORCH_DATA_ROOT="state",
+        ORCH_PULL_OUTPUT_ROOT="pull_outputs",
+    )
+    workspace = settings.workspace
+    manuscript = workspace / "Manuscript" / "URL Fetch Draft.docx"
+    write_docx(manuscript, ["A claim needing online support."])
+
+    # Local HTTP fixture with one HTML page linking to a PDF.
+    web_root = tmp_path / "web"
+    web_root.mkdir(parents=True, exist_ok=True)
+    (web_root / "doc.pdf").write_bytes(b"%PDF-1.4 local test pdf")
+    (web_root / "style.css").write_text("body { color: black; }", encoding="utf-8")
+    (web_root / "index.html").write_text(
+        '<html><body><a href="/doc.pdf">doc</a><a href="/style.css">css</a></body></html>',
+        encoding="utf-8",
+    )
+
+    class _Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(web_root), **kwargs)
+
+        def log_message(self, format, *args):  # noqa: A003
+            return
+
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.bind(("127.0.0.1", 0))
+        host, port = sock.getsockname()
+    server = ThreadingHTTPServer((host, port), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        run_dir = workspace / "pull_outputs" / "run_urlfetch" / "AUTO-01-G1" / "jstor"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "seed.json").write_text(
+            json.dumps([{"title": "seed", "url": f"http://127.0.0.1:{port}/index.html", "quality_label": "seed"}]),
+            encoding="utf-8",
+        )
+
+        rec = RunRecord(
+            run_id="run_urlfetch",
+            manuscript_path=str(manuscript.relative_to(workspace)),
+            gap_map=GapMap(
+                manuscript_path=str(manuscript.relative_to(workspace)),
+                manuscript_fingerprint="url123",
+                gaps=[
+                    Gap(
+                        gap_id="AUTO-01-G1",
+                        chapter="Body",
+                        claim_text="Claim",
+                        gap_type=GapType.IMPLICIT,
+                        priority=GapPriority.MEDIUM,
+                        source_text_excerpt="A claim needing online support.",
+                    )
+                ],
+            ),
+        )
+        rec.pull_results = [
+            GapPullResult(
+                gap_id="AUTO-01-G1",
+                planned_gap=PlannedGap(gap_id="AUTO-01-G1"),
+                results=[
+                    SourceResult(
+                        source_id="jstor",
+                        source_type=SourceType.PLAYWRIGHT,
+                        query="q",
+                        gap_id="AUTO-01-G1",
+                        run_dir=str(run_dir),
+                        status="completed",
+                    )
+                ],
+                status="completed",
+            )
+        ]
+
+        bundle_root = export_run_bundle(rec, settings)
+        assert bundle_root is not None
+        fetched_root = bundle_root / "gaps" / "AUTO-01-G1" / "related_documents" / "jstor" / "_fetched_urls"
+        fetched_files = list(fetched_root.glob("*"))
+        assert fetched_files, "expected fetched URL artifacts"
+        assert any(p.suffix.lower() == ".html" for p in fetched_files)
+        assert any(p.suffix.lower() == ".pdf" for p in fetched_files)
+        assert not any(p.suffix.lower() == ".css" for p in fetched_files)
+        assert not any(p.name.endswith(".bin") for p in fetched_files)
+
+        report_text = (bundle_root / "gap_report_run_urlfetch.md").read_text(encoding="utf-8")
+        assert "Fetched Files From URLs:" in report_text
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_export_run_bundle_replaces_stale_gap_exports(settings_factory, write_docx):
+    settings = settings_factory(
+        ORCH_DATA_ROOT="state",
+        ORCH_PULL_OUTPUT_ROOT="pull_outputs",
+    )
+    workspace = settings.workspace
+    manuscript = workspace / "Manuscript" / "Stale Cleanup Draft.docx"
+    write_docx(manuscript, ["A claim."])
+
+    old_dir = workspace / "pull_outputs" / "run_old" / "AUTO-01-G1" / "world_bank"
+    old_dir.mkdir(parents=True, exist_ok=True)
+    (old_dir / "old.json").write_text(json.dumps([{"url": "https://example.org/old"}]), encoding="utf-8")
+
+    rec_old = RunRecord(
+        run_id="run_old",
+        manuscript_path=str(manuscript.relative_to(workspace)),
+        gap_map=GapMap(
+            manuscript_path=str(manuscript.relative_to(workspace)),
+            manuscript_fingerprint="stale123",
+            gaps=[
+                Gap(
+                    gap_id="AUTO-01-G1",
+                    chapter="Body",
+                    claim_text="Claim",
+                    gap_type=GapType.IMPLICIT,
+                    priority=GapPriority.MEDIUM,
+                    source_text_excerpt="A claim.",
+                )
+            ],
+        ),
+    )
+    rec_old.pull_results = [
+        GapPullResult(
+            gap_id="AUTO-01-G1",
+            planned_gap=PlannedGap(gap_id="AUTO-01-G1"),
+            results=[
+                SourceResult(
+                    source_id="world_bank",
+                    source_type=SourceType.FREE_API,
+                    query="old q",
+                    gap_id="AUTO-01-G1",
+                    run_dir=str(old_dir),
+                    status="completed",
+                )
+            ],
+            status="completed",
+        )
+    ]
+    bundle_root = export_run_bundle(rec_old, settings)
+    assert bundle_root is not None
+    stale_path = bundle_root / "gaps" / "AUTO-01-G1" / "related_documents" / "world_bank" / "old.json"
+    assert stale_path.exists()
+
+    new_dir = workspace / "pull_outputs" / "run_new" / "AUTO-01-G1" / "jstor"
+    new_dir.mkdir(parents=True, exist_ok=True)
+    (new_dir / "new.json").write_text(json.dumps([{"url": "https://example.org/new"}]), encoding="utf-8")
+
+    rec_new = RunRecord(
+        run_id="run_new",
+        manuscript_path=str(manuscript.relative_to(workspace)),
+        gap_map=GapMap(
+            manuscript_path=str(manuscript.relative_to(workspace)),
+            manuscript_fingerprint="stale123",
+            gaps=[
+                Gap(
+                    gap_id="AUTO-01-G1",
+                    chapter="Body",
+                    claim_text="Claim",
+                    gap_type=GapType.IMPLICIT,
+                    priority=GapPriority.MEDIUM,
+                    source_text_excerpt="A claim.",
+                )
+            ],
+        ),
+    )
+    rec_new.pull_results = [
+        GapPullResult(
+            gap_id="AUTO-01-G1",
+            planned_gap=PlannedGap(gap_id="AUTO-01-G1"),
+            results=[
+                SourceResult(
+                    source_id="jstor",
+                    source_type=SourceType.PLAYWRIGHT,
+                    query="new q",
+                    gap_id="AUTO-01-G1",
+                    run_dir=str(new_dir),
+                    status="completed",
+                )
+            ],
+            status="completed",
+        )
+    ]
+    export_run_bundle(rec_new, settings)
+
+    refreshed_root = bundle_root / "gaps" / "AUTO-01-G1" / "related_documents"
+    assert (refreshed_root / "jstor" / "new.json").exists()
+    assert not (refreshed_root / "world_bank" / "old.json").exists()

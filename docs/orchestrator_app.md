@@ -56,7 +56,9 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - run completion exports a manuscript bundle under `ORCH_DATA_ROOT/manuscript_exports/<manuscript title>/` containing:
     - copied manuscript file
     - `gap_report_<run_id>.md` with coded gaps + snippets + quality mix (`high`/`medium`/`seed`) and remediation notes when retrieval is seed-only
+    - refreshed `gaps/` artifacts per run (stale gap files from prior runs are cleared before export)
     - `gaps/<gap_id>/related_documents/<source_id>/...` copied pull artifacts
+    - `gaps/<gap_id>/related_documents/<source_id>/_fetched_urls/...` best-effort fetched artifacts from seed URLs (HTML/PDF/bin)
     - `gaps/<gap_id>/related_urls.txt` extracted URL references from JSON artifacts (when available)
 
 ## Configuration

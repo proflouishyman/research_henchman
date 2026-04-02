@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import urllib.error
+import urllib.parse
+import urllib.request
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
@@ -13,6 +16,34 @@ from config import OrchestratorSettings
 from contracts import GapPullResult, RunRecord
 
 URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+HREF_RE = re.compile(r"""href=["']([^"'#]+)["']""", re.IGNORECASE)
+DOC_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt", ".rtf"}
+STATIC_ASSET_EXTENSIONS = {
+    ".css",
+    ".js",
+    ".mjs",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".ico",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".map",
+    ".mp4",
+    ".webm",
+    ".mp3",
+    ".wav",
+    ".zip",
+}
+MAX_FETCH_BYTES = 4_000_000
+FETCH_TIMEOUT_SECONDS = 20
+MAX_SEED_URLS_PER_SOURCE = 3
+MAX_CHILD_LINKS_PER_SEED = 3
 
 
 def export_run_bundle(rec: RunRecord, settings: OrchestratorSettings) -> Optional[Path]:
@@ -39,6 +70,8 @@ def export_run_bundle(rec: RunRecord, settings: OrchestratorSettings) -> Optiona
     manuscript_copy = bundle_root / manuscript_src.name
     _safe_copy(manuscript_src, manuscript_copy)
 
+    # Keep one consistent gap artifact snapshot per manuscript folder by run.
+    _reset_gap_exports(bundle_root)
     copied_docs = _copy_gap_documents(rec.pull_results, settings.workspace, bundle_root)
     _write_gap_report(bundle_root, rec, copied_docs)
     _write_manifest_json(bundle_root, rec, manuscript_src, manuscript_copy, copied_docs)
@@ -70,6 +103,14 @@ def _resolve_path(raw_path: str, workspace: Path) -> Path:
     return (workspace / p).resolve()
 
 
+def _reset_gap_exports(bundle_root: Path) -> None:
+    """Remove stale per-gap exports from prior runs of the same manuscript."""
+
+    gaps_root = bundle_root / "gaps"
+    if gaps_root.exists() and gaps_root.is_dir():
+        shutil.rmtree(gaps_root)
+
+
 def _safe_copy(src: Path, dst: Path) -> None:
     """Copy file with metadata preservation when possible."""
 
@@ -93,6 +134,7 @@ def _copy_gap_documents(
         file_count = 0
         urls: Set[str] = set()
         quality = {"high": 0, "medium": 0, "seed": 0}
+        fetched_files = 0
 
         for source_result in gap_result.results:
             run_dir = Path(str(source_result.run_dir or "")).expanduser()
@@ -113,6 +155,10 @@ def _copy_gap_documents(
                 file_count += copied
             urls.update(_extract_urls_from_json_files(run_dir))
             _merge_quality_counts(quality, _extract_quality_counts_from_json_files(run_dir))
+            fetch_meta = _fetch_seed_documents_from_dir(dst_root)
+            fetched_files += int(fetch_meta.get("fetched_files", 0) or 0)
+            file_count += int(fetch_meta.get("fetched_files", 0) or 0)
+            _merge_quality_counts(quality, fetch_meta.get("quality", {}))
 
         if urls:
             _write_urls_file(gap_root, sorted(urls))
@@ -125,6 +171,7 @@ def _copy_gap_documents(
             "quality_high": int(quality.get("high", 0)),
             "quality_medium": int(quality.get("medium", 0)),
             "quality_seed": int(quality.get("seed", 0)),
+            "fetched_files": fetched_files,
         }
     return summaries
 
@@ -204,6 +251,7 @@ def _write_gap_report(
         q_high = int(doc_meta.get("quality_high", 0) or 0)
         q_medium = int(doc_meta.get("quality_medium", 0) or 0)
         q_seed = int(doc_meta.get("quality_seed", 0) or 0)
+        fetched_files = int(doc_meta.get("fetched_files", 0) or 0)
         quality_note = _quality_note(q_high=q_high, q_medium=q_medium, q_seed=q_seed)
         plan_gap = plan_map.get(gap_code)
         pull_status = "pulled" if gap_code in pulled_gap_ids else "not_pulled"
@@ -222,6 +270,7 @@ def _write_gap_report(
         lines.append(f"- Related Sources: {source_count}")
         lines.append(f"- Related Files: {file_count}")
         lines.append(f"- Related URLs: {url_count}")
+        lines.append(f"- Fetched Files From URLs: {fetched_files}")
         lines.append(f"- Pull Status: {pull_status}")
         if skip_reason:
             lines.append(f"- Skip Reason: {skip_reason}")
@@ -292,6 +341,172 @@ def _walk_quality(node: object, counts: Dict[str, int]) -> None:
     elif isinstance(node, list):
         for item in node:
             _walk_quality(item, counts)
+
+
+def _fetch_seed_documents_from_dir(source_root: Path) -> Dict[str, object]:
+    """Fetch seed URLs discovered in copied source JSON artifacts.
+
+    Returns counts and quality bumps for fetched files:
+    - fetched HTML/article pages => medium
+    - fetched PDF/doc files => high
+    """
+
+    urls = _extract_seed_urls(source_root)
+    if not urls:
+        return {"fetched_files": 0, "quality": {"high": 0, "medium": 0, "seed": 0}}
+
+    out_root = source_root / "_fetched_urls"
+    out_root.mkdir(parents=True, exist_ok=True)
+    seen: Set[str] = set()
+    fetched = 0
+    quality = {"high": 0, "medium": 0, "seed": 0}
+
+    for idx, url in enumerate(urls[:MAX_SEED_URLS_PER_SOURCE], start=1):
+        if url in seen:
+            continue
+        seen.add(url)
+        parent_save = _fetch_and_save(url=url, out_root=out_root, prefix=f"seed_{idx:02d}")
+        if parent_save is None:
+            continue
+        fetched += 1
+        _bump_quality_from_suffix(parent_save.suffix.lower(), quality)
+
+        if parent_save.suffix.lower() in {".html", ".htm"}:
+            html = parent_save.read_text(encoding="utf-8", errors="ignore")
+            child_links = _extract_child_links(base_url=url, html=html)
+            for child_idx, child_url in enumerate(child_links[:MAX_CHILD_LINKS_PER_SEED], start=1):
+                if child_url in seen:
+                    continue
+                seen.add(child_url)
+                child_save = _fetch_and_save(
+                    url=child_url,
+                    out_root=out_root,
+                    prefix=f"seed_{idx:02d}_child_{child_idx:02d}",
+                )
+                if child_save is None:
+                    continue
+                fetched += 1
+                _bump_quality_from_suffix(child_save.suffix.lower(), quality)
+
+    return {"fetched_files": fetched, "quality": quality}
+
+
+def _extract_seed_urls(source_root: Path) -> List[str]:
+    """Collect provider/document URLs from JSON artifacts in one source folder."""
+
+    out: List[str] = []
+    seen: Set[str] = set()
+    for json_file in sorted(source_root.rglob("*.json")):
+        try:
+            payload = json.loads(json_file.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+        for url in _walk_urls(payload):
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+def _walk_urls(node: object) -> List[str]:
+    """Extract URL values recursively from JSON-like nodes."""
+
+    out: List[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str) and key.lower() in {"url", "link", "href"}:
+                candidate = value.strip()
+                if candidate.lower().startswith(("http://", "https://")):
+                    out.append(candidate)
+            else:
+                out.extend(_walk_urls(value))
+    elif isinstance(node, list):
+        for item in node:
+            out.extend(_walk_urls(item))
+    return out
+
+
+def _extract_child_links(base_url: str, html: str) -> List[str]:
+    """Extract likely document/result links from one fetched HTML page."""
+
+    out: List[str] = []
+    seen: Set[str] = set()
+    base_netloc = urllib.parse.urlparse(base_url).netloc.lower()
+
+    for raw in HREF_RE.findall(html or ""):
+        full = urllib.parse.urljoin(base_url, raw.strip())
+        parsed = urllib.parse.urlparse(full)
+        if parsed.scheme not in {"http", "https"}:
+            continue
+        if not parsed.netloc:
+            continue
+        ext = Path(parsed.path).suffix.lower()
+        if ext in STATIC_ASSET_EXTENSIONS:
+            continue
+        netloc = parsed.netloc.lower()
+        # Prefer same-domain links to avoid broad crawl behavior.
+        if base_netloc and netloc != base_netloc:
+            continue
+        if full in seen:
+            continue
+        seen.add(full)
+        out.append(full)
+    return out
+
+
+def _fetch_and_save(url: str, out_root: Path, prefix: str) -> Optional[Path]:
+    """Fetch one URL and save response bytes as html/pdf/bin artifact."""
+
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                )
+            },
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_SECONDS) as resp:
+            content_type = str(resp.headers.get("Content-Type", "")).lower()
+            body = resp.read(MAX_FETCH_BYTES)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+    except Exception:
+        return None
+
+    suffix = _suffix_for_response(url=url, content_type=content_type, body=body)
+    target = out_root / f"{prefix}{suffix}"
+    target.write_bytes(body)
+    return target
+
+
+def _suffix_for_response(url: str, content_type: str, body: bytes) -> str:
+    """Choose an output file extension based on content type/body/url."""
+
+    parsed = urllib.parse.urlparse(url)
+    path_ext = Path(parsed.path).suffix.lower()
+    if path_ext in DOC_EXTENSIONS.union({".html", ".htm"}):
+        return path_ext
+    if "pdf" in content_type:
+        return ".pdf"
+    if "html" in content_type or body.lstrip().startswith((b"<!doctype html", b"<html")):
+        return ".html"
+    if "text/plain" in content_type:
+        return ".txt"
+    return ".bin"
+
+
+def _bump_quality_from_suffix(suffix: str, quality: Dict[str, int]) -> None:
+    """Map fetched file type to quality contribution."""
+
+    ext = (suffix or "").lower()
+    if ext in DOC_EXTENSIONS.union({".pdf"}):
+        quality["high"] = int(quality.get("high", 0) or 0) + 1
+    elif ext in {".html", ".htm"}:
+        quality["medium"] = int(quality.get("medium", 0) or 0) + 1
 
 
 def _write_manifest_json(

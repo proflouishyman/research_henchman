@@ -7,6 +7,7 @@ Contract-enforced automated pipeline for manuscript research runs.
 - Manual strategy/gap endpoints are removed.
 - One run record now owns full state: analysis -> reflection -> pull -> ingest -> fit.
 - Frontend is a single launch + live monitor page.
+- Frontend now includes a switchable `Interface Style` control (`editorial`, `operations`, `atlas`) for live UI comparison without changing functionality.
 - UI highlights progress with active-stage color pulse and run heartbeat.
 - Completed runs expose click-through artifact files in a document panel.
 - Results document panel now renders collapsible source packets and prioritizes extracted linked documents (PDF/HTML/DOI/record URLs) over raw JSON artifact filenames.
@@ -22,6 +23,10 @@ Contract-enforced automated pipeline for manuscript research runs.
 - `layers/ingest.py`: Layer 4 ingest (`GapPullResult -> IngestResult`).
 - `layers/fit.py`: Layer 5 fit (`IngestResult -> FitResult`).
 - `pipeline.py`: stage sequencer and structured events.
+
+## Frontend interface variants
+- Variant notes: `docs/frontend_interface_variants.md`
+- Toggle from the top-right `Interface Style` control in the app.
 
 ## API surface
 - `GET /api/orchestrator/health`

@@ -44,6 +44,7 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 - Single page (`static/index.html`):
   - manuscript select/upload
   - single `Run Research` button
+  - top-level `Interface Style` selector (`editorial`, `operations`, `atlas`) with local preference persistence
   - plan panel appears once `research_plan` is available
   - live stage tracker and event log polling every 3s
   - active-stage pulse + heartbeat indicator while run is in progress

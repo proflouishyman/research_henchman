@@ -7,13 +7,13 @@ services:
     ports:
       - "8876:8876"
     env_file:
-      - ../.env
+      - .env
     environment:
       ORCH_WORKSPACE: /workspace
       ORCH_PLAYWRIGHT_CDP_URL: ${ORCH_PLAYWRIGHT_CDP_URL:-http://host.docker.internal:9222}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ../:/workspace
+      - ./:/workspace
       - ./data:/srv/app/data
     restart: unless-stopped

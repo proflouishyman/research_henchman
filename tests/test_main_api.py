@@ -7,8 +7,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app import main as orchestrator_main
-from app.contracts import (
+import main as orchestrator_main
+from contracts import (
     GapPriority,
     GapPullResult,
     GapType,
@@ -19,7 +19,7 @@ from app.contracts import (
     SourceType,
     run_record_to_dict,
 )
-from app.store import OrchestratorStore
+from store import OrchestratorStore
 
 
 def test_documents_endpoint_and_file_clickthrough(tmp_path, monkeypatch):
@@ -35,6 +35,8 @@ def test_documents_endpoint_and_file_clickthrough(tmp_path, monkeypatch):
 
     monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
     monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
     monkeypatch.setenv("ORCH_PULL_OUTPUT_ROOT", "pull_outputs")
     monkeypatch.setenv("ORCH_LIBRARY_SYSTEM", "generic")
 
@@ -273,3 +275,60 @@ def test_documents_endpoint_preserves_quality_metadata_and_order(tmp_path, monke
     assert docs
     assert docs[0].get("quality_label") == "high"
     assert "matched_source.pdf" in str(docs[0].get("path", ""))
+
+
+def test_library_profiles_endpoint_lists_available_systems(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state_dir = tmp_path / "state"
+    uploads = state_dir / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
+    monkeypatch.setenv("ORCH_LIBRARY_SYSTEM", "generic")
+
+    store = OrchestratorStore(state_dir)
+    monkeypatch.setattr(orchestrator_main, "store", store)
+    monkeypatch.setattr(orchestrator_main, "UPLOAD_DIR", uploads)
+
+    client = TestClient(orchestrator_main.app)
+    resp = client.get("/api/orchestrator/library/profiles")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload.get("library_system") == "generic"
+    systems = payload.get("systems", [])
+    assert any(row.get("key") == "generic" for row in systems)
+    assert all("database_count" in row for row in systems)
+
+
+def test_connections_save_supports_blank_value_updates(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state_dir = tmp_path / "state"
+    uploads = state_dir / "uploads"
+    workspace.mkdir(parents=True, exist_ok=True)
+    uploads.mkdir(parents=True, exist_ok=True)
+
+    env_path = workspace / ".env"
+    env_path.write_text("FRED_API_KEY=abc123\n", encoding="utf-8")
+
+    monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+
+    store = OrchestratorStore(state_dir)
+    monkeypatch.setattr(orchestrator_main, "store", store)
+    monkeypatch.setattr(orchestrator_main, "UPLOAD_DIR", uploads)
+
+    client = TestClient(orchestrator_main.app)
+    save_resp = client.post("/api/orchestrator/connections/save", json={"updates": {"FRED_API_KEY": ""}})
+    assert save_resp.status_code == 200
+
+    raw = env_path.read_text(encoding="utf-8")
+    assert "FRED_API_KEY=\n" in raw
+
+    values_resp = client.get("/api/orchestrator/connections/values", params={"mask_secrets": "false"})
+    assert values_resp.status_code == 200
+    rows = values_resp.json().get("values", [])
+    fred = next((row for row in rows if row.get("key") == "FRED_API_KEY"), None)
+    assert fred is not None
+    assert fred.get("raw_value") == ""

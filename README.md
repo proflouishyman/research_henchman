@@ -15,13 +15,13 @@ Contract-enforced automated pipeline for manuscript research runs.
 - EBSCO/Playwright seed adapters now emit clickable provider/local document links so pulled-document panels show actionable links instead of packet-only placeholders.
 
 ## Core architecture
-- `app/contracts.py`: layer dataclasses and enums.
-- `app/layers/analysis.py`: Layer 1 (`manuscript_path -> GapMap`).
-- `app/layers/reflection.py`: Layer 2 (`GapMap + SourceAvailability -> ResearchPlan`) plus claim/evidence typing and routing quality gates.
-- `app/layers/pull.py`: Layer 3 source router + `SOURCE_REGISTRY` + `SOURCE_CAPABILITIES`.
-- `app/layers/ingest.py`: Layer 4 ingest (`GapPullResult -> IngestResult`).
-- `app/layers/fit.py`: Layer 5 fit (`IngestResult -> FitResult`).
-- `app/pipeline.py`: stage sequencer and structured events.
+- `contracts.py`: layer dataclasses and enums.
+- `layers/analysis.py`: Layer 1 (`manuscript_path -> GapMap`).
+- `layers/reflection.py`: Layer 2 (`GapMap + SourceAvailability -> ResearchPlan`) plus claim/evidence typing and routing quality gates.
+- `layers/pull.py`: Layer 3 source router + `SOURCE_REGISTRY` + `SOURCE_CAPABILITIES`.
+- `layers/ingest.py`: Layer 4 ingest (`GapPullResult -> IngestResult`).
+- `layers/fit.py`: Layer 5 fit (`IngestResult -> FitResult`).
+- `pipeline.py`: stage sequencer and structured events.
 
 ## API surface
 - `GET /api/orchestrator/health`
@@ -36,12 +36,13 @@ Contract-enforced automated pipeline for manuscript research runs.
 - `POST /api/orchestrator/runs/{run_id}/retry`
 - `GET /api/orchestrator/connections/values`
 - `POST /api/orchestrator/connections/save`
+- `GET /api/orchestrator/library/profiles`
 - `GET /api/orchestrator/sources/catalog`
 
 ## Extension point
 Add a new source by:
-1. creating one adapter class in `app/adapters/`
-2. registering it in `app/layers/pull.py` `SOURCE_REGISTRY`
+1. creating one adapter class in `adapters/`
+2. registering it in `layers/pull.py` `SOURCE_REGISTRY`
 3. declaring claim/evidence capability tags in `SOURCE_CAPABILITIES`
 
 No pipeline or API rewrite required.
@@ -65,7 +66,7 @@ For historical narrative gaps, routing prefers these scholarly/archive sources o
 
 ## University library profiles (Playwright sources)
 - `ORCH_LIBRARY_SYSTEM` selects the active university profile (default `jhu`).
-- `ORCH_LIBRARY_PROFILES_PATH` points to profile JSON (default `app/library_profiles.default.json`).
+- `ORCH_LIBRARY_PROFILES_PATH` points to profile JSON (default `library_profiles.default.json`).
 - `ORCH_PLAYWRIGHT_EXTRA_SOURCES` optionally appends comma-separated source IDs.
 
 `/api/orchestrator/sources/catalog` now reads `university_databases` from the active profile, including `categories`, `claim_kinds`, and `evidence_needs`. This replaces hardcoded university database lists so other institutions can adapt by editing profile JSON only.
@@ -78,23 +79,23 @@ For historical narrative gaps, routing prefers these scholarly/archive sources o
 From repository root:
 
 ```bash
-uvicorn app.main:app --reload --port 8876
+uvicorn main:app --reload --port 8876
 ```
 
 Open: <http://localhost:8876>
 
 ## Tests
 ```bash
-python3 -m pytest app/tests -q
+python3 -m pytest tests -q
 ```
 
 ## Docker
-From `app/` directory:
+From repository root:
 
 ```bash
 docker compose up --build -d
 ```
 
-Runtime config is loaded from project-root `.env` (`../.env` via `env_file`) plus `ORCH_WORKSPACE=/workspace` inside the container.
+Runtime config is loaded from project-root `.env` via `env_file` plus `ORCH_WORKSPACE=/workspace` inside the container.
 
 Open: <http://localhost:8876>

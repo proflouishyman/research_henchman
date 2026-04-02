@@ -6,10 +6,10 @@ import re
 from pathlib import Path
 from typing import Callable, Dict, List
 
-from ..adapters.base import PullAdapter
-from ..adapters.free_apis import FredAdapter, IlostatAdapter, OecdAdapter, WorldBankAdapter
-from ..adapters.keyed_apis import BeaAdapter, BlsAdapter, CensusAdapter, EbscoApiAdapter
-from ..adapters.playwright_adapters import (
+from adapters.base import PullAdapter
+from adapters.free_apis import FredAdapter, IlostatAdapter, OecdAdapter, WorldBankAdapter
+from adapters.keyed_apis import BeaAdapter, BlsAdapter, CensusAdapter, EbscoApiAdapter
+from adapters.playwright_adapters import (
     AmericasHistoricalNewsPlaywrightAdapter,
     EbscohostPlaywrightAdapter,
     GalePrimarySourcesPlaywrightAdapter,
@@ -19,9 +19,9 @@ from ..adapters.playwright_adapters import (
     StatistaPlaywrightAdapter,
     check_cdp_endpoint,
 )
-from ..config import OrchestratorSettings
-from ..contracts import ClaimKind, EvidenceNeed, GapPullResult, PlannedGap, ResearchPlan, SourceAvailability, SourceResult, SourceType
-from ..library_profiles import get_active_playwright_source_ids, get_active_university_databases
+from config import OrchestratorSettings
+from contracts import ClaimKind, EvidenceNeed, GapPullResult, PlannedGap, ResearchPlan, SourceAvailability, SourceResult, SourceType
+from library_profiles import get_active_playwright_source_ids, get_active_university_databases
 from .search_policy import AccordionLadder, get_accordion_move
 
 QUERY_SPLIT_RE = re.compile(r"\s*[|;\n]+\s*")

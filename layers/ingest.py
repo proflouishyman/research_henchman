@@ -8,8 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-from ..config import OrchestratorSettings
-from ..contracts import GapPullResult, IngestResult, SourceResult
+from config import OrchestratorSettings
+from contracts import GapPullResult, IngestResult, SourceResult
 
 
 INGEST_INDEX_FILE = "ingest_index.jsonl"

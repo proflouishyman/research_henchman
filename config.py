@@ -35,9 +35,9 @@ def parse_csv_list(value: str | None) -> List[str]:
 
 
 def default_workspace() -> Path:
-    """Infer repository workspace root from app module location."""
+    """Infer repository workspace root from current module location."""
 
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parent
 
 
 def load_dotenv_file(path: Path) -> None:
@@ -90,7 +90,7 @@ def write_env_updates(env_path: Path, updates: Dict[str, str]) -> None:
 
     env_path.parent.mkdir(parents=True, exist_ok=True)
     lines = env_path.read_text(encoding="utf-8", errors="ignore").splitlines() if env_path.exists() else []
-    pending = {k: _sanitize_env_value(v) for k, v in updates.items() if k and str(v).strip()}
+    pending = {k: _sanitize_env_value(v) for k, v in updates.items() if k}
 
     out = []
     seen = set()
@@ -184,7 +184,7 @@ class OrchestratorSettings:
         """Build settings from process env and defaults.
 
         Non-obvious logic:
-        - `data_root` is app-local (`app/data`) for predictable Docker behavior.
+        - `data_root` defaults to repo-local (`data`) for predictable local runs.
         - source/output roots remain workspace-relative for existing evidence hub tools.
         """
 

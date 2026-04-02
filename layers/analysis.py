@@ -11,8 +11,8 @@ from html import unescape as html_unescape
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..config import OrchestratorSettings
-from ..contracts import Gap, GapMap, GapPriority, GapType, from_primitive, to_primitive
+from config import OrchestratorSettings
+from contracts import Gap, GapMap, GapPriority, GapType, from_primitive, to_primitive
 
 
 EXPLICIT_PATTERNS = [

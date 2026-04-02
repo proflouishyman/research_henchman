@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .config import OrchestratorSettings
+from config import OrchestratorSettings
 
 
 DEFAULT_PROFILE_PATH = Path(__file__).resolve().parent / "library_profiles.default.json"

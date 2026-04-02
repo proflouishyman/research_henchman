@@ -6,13 +6,14 @@
   <title>Research Orchestrator v2</title>
   <style>
     :root {
-      --bg: #f3ede3;
+      --bg: #f2ede4;
+      --bg-overlay: radial-gradient(940px 360px at 90% -10%, #e8dbc8, transparent 68%);
       --panel: #fffdf8;
       --line: #d7cab6;
-      --ink: #2b2620;
-      --muted: #6c6154;
-      --cta: #185f45;
-      --cta-hover: #124733;
+      --ink: #27211d;
+      --muted: #655b4f;
+      --cta: #1a5f49;
+      --cta-hover: #134735;
       --ok-bg: #edf8f1;
       --ok-line: #a4ccb4;
       --warn-bg: #fff6e8;
@@ -23,7 +24,10 @@
       --active-bg: #edf8f2;
       --radius: 14px;
       --font-ui: "Space Grotesk", "Avenir Next", sans-serif;
+      --font-display: "Fraunces", "Iowan Old Style", "Times New Roman", serif;
       --font-mono: "IBM Plex Mono", Menlo, monospace;
+      --shell-max: 1240px;
+      --shell-padding: 24px;
     }
 
     * { box-sizing: border-box; }
@@ -32,26 +36,48 @@
       margin: 0;
       font-family: var(--font-ui);
       color: var(--ink);
-      background: radial-gradient(900px 320px at 88% -12%, #eadfcd, transparent 70%), var(--bg);
+      background: var(--bg-overlay), var(--bg);
+      transition: background 180ms ease, color 180ms ease;
     }
 
     .shell {
-      max-width: 1240px;
+      max-width: var(--shell-max);
       margin: 0 auto;
-      padding: 24px;
+      padding: var(--shell-padding);
+    }
+
+    .masthead {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
     }
 
     h1 {
       margin: 0;
-      font-size: 38px;
-      line-height: 1;
+      font-size: 40px;
+      line-height: 0.96;
+      letter-spacing: -0.02em;
+      font-family: var(--font-display);
     }
 
     .subtitle {
       margin-top: 10px;
       color: var(--muted);
       max-width: 760px;
-      font-size: 15px;
+      font-size: 14px;
+    }
+
+    .interface-picker {
+      display: grid;
+      gap: 6px;
+      min-width: 220px;
+      align-self: flex-start;
+    }
+
+    .interface-picker label {
+      margin: 0;
     }
 
     .tabs {
@@ -76,12 +102,14 @@
       font-size: 12px;
       letter-spacing: 0.04em;
       text-transform: uppercase;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
     }
 
     .tab-btn.active {
       background: #fff;
       border-color: var(--line);
       color: var(--ink);
+      transform: translateY(-1px);
     }
 
     .layout {
@@ -97,6 +125,23 @@
       border-radius: var(--radius);
       padding: 16px;
       min-height: 520px;
+      box-shadow: 0 10px 24px rgba(44, 37, 30, 0.05);
+      animation: panelIn 280ms ease both;
+    }
+
+    .layout .panel:nth-child(2) {
+      animation-delay: 80ms;
+    }
+
+    @keyframes panelIn {
+      from {
+        opacity: 0;
+        transform: translateY(7px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .panel h2 {
@@ -413,20 +458,116 @@
     .log-line.err { color: #8f3f3f; background: #fff6f6; }
     .log-line.live { background: #f7fbf8; }
 
+    html[data-ui="operations"] {
+      --bg: #ecefeb;
+      --bg-overlay: linear-gradient(180deg, rgba(214, 226, 221, 0.42), transparent 36%), radial-gradient(820px 280px at 100% -2%, rgba(180, 200, 189, 0.32), transparent 70%);
+      --panel: #fbfdfb;
+      --line: #bfd0c7;
+      --ink: #1d2a24;
+      --muted: #4e665c;
+      --cta: #0f5f46;
+      --cta-hover: #0b4a37;
+      --font-ui: "Sora", "Avenir Next", sans-serif;
+      --font-display: "Sora", "Avenir Next", sans-serif;
+      --shell-max: 1360px;
+      --shell-padding: 20px;
+    }
+
+    html[data-ui="operations"] h1 {
+      font-size: 32px;
+      letter-spacing: -0.015em;
+      text-transform: uppercase;
+    }
+
+    html[data-ui="operations"] .layout {
+      grid-template-columns: 420px minmax(0, 1fr);
+    }
+
+    html[data-ui="operations"] .panel {
+      border-radius: 10px;
+      box-shadow: none;
+    }
+
+    html[data-ui="operations"] .tabs,
+    html[data-ui="operations"] .event-box,
+    html[data-ui="operations"] .plan-list,
+    html[data-ui="operations"] .doc-list,
+    html[data-ui="operations"] .log-wrap {
+      border-radius: 10px;
+    }
+
+    html[data-ui="atlas"] {
+      --bg: #f6f5ef;
+      --bg-overlay: radial-gradient(920px 380px at 8% -16%, rgba(202, 213, 191, 0.5), transparent 70%), radial-gradient(860px 340px at 96% 0%, rgba(214, 204, 180, 0.42), transparent 72%);
+      --panel: #fffefa;
+      --line: #d3cebf;
+      --ink: #252923;
+      --muted: #5e6459;
+      --cta: #235e43;
+      --cta-hover: #174832;
+      --font-ui: "Manrope", "Avenir Next", sans-serif;
+      --font-display: "Newsreader", "Iowan Old Style", "Times New Roman", serif;
+      --shell-max: 1280px;
+      --shell-padding: 26px;
+    }
+
+    html[data-ui="atlas"] h1 {
+      font-size: 44px;
+      letter-spacing: -0.025em;
+    }
+
+    html[data-ui="atlas"] .subtitle {
+      font-size: 15px;
+      max-width: 820px;
+    }
+
+    html[data-ui="atlas"] .layout {
+      grid-template-columns: 330px minmax(0, 1fr);
+      gap: 18px;
+    }
+
+    html[data-ui="atlas"] .panel {
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 14px 30px rgba(42, 47, 39, 0.08);
+    }
+
+    html[data-ui="atlas"] .tab-btn {
+      min-width: 132px;
+    }
+
     .hidden { display: none !important; }
 
     @media (max-width: 1100px) {
-      .layout { grid-template-columns: 1fr; }
+      .layout,
+      html[data-ui="operations"] .layout,
+      html[data-ui="atlas"] .layout {
+        grid-template-columns: 1fr;
+      }
       .panel { min-height: auto; }
       .shell { padding: 16px; }
       h1 { font-size: 32px; }
+      .masthead { align-items: flex-start; }
+      .interface-picker { width: 100%; }
     }
   </style>
 </head>
 <body>
   <div class="shell">
-    <h1>Research Orchestrator</h1>
-    <div class="subtitle">Select manuscript, run once, inspect reflected plan, and watch the pipeline execute end-to-end with live structured events.</div>
+    <div class="masthead">
+      <div>
+        <h1>Research Orchestrator</h1>
+        <div class="subtitle">Select manuscript, run once, inspect reflected plan, and watch the pipeline execute end-to-end with live structured events.</div>
+      </div>
+      <div class="interface-picker">
+        <label for="ui_variant_select">Interface Style</label>
+        <select id="ui_variant_select" title="Switch between saved interface variants to compare layouts and density.">
+          <option value="editorial">Editorial</option>
+          <option value="operations">Operations</option>
+          <option value="atlas">Atlas</option>
+        </select>
+      </div>
+    </div>
 
     <div class="tabs" role="tablist" aria-label="Orchestrator sections">
       <button id="tab_run" class="tab-btn active" title="Run and monitor orchestrator jobs.">Run</button>
@@ -523,6 +664,8 @@
   <script>
     const q = (id) => document.getElementById(id);
     const STORAGE_LAST_MANUSCRIPT = "orchestrator_v2_last_manuscript";
+    const STORAGE_UI_VARIANT = "orchestrator_v2_ui_variant";
+    const UI_VARIANTS = new Set(["editorial", "operations", "atlas"]);
     const STAGES = ["analyzing", "planning", "pulling", "ingesting", "fitting", "complete"];
     const TERMINAL = new Set(["complete", "partial", "failed"]);
     const SETTINGS_FIELDS = [
@@ -569,6 +712,28 @@
     function setText(id, text) {
       const node = q(id);
       if (node) node.textContent = text || "";
+    }
+
+    function normalizeUiVariant(value) {
+      const raw = String(value || "").trim().toLowerCase();
+      return UI_VARIANTS.has(raw) ? raw : "editorial";
+    }
+
+    function applyUiVariant(variant, persist = false) {
+      const chosen = normalizeUiVariant(variant);
+      document.documentElement.setAttribute("data-ui", chosen);
+      const sel = q("ui_variant_select");
+      if (sel && sel.value !== chosen) {
+        sel.value = chosen;
+      }
+      if (persist) {
+        localStorage.setItem(STORAGE_UI_VARIANT, chosen);
+      }
+    }
+
+    function loadUiVariant() {
+      const stored = localStorage.getItem(STORAGE_UI_VARIANT);
+      applyUiVariant(stored || "editorial", false);
     }
 
     function setActivePage(page) {
@@ -1164,6 +1329,10 @@
     }
 
     function bindEvents() {
+      q("ui_variant_select")?.addEventListener("change", (evt) => {
+        const next = String(evt.target?.value || "editorial");
+        applyUiVariant(next, true);
+      });
       q("tab_run")?.addEventListener("click", () => setActivePage("run"));
       q("tab_settings")?.addEventListener("click", () => {
         setActivePage("settings");
@@ -1189,6 +1358,7 @@
     }
 
     async function init() {
+      loadUiVariant();
       setActivePage("run");
       bindEvents();
       await loadManuscripts();

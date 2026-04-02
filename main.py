@@ -55,7 +55,9 @@ _TITLE_KEYS = {"title", "name", "headline", "record_title", "document_title"}
 
 
 def _settings() -> OrchestratorSettings:
-    workspace = Path(os.getenv("ORCH_WORKSPACE", str(BASE_DIR.parents[0]))).resolve()
+    # Default workspace must be this repository root so local `.env` values load
+    # correctly after fresh git clone runs.
+    workspace = Path(os.getenv("ORCH_WORKSPACE", str(BASE_DIR))).resolve()
     load_runtime_env(workspace)
     settings = OrchestratorSettings.from_env()
     settings.data_root.mkdir(parents=True, exist_ok=True)

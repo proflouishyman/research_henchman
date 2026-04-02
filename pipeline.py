@@ -6,6 +6,7 @@ import re
 import traceback
 from typing import Any, Dict
 
+from artifact_export import export_run_bundle
 from config import OrchestratorSettings
 from contracts import RunStatus, run_record_from_dict, run_record_to_dict
 from layers.analysis import analyze_manuscript
@@ -230,4 +231,12 @@ def run_orchestration(
     had_unresolvable = any(row.status == "unresolvable" for row in pull_results)
     final_status = RunStatus.PARTIAL if had_unresolvable else RunStatus.COMPLETE
     save(final_status, "Run complete")
+    bundle_root = export_run_bundle(rec, settings)
+    if bundle_root is not None:
+        emit(
+            "complete",
+            "report_generated",
+            "Generated manuscript gap report bundle",
+            {"bundle_root": str(bundle_root)},
+        )
     emit("complete", "completed", f"Pipeline finished with status: {final_status.value}")

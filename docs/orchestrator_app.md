@@ -53,6 +53,11 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - linked documents are quality-ranked (`high`, `medium`, `seed`) so direct/local PDFs and strong document links appear above provider-search seed links
   - plan cards show route details (`claim_kind`, `evidence_need`, confidence, review status) plus ladder/synonym-ring context when available
   - Settings page supports library-profile selection, database discovery, and credential save-to-`.env`
+  - run completion exports a manuscript bundle under `ORCH_DATA_ROOT/manuscript_exports/<manuscript title>/` containing:
+    - copied manuscript file
+    - `gap_report_<run_id>.md` with coded gaps + snippets
+    - `gaps/<gap_id>/related_documents/<source_id>/...` copied pull artifacts
+    - `gaps/<gap_id>/related_urls.txt` extracted URL references from JSON artifacts (when available)
 
 ## Configuration
 Environment controls all behavior (`config.py`):

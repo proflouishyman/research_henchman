@@ -55,7 +55,7 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - Settings page supports library-profile selection, database discovery, and credential save-to-`.env`
   - run completion exports a manuscript bundle under `ORCH_DATA_ROOT/manuscript_exports/<manuscript title>/` containing:
     - copied manuscript file
-    - `gap_report_<run_id>.md` with coded gaps + snippets
+    - `gap_report_<run_id>.md` with coded gaps + snippets + quality mix (`high`/`medium`/`seed`) and remediation notes when retrieval is seed-only
     - `gaps/<gap_id>/related_documents/<source_id>/...` copied pull artifacts
     - `gaps/<gap_id>/related_urls.txt` extracted URL references from JSON artifacts (when available)
 

@@ -22,6 +22,12 @@ from contracts import (
 from store import OrchestratorStore
 
 
+def test_settings_defaults_workspace_to_repo_root(monkeypatch):
+    monkeypatch.delenv("ORCH_WORKSPACE", raising=False)
+    settings = orchestrator_main._settings()
+    assert settings.workspace == orchestrator_main.BASE_DIR
+
+
 def test_documents_endpoint_and_file_clickthrough(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     state_dir = tmp_path / "state"

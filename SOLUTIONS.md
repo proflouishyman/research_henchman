@@ -1,3 +1,13 @@
+[2026-04-02] - Add Stable Evidence IDs and Snippet-Linked Document References
+Problem
+Users could open pulled sources, but links back to the exact support point were fragile and required re-reading full source materials to relocate relevant passages.
+Root Cause
+Document packet rows lacked deterministic evidence references and snippet-level metadata. Results UI links pointed to broad source URLs/files without stable quote hashes or reusable evidence lookup paths.
+Solution
+Added deterministic `evidence_id` generation in document indexing based on normalized locator + quote hash, attached snippet metadata (`excerpt`, `quote_hash`, `source_locator`) to linked document rows, and generated best-effort text-fragment jump links (`anchor_url`) for URL sources with excerpt text. Added evidence lookup APIs (`/api/orchestrator/runs/{run_id}/evidence/{evidence_id}` and `/api/orchestrator/evidence/{evidence_id}`) and updated UI rendering to expose stable evidence references and snippet-open actions.
+Notes
+This is the basic stable-linking layer only. Multi-LLM evidence arbitration remains intentionally separate as an advanced feature.
+
 [2026-04-02] - Add Switchable Frontend Interface Variants for Run + Settings
 Problem
 Operators needed to compare multiple frontend interface styles quickly without branching code or losing runtime functionality while evaluating UX direction.

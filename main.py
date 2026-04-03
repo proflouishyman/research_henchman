@@ -7,6 +7,8 @@ import os
 import re
 import threading
 import uuid
+import hashlib
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -52,6 +54,8 @@ ACTIVE_RUN_STATUSES = {
 }
 _DOC_EXTENSIONS = {".pdf", ".html", ".htm", ".txt", ".md", ".csv", ".json"}
 _TITLE_KEYS = {"title", "name", "headline", "record_title", "document_title"}
+_EXCERPT_KEYS = {"excerpt", "snippet", "abstract", "summary", "description", "text", "content", "body", "note"}
+_MAX_EXCERPT_CHARS = 320
 
 
 def _settings() -> OrchestratorSettings:
@@ -279,6 +283,158 @@ def _normalize_external_link(key: str, value: str) -> str:
     return ""
 
 
+def _clean_excerpt(text: str, max_chars: int = _MAX_EXCERPT_CHARS) -> str:
+    """Normalize one snippet/excerpt into a compact, stable text form."""
+
+    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not cleaned:
+        return ""
+    return cleaned[:max_chars].rstrip()
+
+
+def _extract_excerpt(node: Dict[str, Any] | None) -> str:
+    """Extract best available short excerpt from one JSON row."""
+
+    if not isinstance(node, dict):
+        return ""
+    for key in _EXCERPT_KEYS:
+        value = node.get(key)
+        if isinstance(value, str):
+            excerpt = _clean_excerpt(value)
+            if excerpt:
+                return excerpt
+    return ""
+
+
+def _normalized_url_for_id(raw_url: str) -> str:
+    """Normalize URLs for deterministic evidence IDs."""
+
+    raw = str(raw_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except Exception:
+        return raw
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    query_rows = urllib.parse.parse_qsl(parsed.query, keep_blank_values=False)
+    filtered = [(k, v) for (k, v) in query_rows if not str(k).lower().startswith("utm_")]
+    query = urllib.parse.urlencode(sorted(filtered), doseq=True)
+    return urllib.parse.urlunsplit(
+        (
+            str(parsed.scheme).lower(),
+            str(parsed.netloc).lower(),
+            str(parsed.path or ""),
+            query,
+            "",
+        )
+    )
+
+
+def _file_fingerprint(path: Path) -> str:
+    """Return deterministic content hash for local-file linking."""
+
+    try:
+        hasher = hashlib.sha1()
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 64)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except Exception:
+        return ""
+
+
+def _quote_hash(excerpt: str) -> str:
+    """Short quote hash used to anchor stable evidence references."""
+
+    cleaned = _clean_excerpt(excerpt)
+    if not cleaned:
+        return ""
+    return hashlib.sha1(cleaned.encode("utf-8", errors="ignore")).hexdigest()[:14]
+
+
+def _anchor_url_with_text_fragment(url: str, excerpt: str) -> str:
+    """Best-effort browser text-fragment URL to jump near supporting quote."""
+
+    base = str(url or "").strip()
+    if not base.lower().startswith(("http://", "https://")):
+        return ""
+    cleaned = _clean_excerpt(excerpt, max_chars=140).strip(" .,:;")
+    if len(cleaned) < 24:
+        return ""
+    encoded = urllib.parse.quote(cleaned, safe="")
+    return f"{base.split('#', 1)[0]}#:~:text={encoded}"
+
+
+def _stable_locator_signature(row: Dict[str, Any], packet_path: Path) -> str:
+    """Build stable locator signature independent from run IDs where possible."""
+
+    url = str(row.get("url", "")).strip()
+    if url:
+        return f"url:{_normalized_url_for_id(url)}"
+
+    raw_path = str(row.get("path", "")).strip()
+    if raw_path:
+        candidate = Path(raw_path)
+        if candidate.exists() and candidate.is_file():
+            digest = _file_fingerprint(candidate)
+            if digest:
+                return f"file:{digest}"
+        return f"path:{candidate.name.lower()}"
+
+    return f"artifact:{str(packet_path.resolve())}"
+
+
+def _stable_evidence_id(source_id: str, locator_signature: str, quote_hash: str, title: str) -> str:
+    """Generate deterministic evidence id for source->snippet linking."""
+
+    payload = "|".join(
+        [
+            str(source_id or "").strip().lower(),
+            str(locator_signature or "").strip().lower(),
+            str(quote_hash or "").strip().lower(),
+            _clean_excerpt(title, max_chars=120).lower(),
+        ]
+    )
+    digest = hashlib.blake2s(payload.encode("utf-8", errors="ignore"), digest_size=10).hexdigest()
+    return f"ev_{digest}"
+
+
+def _attach_evidence_metadata(row: Dict[str, Any], *, run_id: str, gap_id: str, source_id: str, packet_path: Path) -> Dict[str, Any]:
+    """Attach stable evidence-link metadata to one linked document row."""
+
+    out = dict(row)
+    excerpt = _clean_excerpt(str(out.get("excerpt", "")))
+    if not excerpt:
+        excerpt = _clean_excerpt(str(out.get("summary", "")))
+    quote = _quote_hash(excerpt)
+    locator_signature = _stable_locator_signature(out, packet_path)
+    evidence_id = _stable_evidence_id(
+        source_id=source_id,
+        locator_signature=locator_signature,
+        quote_hash=quote,
+        title=str(out.get("title") or out.get("name") or ""),
+    )
+
+    if excerpt:
+        out["excerpt"] = excerpt
+    out["quote_hash"] = quote
+    out["evidence_id"] = evidence_id
+    out["source_locator"] = str(out.get("url") or out.get("path") or packet_path)
+    out["source_locator_type"] = "url" if out.get("url") else ("local" if out.get("path") else "artifact")
+    out["stable_ref"] = f"/api/orchestrator/evidence/{evidence_id}"
+    out["run_ref"] = f"/api/orchestrator/runs/{run_id}/evidence/{evidence_id}"
+
+    anchor = _anchor_url_with_text_fragment(str(out.get("url", "")), excerpt)
+    if anchor:
+        out["anchor_url"] = anchor
+    return out
+
+
 def _resolve_local_artifact(packet_dir: Path, value: str) -> Path | None:
     raw = str(value or "").strip().strip('"').strip("'")
     if not raw:
@@ -359,6 +515,7 @@ def _extract_linked_documents_from_json(json_path: Path, max_docs: int = 40) -> 
             direct_path = str(node.get("path", "")).strip()
             if direct_url or direct_path:
                 title = _record_title(node) or _record_title(parent or {}) or "document"
+                excerpt = _extract_excerpt(node) or _extract_excerpt(parent or {})
                 row: Dict[str, Any] = {
                     "title": title,
                     "source_key": str(node.get("source_key", "")).strip(),
@@ -377,29 +534,36 @@ def _extract_linked_documents_from_json(json_path: Path, max_docs: int = 40) -> 
                     row["quality_label"] = node.get("quality_label")
                 if node.get("link_type") is not None:
                     row["link_type"] = node.get("link_type")
+                if excerpt:
+                    row["excerpt"] = excerpt
                 _append(row)
                 # Continue scanning in case the row also includes nested content.
 
             title = _record_title(node) or _record_title(parent or {})
+            excerpt = _extract_excerpt(node) or _extract_excerpt(parent or {})
             for key, value in node.items():
                 if len(out) >= max_docs:
                     return
                 if isinstance(value, str):
                     ext = _normalize_external_link(str(key), value)
                     if ext:
-                        _append({"kind": "external", "title": title or str(key), "url": ext, "source_key": str(key)})
+                        row = {"kind": "external", "title": title or str(key), "url": ext, "source_key": str(key)}
+                        if excerpt:
+                            row["excerpt"] = excerpt
+                        _append(row)
                         continue
                     local = _resolve_local_artifact(json_path.parent, value)
                     if local is not None:
-                        _append(
-                            {
-                                "kind": "local",
-                                "title": title or local.name,
-                                "path": str(local),
-                                "name": local.name,
-                                "source_key": str(key),
-                            }
-                        )
+                        row = {
+                            "kind": "local",
+                            "title": title or local.name,
+                            "path": str(local),
+                            "name": local.name,
+                            "source_key": str(key),
+                        }
+                        if excerpt:
+                            row["excerpt"] = excerpt
+                        _append(row)
                 elif isinstance(value, (dict, list)):
                     _walk(value, node, depth + 1)
         elif isinstance(node, list):
@@ -423,6 +587,7 @@ def _run_document_packets(settings: OrchestratorSettings, rec_row: Dict[str, Any
     """Build artifact packets with extracted linked documents for Results UI."""
 
     rec = run_record_from_dict(rec_row)
+    run_id = str(rec_row.get("run_id", rec.run_id))
     packets: List[Dict[str, Any]] = []
     seen_paths: set[str] = set()
     for gap_result in rec.pull_results:
@@ -461,6 +626,17 @@ def _run_document_packets(settings: OrchestratorSettings, rec_row: Dict[str, Any
                             "quality_label": "high",
                         }
                     ]
+                linked_documents = [
+                    _attach_evidence_metadata(
+                        row=item if isinstance(item, dict) else {},
+                        run_id=run_id,
+                        gap_id=str(gap_id),
+                        source_id=str(source_id),
+                        packet_path=file_path,
+                    )
+                    for item in linked_documents
+                    if isinstance(item, dict)
+                ]
                 packets.append(
                     {
                         "gap_id": gap_id,
@@ -470,6 +646,7 @@ def _run_document_packets(settings: OrchestratorSettings, rec_row: Dict[str, Any
                         "path": path_str,
                         "name": file_path.name,
                         "size_bytes": file_path.stat().st_size,
+                        "evidence_ref_count": len(linked_documents),
                         "linked_documents": linked_documents,
                     }
                 )
@@ -498,11 +675,21 @@ def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], 
                     "kind": item.get("kind", ""),
                     "quality_rank": item.get("quality_rank", 0),
                     "quality_label": item.get("quality_label", ""),
+                    "evidence_id": item.get("evidence_id", ""),
+                    "quote_hash": item.get("quote_hash", ""),
+                    "source_locator": item.get("source_locator", ""),
+                    "source_locator_type": item.get("source_locator_type", ""),
+                    "stable_ref": item.get("stable_ref", ""),
+                    "run_ref": item.get("run_ref", ""),
                 }
                 if item.get("path"):
                     row["path"] = item.get("path")
                 if item.get("url"):
                     row["url"] = item.get("url")
+                if item.get("anchor_url"):
+                    row["anchor_url"] = item.get("anchor_url")
+                if item.get("excerpt"):
+                    row["excerpt"] = item.get("excerpt")
                 rows.append(row)
                 if len(rows) >= max_files:
                     return rows
@@ -533,6 +720,42 @@ def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], 
         reverse=True,
     )
     return rows
+
+
+def _find_evidence_in_run(
+    settings: OrchestratorSettings,
+    run_row: Dict[str, Any],
+    evidence_id: str,
+    *,
+    max_files: int = 1200,
+) -> Dict[str, Any] | None:
+    """Locate one evidence row in a run's packet tree by stable evidence ID."""
+
+    target = str(evidence_id or "").strip().lower()
+    if not target:
+        return None
+    run_id = str(run_row.get("run_id", "")).strip()
+    packets = _run_document_packets(settings, run_row, max_files=max_files)
+    for packet in packets:
+        linked = packet.get("linked_documents", [])
+        if not isinstance(linked, list):
+            continue
+        for item in linked:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("evidence_id", "")).strip().lower() != target:
+                continue
+            return {
+                "run_id": run_id,
+                "evidence_id": item.get("evidence_id", ""),
+                "gap_id": packet.get("gap_id", ""),
+                "source_id": packet.get("source_id", ""),
+                "query": packet.get("query", ""),
+                "packet_path": packet.get("path", ""),
+                "packet_name": packet.get("name", ""),
+                "document": item,
+            }
+    return None
 
 
 @app.get("/api/orchestrator/health")
@@ -656,6 +879,42 @@ def api_run_documents(run_id: str, limit: int = Query(default=300, ge=1, le=2000
     docs = _run_document_rows(settings, row, max_files=limit)
     linked_total = sum(len(packet.get("linked_documents", [])) for packet in packets if isinstance(packet.get("linked_documents"), list))
     return {"run_id": run_id, "documents": docs, "packets": packets, "linked_document_count": linked_total}
+
+
+@app.get("/api/orchestrator/runs/{run_id}/evidence/{evidence_id}")
+def api_run_evidence(run_id: str, evidence_id: str) -> Dict[str, Any]:
+    """Resolve one stable evidence reference within a specific run."""
+
+    row = store.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+    settings = _settings()
+    found = _find_evidence_in_run(settings, row, evidence_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="evidence not found in run")
+    return found
+
+
+@app.get("/api/orchestrator/evidence/{evidence_id}")
+def api_evidence_lookup(evidence_id: str, run_id: str = Query(default=""), limit: int = Query(default=120, ge=1, le=1000)) -> Dict[str, Any]:
+    """Resolve one stable evidence reference, optionally scoped to a run."""
+
+    settings = _settings()
+    scoped_run = str(run_id or "").strip()
+    if scoped_run:
+        row = store.get_run(scoped_run)
+        if not row:
+            raise HTTPException(status_code=404, detail="run not found")
+        found = _find_evidence_in_run(settings, row, evidence_id)
+        if not found:
+            raise HTTPException(status_code=404, detail="evidence not found in run")
+        return found
+
+    for row in store.list_runs(limit=limit):
+        found = _find_evidence_in_run(settings, row, evidence_id)
+        if found:
+            return found
+    raise HTTPException(status_code=404, detail="evidence not found")
 
 
 @app.post("/api/orchestrator/runs/{run_id}/retry")

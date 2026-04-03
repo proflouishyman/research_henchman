@@ -15,6 +15,7 @@ Contract-enforced automated pipeline for manuscript research runs.
 - Plan routing is now claim-aware: historical/scholarly gaps are routed away from macro-stat APIs unless they semantically fit.
 - Query execution now uses bounded backoff attempts (specific -> broader terms) so failed tight queries can recover without manual reruns.
 - EBSCO/Playwright seed adapters now emit clickable provider/local document links so pulled-document panels show actionable links instead of packet-only placeholders.
+- Seed/search links now run a best-effort follow-on pull pass that stores resolved local artifacts (`_resolved_urls`) and surfaces them as medium/high evidence rows.
 
 ## Core architecture
 - `contracts.py`: layer dataclasses and enums.

@@ -10,6 +10,7 @@ from pathlib import Path
 from .base import PullAdapter
 from .document_links import build_link_rows
 from .io_utils import write_json_records
+from .seed_url_fetch import resolve_seed_rows
 from contracts import PlannedGap, SourceAvailability, SourceResult, SourceType
 
 
@@ -38,11 +39,26 @@ class PlaywrightAdapter(PullAdapter):
 
         try:
             rows = build_link_rows(self.source_id, query, gap.gap_id, limit_local=4)
+            source_root = Path(run_dir) / gap.gap_id / self.source_id
+            source_root.mkdir(parents=True, exist_ok=True)
+            resolved_rows, resolved_stats = resolve_seed_rows(
+                rows=rows,
+                source_root=source_root,
+                source_id=self.source_id,
+                query=query,
+                gap_id=gap.gap_id,
+            )
+            rows.extend(resolved_rows)
             for row in rows:
                 row["note"] = note
                 row["source_id"] = self.source_id
             root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
-            status = "completed" if rows else "partial"
+            pulled_docs = sum(
+                1
+                for row in rows
+                if str(row.get("quality_label", "")).lower() in {"high", "medium"}
+            )
+            status = "completed" if pulled_docs > 0 else ("partial" if rows else "failed")
             return SourceResult(
                 source_id=self.source_id,
                 source_type=self.source_type,
@@ -52,7 +68,13 @@ class PlaywrightAdapter(PullAdapter):
                 run_dir=root,
                 artifact_type="json_records",
                 status=status,
-                stats={"records": len(rows), "link_mode": "provider_search+local_corpus"},
+                stats={
+                    "records": len(rows),
+                    "pulled_docs": pulled_docs,
+                    "seed_only": pulled_docs <= 0,
+                    "resolved_files": int(resolved_stats.get("resolved_files", 0)),
+                    "link_mode": "provider_search+local_corpus+resolved_fetch",
+                },
             )
         except Exception as exc:
             return SourceResult(

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import socket
+import threading
+from contextlib import closing
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from adapters import document_links
@@ -71,3 +75,47 @@ def test_playwright_seed_adapter_emits_clickthrough_rows(tmp_path) -> None:
     payload = json.loads(artifact.read_text(encoding="utf-8"))
     assert any(str(row.get("url", "")).startswith("http") for row in payload)
     assert any(str(row.get("quality_label", "")) for row in payload)
+
+
+def test_playwright_seed_adapter_resolves_seed_urls_into_local_artifacts(monkeypatch, tmp_path) -> None:
+    web_root = tmp_path / "web"
+    web_root.mkdir(parents=True, exist_ok=True)
+    (web_root / "doc.pdf").write_bytes(b"%PDF-1.4 fixture")
+    (web_root / "index.html").write_text(
+        '<html><body><a href="/doc.pdf">doc</a></body></html>',
+        encoding="utf-8",
+    )
+
+    class _Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(web_root), **kwargs)
+
+        def log_message(self, format, *args):  # noqa: A003
+            return
+
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.bind(("127.0.0.1", 0))
+        host, port = sock.getsockname()
+    server = ThreadingHTTPServer((host, port), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    monkeypatch.setattr(document_links, "local_document_candidates", lambda _query, limit=5: [])
+    monkeypatch.setattr(document_links, "provider_search_url", lambda _source_id, _query: f"http://127.0.0.1:{port}/index.html")
+
+    try:
+        adapter = JstorPlaywrightAdapter()
+        run_dir = tmp_path / "runs"
+        result = adapter.pull(_gap(), "john mcdonogh supercargo", str(run_dir))
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert result.status in {"completed", "partial"}
+    artifact = Path(result.run_dir) / "john_mcdonogh_supercargo.json"
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert any(str(row.get("link_type", "")).startswith("resolved") for row in payload)
+    resolved_paths = [Path(str(row.get("path", ""))) for row in payload if str(row.get("link_type", "")).startswith("resolved")]
+    assert resolved_paths
+    assert any(p.suffix.lower() == ".html" for p in resolved_paths)
+    assert any(p.suffix.lower() == ".pdf" for p in resolved_paths)

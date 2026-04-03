@@ -88,6 +88,7 @@ Environment controls all behavior (`config.py`):
 - Capability ranking now applies light provider diversity constraints so one source family does not dominate all selected routes when equally strong alternatives are available.
 - Route confidence includes a seed-source penalty for discovery-only adapters (for example `ebsco_api`) so plan confidence reflects retrieval uncertainty when full-text sources are unavailable.
 - Seed adapters for EBSCO/Playwright now emit normalized click-through links (`url` and best-effort local `path`) so packet extraction can render document links even before full site-specific automation is complete.
+- Seed adapters now also perform best-effort URL resolution: provider-search links are fetched into local `_resolved_urls/<query>/` artifacts (HTML/PDF when available), and those pulled files are emitted as medium/high-quality document rows alongside seed links.
 - Document indexing preserves adapter-provided quality metadata (`quality_rank`, `quality_label`) and sorts flattened run-document rows by quality so high-confidence links remain first even when mixed with raw artifact files.
 
 ## University profile coverage

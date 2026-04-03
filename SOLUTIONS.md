@@ -1,3 +1,13 @@
+[2026-04-03] - Resolve Seed Search URLs Into Pulled Local Artifacts During Adapter Pulls
+Problem
+Runs could complete with seed-only provider-search rows (for example Project MUSE/JSTOR placeholder links), so click-through often landed on broad search pages and still required manual source hunting.
+Root Cause
+Playwright/keyed seed adapters emitted provider/local link rows but did not execute a follow-on retrieval pass to pull concrete page/document artifacts from those seed URLs.
+Solution
+Added `adapters/seed_url_fetch.py` and wired it into `PlaywrightAdapter._link_seed_result(...)` and `EbscoApiAdapter.pull(...)`. Seed/provider URLs are now fetched into per-query `_resolved_urls/<query>/` folders, child links are selectively followed, and pulled artifacts are appended as `resolved_snapshot` rows with medium/high quality labels. Added tests (`tests/test_seed_url_fetch.py`, expanded `tests/test_adapter_links.py`) and verified end-to-end runs now produce non-seed pulled artifacts for previously seed-only sources.
+Notes
+Source-specific extraction remains improvable, but this closes the seed-only gap by ensuring adapters attempt concrete pull artifacts as part of normal run execution.
+
 [2026-04-02] - Add Stable Evidence IDs and Snippet-Linked Document References
 Problem
 Users could open pulled sources, but links back to the exact support point were fragile and required re-reading full source materials to relocate relevant passages.

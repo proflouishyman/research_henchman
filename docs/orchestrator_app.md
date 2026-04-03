@@ -27,6 +27,8 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 - `GET /api/orchestrator/runs/{run_id}`
 - `GET /api/orchestrator/runs/{run_id}/events`
 - `GET /api/orchestrator/runs/{run_id}/documents`
+- `GET /api/orchestrator/runs/{run_id}/evidence/{evidence_id}`
+- `GET /api/orchestrator/evidence/{evidence_id}`
 - `GET /api/orchestrator/files?path=...`
 - `POST /api/orchestrator/runs/{run_id}/retry`
 - `GET /api/orchestrator/connections/values`
@@ -51,6 +53,8 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - auto-expanded log while active with live event count/stage header
   - post-run document list with click-through links to pulled artifact files
   - pulled documents shown as collapsible source packets; packet JSON is parsed for linked document targets so users see source docs (PDF/web/DOI) first
+  - linked document rows include stable evidence references (`evidence_id`), excerpt previews, quote hashes, and best-effort snippet jump links (`anchor_url`) when a URL + excerpt are available
+  - evidence lookup endpoints resolve stable references back to source packet/document metadata for manuscript-to-source traceability
   - linked documents are quality-ranked (`high`, `medium`, `seed`) so direct/local PDFs and strong document links appear above provider-search seed links
   - plan cards show route details (`claim_kind`, `evidence_need`, confidence, review status) plus ladder/synonym-ring context when available
   - Settings page supports library-profile selection, database discovery, and credential save-to-`.env`

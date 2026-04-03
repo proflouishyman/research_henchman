@@ -420,6 +420,29 @@
     }
 
     .doc-link:hover { text-decoration: underline; }
+    .doc-inline-links {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+    .snippet-preview {
+      margin-top: 6px;
+      color: var(--ink);
+      font-size: 12px;
+      line-height: 1.4;
+      background: #fff;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      padding: 6px 8px;
+    }
+    .evidence-id {
+      display: inline-block;
+      margin-top: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
 
     .log-wrap {
       border: 1px solid var(--line);
@@ -1141,11 +1164,13 @@
           const row = document.createElement("div");
           row.className = "doc-row";
           const href = doc.url || `/api/orchestrator/files?path=${encodeURIComponent(doc.path || "")}`;
-          row.innerHTML = `
-            <div><a class="doc-link" target="_blank" rel="noopener noreferrer" href="${href}">${doc.name || "document"}</a></div>
-            <div class="muted">${doc.gap_id || ""} · ${doc.source_id || ""} · ${doc.artifact_type || ""}</div>
-            <div class="muted">${doc.query || ""}</div>
-          `;
+            row.innerHTML = `
+              <div><a class="doc-link" target="_blank" rel="noopener noreferrer" href="${href}">${doc.name || "document"}</a></div>
+              <div class="muted">${doc.gap_id || ""} · ${doc.source_id || ""} · ${doc.artifact_type || ""}</div>
+              <div class="muted">${doc.query || ""}</div>
+              ${doc.evidence_id ? `<div class="evidence-id">evidence ${doc.evidence_id}</div>` : ""}
+              ${doc.excerpt ? `<div class="snippet-preview">“${doc.excerpt}”</div>` : ""}
+            `;
           list.appendChild(row);
         });
         return;
@@ -1180,12 +1205,20 @@
             linked.forEach((item) => {
               const row = document.createElement("div");
               row.className = "doc-row";
-              const href = item.url || (item.path ? `/api/orchestrator/files?path=${encodeURIComponent(item.path)}` : "");
+              const sourceHref = item.url || (item.path ? `/api/orchestrator/files?path=${encodeURIComponent(item.path)}` : "");
+              const jumpHref = item.anchor_url || sourceHref;
               const qualityLabel = String(item.quality_label || "seed").toLowerCase();
               const qualityClass = qualityLabel === "high" ? "quality-high" : (qualityLabel === "medium" ? "quality-medium" : "quality-seed");
               row.innerHTML = `
-                <div><span class="quality-pill ${qualityClass}">${qualityLabel}</span>${href ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${href}\">${item.title || item.name || "document"}</a>` : `<strong>${item.title || item.name || "document"}</strong>`}</div>
+                <div><span class="quality-pill ${qualityClass}">${qualityLabel}</span>${jumpHref ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${jumpHref}\">${item.title || item.name || "document"}</a>` : `<strong>${item.title || item.name || "document"}</strong>`}</div>
                 <div class="muted">${item.kind || ""}${item.source_key ? ` · ${item.source_key}` : ""}${item.quality_rank ? ` · rank ${item.quality_rank}` : ""}</div>
+                <div class="doc-inline-links">
+                  ${sourceHref ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${sourceHref}\">Open Source</a>` : ""}
+                  ${item.anchor_url ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${item.anchor_url}\">Open Snippet</a>` : ""}
+                  ${item.run_ref ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${item.run_ref}\">Evidence JSON</a>` : ""}
+                </div>
+                ${item.evidence_id ? `<div class="evidence-id">evidence ${item.evidence_id}</div>` : ""}
+                ${item.excerpt ? `<div class="snippet-preview">“${item.excerpt}”</div>` : ""}
               `;
               linkList.appendChild(row);
             });

@@ -11,6 +11,7 @@ Contract-enforced automated pipeline for manuscript research runs.
 - UI highlights progress with active-stage color pulse and run heartbeat.
 - Completed runs expose click-through artifact files in a document panel.
 - Results document panel now renders collapsible source packets and prioritizes extracted linked documents (PDF/HTML/DOI/record URLs) over raw JSON artifact filenames.
+- Linked document rows now include stable evidence references (`evidence_id`) plus quote/snippet metadata so manuscript claims can be linked back to specific supporting passages.
 - Plan routing is now claim-aware: historical/scholarly gaps are routed away from macro-stat APIs unless they semantically fit.
 - Query execution now uses bounded backoff attempts (specific -> broader terms) so failed tight queries can recover without manual reruns.
 - EBSCO/Playwright seed adapters now emit clickable provider/local document links so pulled-document panels show actionable links instead of packet-only placeholders.
@@ -37,6 +38,8 @@ Contract-enforced automated pipeline for manuscript research runs.
 - `GET /api/orchestrator/runs/{run_id}`
 - `GET /api/orchestrator/runs/{run_id}/events`
 - `GET /api/orchestrator/runs/{run_id}/documents`
+- `GET /api/orchestrator/runs/{run_id}/evidence/{evidence_id}`
+- `GET /api/orchestrator/evidence/{evidence_id}`
 - `GET /api/orchestrator/files?path=...`
 - `POST /api/orchestrator/runs/{run_id}/retry`
 - `GET /api/orchestrator/connections/values`

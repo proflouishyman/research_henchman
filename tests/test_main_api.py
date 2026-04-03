@@ -133,7 +133,15 @@ def test_documents_endpoint_extracts_linked_docs_from_json_packet(tmp_path, monk
     artifact_root.mkdir(parents=True, exist_ok=True)
     artifact_file = artifact_root / "packet.json"
     artifact_file.write_text(
-        json.dumps([{"title": "JSTOR record", "url": "https://example.org/paper.pdf"}]),
+        json.dumps(
+            [
+                {
+                    "title": "JSTOR record",
+                    "url": "https://example.org/paper.pdf",
+                    "snippet": "This article directly supports the manuscript's claim about early internet commerce.",
+                }
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -194,6 +202,90 @@ def test_documents_endpoint_extracts_linked_docs_from_json_packet(tmp_path, monk
     assert any(row.get("url") == "https://example.org/paper.pdf" for row in docs)
     assert any("quality_label" in row for row in docs)
     assert any("quality_rank" in row for row in docs)
+    assert any(str(row.get("evidence_id", "")).startswith("ev_") for row in docs)
+    assert any(bool(row.get("quote_hash")) for row in docs)
+    assert any("runs/run_test_links/evidence/" in str(row.get("run_ref", "")) for row in docs)
+    assert any("#:~:text=" in str(row.get("anchor_url", "")) for row in docs)
+
+
+def test_evidence_lookup_endpoints_return_stable_document_row(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state_dir = tmp_path / "state"
+    uploads = state_dir / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+
+    artifact_root = workspace / "pull_outputs" / "run_test_evidence" / "AUTO-01-G1" / "ebsco_api"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    (artifact_root / "packet.json").write_text(
+        json.dumps(
+            [
+                {
+                    "title": "Source Doc",
+                    "url": "https://example.org/source-doc",
+                    "summary": "A concise support passage tied to the manuscript claim.",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
+    monkeypatch.setenv("ORCH_PULL_OUTPUT_ROOT", "pull_outputs")
+
+    store = OrchestratorStore(state_dir)
+    monkeypatch.setattr(orchestrator_main, "store", store)
+    monkeypatch.setattr(orchestrator_main, "UPLOAD_DIR", uploads)
+
+    rec = RunRecord(
+        run_id="run_test_evidence",
+        manuscript_path="Manuscript/sample.txt",
+        status=RunStatus.COMPLETE,
+        stage_detail="Run complete",
+    )
+    rec.pull_results = [
+        GapPullResult(
+            gap_id="AUTO-01-G1",
+            planned_gap=PlannedGap(gap_id="AUTO-01-G1"),
+            results=[
+                SourceResult(
+                    source_id="ebsco_api",
+                    source_type=SourceType.KEYED_API,
+                    query="example query",
+                    gap_id="AUTO-01-G1",
+                    document_count=1,
+                    run_dir=str(artifact_root),
+                    artifact_type="json_records",
+                    status="completed",
+                )
+            ],
+            total_documents=1,
+            sources_attempted=["ebsco_api"],
+            sources_succeeded=["ebsco_api"],
+            sources_failed=[],
+            status="completed",
+        )
+    ]
+    store.upsert_run(run_record_to_dict(rec))
+    client = TestClient(orchestrator_main.app)
+
+    docs_resp = client.get("/api/orchestrator/runs/run_test_evidence/documents")
+    assert docs_resp.status_code == 200
+    docs = docs_resp.json().get("documents", [])
+    assert docs
+    evidence_id = str(docs[0].get("evidence_id", ""))
+    assert evidence_id.startswith("ev_")
+
+    run_lookup = client.get(f"/api/orchestrator/runs/run_test_evidence/evidence/{evidence_id}")
+    assert run_lookup.status_code == 200
+    run_payload = run_lookup.json()
+    assert run_payload.get("run_id") == "run_test_evidence"
+    assert run_payload.get("evidence_id") == evidence_id
+    assert run_payload.get("document", {}).get("source_locator")
+
+    global_lookup = client.get(f"/api/orchestrator/evidence/{evidence_id}")
+    assert global_lookup.status_code == 200
+    assert global_lookup.json().get("evidence_id") == evidence_id
 
 
 def test_documents_endpoint_preserves_quality_metadata_and_order(tmp_path, monkeypatch):

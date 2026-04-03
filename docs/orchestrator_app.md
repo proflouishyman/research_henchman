@@ -90,6 +90,7 @@ Environment controls all behavior (`config.py`):
 - Seed adapters for EBSCO/Playwright now emit normalized click-through links (`url` and best-effort local `path`) so packet extraction can render document links even before full site-specific automation is complete.
 - Seed adapters now also perform best-effort URL resolution: provider-search links are fetched into local `_resolved_urls/<query>/` artifacts (HTML/PDF when available), and those pulled files are emitted as medium/high-quality document rows alongside seed links.
 - Document indexing preserves adapter-provided quality metadata (`quality_rank`, `quality_label`) and sorts flattened run-document rows by quality so high-confidence links remain first even when mixed with raw artifact files.
+- Results packet indexing is JSON-first: nested `_resolved_urls`/`_fetched_urls` artifacts are surfaced through packet-linked rows (not as duplicate standalone packets), and flattened rows dedupe by stable evidence/locator keys.
 
 ## University profile coverage
 - Playwright adapter IDs currently implemented for history/library workflows:

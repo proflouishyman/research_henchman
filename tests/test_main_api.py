@@ -375,6 +375,94 @@ def test_documents_endpoint_preserves_quality_metadata_and_order(tmp_path, monke
     assert "matched_source.pdf" in str(docs[0].get("path", ""))
 
 
+def test_documents_endpoint_avoids_duplicate_packets_for_resolved_artifacts(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state_dir = tmp_path / "state"
+    uploads = state_dir / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+
+    artifact_root = workspace / "pull_outputs" / "run_test_packet_dedupe" / "AUTO-01-G1" / "jstor"
+    resolved_dir = artifact_root / "_resolved_urls" / "test_query"
+    resolved_dir.mkdir(parents=True, exist_ok=True)
+    (resolved_dir / "seed_01.html").write_text("<html>resolved</html>", encoding="utf-8")
+    (artifact_root / "packet.json").write_text(
+        json.dumps(
+            [
+                {
+                    "title": "jstor search results",
+                    "url": "https://www.jstor.org/action/doBasicSearch?Query=test+query",
+                    "link_type": "provider_search",
+                    "quality_label": "seed",
+                    "quality_rank": 20,
+                },
+                {
+                    "title": "jstor pulled artifact seed_01.html",
+                    "path": "_resolved_urls/test_query/seed_01.html",
+                    "link_type": "resolved_snapshot",
+                    "quality_label": "medium",
+                    "quality_rank": 72,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
+    monkeypatch.setenv("ORCH_PULL_OUTPUT_ROOT", "pull_outputs")
+
+    store = OrchestratorStore(state_dir)
+    monkeypatch.setattr(orchestrator_main, "store", store)
+    monkeypatch.setattr(orchestrator_main, "UPLOAD_DIR", uploads)
+
+    rec = RunRecord(
+        run_id="run_test_packet_dedupe",
+        manuscript_path="Manuscript/sample.txt",
+        status=RunStatus.COMPLETE,
+        stage_detail="Run complete",
+    )
+    rec.pull_results = [
+        GapPullResult(
+            gap_id="AUTO-01-G1",
+            planned_gap=PlannedGap(gap_id="AUTO-01-G1"),
+            results=[
+                SourceResult(
+                    source_id="jstor",
+                    source_type=SourceType.PLAYWRIGHT,
+                    query="test query",
+                    gap_id="AUTO-01-G1",
+                    document_count=2,
+                    run_dir=str(artifact_root),
+                    artifact_type="json_records",
+                    status="completed",
+                )
+            ],
+            total_documents=2,
+            sources_attempted=["jstor"],
+            sources_succeeded=["jstor"],
+            sources_failed=[],
+            status="completed",
+        )
+    ]
+    store.upsert_run(run_record_to_dict(rec))
+    client = TestClient(orchestrator_main.app)
+
+    docs_resp = client.get("/api/orchestrator/runs/run_test_packet_dedupe/documents")
+    assert docs_resp.status_code == 200
+    payload = docs_resp.json()
+    packets = payload.get("packets", [])
+    docs = payload.get("documents", [])
+    assert len(packets) == 1
+    assert packets[0].get("name") == "packet.json"
+    assert "_resolved_urls" not in str(packets[0].get("path", ""))
+    assert any(str(item.get("link_type", "")) == "resolved_snapshot" for item in packets[0].get("linked_documents", []))
+    assert any(str(item.get("link_type", "")) == "provider_search" for item in packets[0].get("linked_documents", []))
+
+    seed_rows = [row for row in docs if str(row.get("path", "")).endswith("seed_01.html")]
+    assert len(seed_rows) == 1
+    assert not any(str(row.get("link_type", "")) == "raw_artifact" for row in docs)
+
+
 def test_library_profiles_endpoint_lists_available_systems(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     state_dir = tmp_path / "state"

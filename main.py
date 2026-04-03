@@ -53,6 +53,7 @@ ACTIVE_RUN_STATUSES = {
     RunStatus.FITTING.value,
 }
 _DOC_EXTENSIONS = {".pdf", ".html", ".htm", ".txt", ".md", ".csv", ".json"}
+_RESOLVED_ARTIFACT_DIRS = {"_resolved_urls", "_fetched_urls"}
 _TITLE_KEYS = {"title", "name", "headline", "record_title", "document_title"}
 _EXCERPT_KEYS = {"excerpt", "snippet", "abstract", "summary", "description", "text", "content", "body", "note"}
 _MAX_EXCERPT_CHARS = 320
@@ -455,6 +456,24 @@ def _resolve_local_artifact(packet_dir: Path, value: str) -> Path | None:
     return None
 
 
+def _is_nested_resolved_artifact(path: Path) -> bool:
+    """Return True when a file lives under resolved/fetched URL artifact folders."""
+
+    parts = {str(part).lower() for part in path.parts}
+    return bool(parts & _RESOLVED_ARTIFACT_DIRS)
+
+
+def _direct_file_quality(path: Path) -> tuple[int, str]:
+    """Assign conservative quality labels for direct local artifact files."""
+
+    ext = path.suffix.lower()
+    if ext == ".pdf":
+        return (100, "high")
+    if ext in {".html", ".htm", ".txt", ".md", ".csv", ".json"}:
+        return (72, "medium")
+    return (88, "high")
+
+
 def _extract_linked_documents_from_json(json_path: Path, max_docs: int = 40) -> List[Dict[str, Any]]:
     """Extract likely document links/paths from JSON artifact packets."""
 
@@ -484,6 +503,8 @@ def _extract_linked_documents_from_json(json_path: Path, max_docs: int = 40) -> 
             ext = Path(path).suffix.lower()
             if ext == ".pdf":
                 return (100, "high")
+            if ext in {".html", ".htm", ".txt", ".md", ".csv", ".json"}:
+                return (72, "medium")
             return (88, "high")
 
         if "doi.org/" in url or source_key == "doi":
@@ -590,6 +611,7 @@ def _run_document_packets(settings: OrchestratorSettings, rec_row: Dict[str, Any
     run_id = str(rec_row.get("run_id", rec.run_id))
     packets: List[Dict[str, Any]] = []
     seen_paths: set[str] = set()
+    linked_locators: set[str] = set()
     for gap_result in rec.pull_results:
         gap_id = gap_result.gap_id
         for source_result in gap_result.results:
@@ -601,7 +623,10 @@ def _run_document_packets(settings: OrchestratorSettings, rec_row: Dict[str, Any
 
             source_id = source_result.source_id
             query = source_result.query
-            for file_path in sorted(run_dir.rglob("*")):
+            all_files = sorted(path for path in run_dir.rglob("*") if path.is_file())
+            packet_files = [path for path in all_files if path.suffix.lower() == ".json" and not _is_nested_resolved_artifact(path)]
+            supplemental_files = [path for path in all_files if path.suffix.lower() != ".json"]
+            for file_path in packet_files:
                 if not file_path.is_file():
                     continue
                 path_str = str(file_path.resolve())
@@ -637,6 +662,54 @@ def _run_document_packets(settings: OrchestratorSettings, rec_row: Dict[str, Any
                     for item in linked_documents
                     if isinstance(item, dict)
                 ]
+                for item in linked_documents:
+                    locator = str(item.get("source_locator") or item.get("url") or item.get("path") or "").strip().lower()
+                    if locator:
+                        linked_locators.add(locator)
+                packets.append(
+                    {
+                        "gap_id": gap_id,
+                        "source_id": source_id,
+                        "query": query,
+                        "artifact_type": source_result.artifact_type,
+                        "path": path_str,
+                        "name": file_path.name,
+                        "size_bytes": file_path.stat().st_size,
+                        "evidence_ref_count": len(linked_documents),
+                        "linked_documents": linked_documents,
+                    }
+                )
+                if len(packets) >= max_files:
+                    return packets
+            for file_path in supplemental_files:
+                # JSON packet rows already reference resolved URL artifacts.
+                # Skip nested resolved/fetched files here to avoid duplicate packet cards.
+                if _is_nested_resolved_artifact(file_path):
+                    continue
+                path_str = str(file_path.resolve())
+                if path_str in seen_paths:
+                    continue
+                if path_str.strip().lower() in linked_locators:
+                    continue
+                seen_paths.add(path_str)
+                quality_rank, quality_label = _direct_file_quality(file_path)
+                linked_documents = [
+                    _attach_evidence_metadata(
+                        row={
+                            "kind": "local",
+                            "title": file_path.name,
+                            "path": path_str,
+                            "name": file_path.name,
+                            "quality_rank": quality_rank,
+                            "quality_label": quality_label,
+                            "link_type": "raw_artifact",
+                        },
+                        run_id=run_id,
+                        gap_id=str(gap_id),
+                        source_id=str(source_id),
+                        packet_path=file_path,
+                    )
+                ]
                 packets.append(
                     {
                         "gap_id": gap_id,
@@ -660,21 +733,30 @@ def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], 
 
     packets = _run_document_packets(settings, rec_row, max_files=max_files)
     rows: List[Dict[str, Any]] = []
+    seen: set[str] = set()
     for packet in packets:
         linked = packet.get("linked_documents", [])
         if isinstance(linked, list) and linked:
             for item in linked:
                 if not isinstance(item, dict):
                     continue
+                stable = str(item.get("evidence_id") or item.get("source_locator") or item.get("url") or item.get("path") or "").strip().lower()
+                if stable and stable in seen:
+                    continue
+                if stable:
+                    seen.add(stable)
                 row = {
                     "gap_id": packet.get("gap_id", ""),
                     "source_id": packet.get("source_id", ""),
                     "query": packet.get("query", ""),
                     "artifact_type": packet.get("artifact_type", ""),
                     "name": item.get("name") or item.get("title") or "document",
+                    "title": item.get("title") or item.get("name") or "document",
                     "kind": item.get("kind", ""),
                     "quality_rank": item.get("quality_rank", 0),
                     "quality_label": item.get("quality_label", ""),
+                    "link_type": item.get("link_type", ""),
+                    "source_key": item.get("source_key", ""),
                     "evidence_id": item.get("evidence_id", ""),
                     "quote_hash": item.get("quote_hash", ""),
                     "source_locator": item.get("source_locator", ""),

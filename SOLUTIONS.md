@@ -1,3 +1,13 @@
+[2026-04-03] - Prefer JSON Packet Links Over Raw Resolved-File Packets in Results API
+Problem
+Run document views could become noisy and misleading because `/runs/{run_id}/documents` treated nested `_resolved_urls`/`_fetched_urls` files as top-level packets, creating duplicate rows and inflated quality counts.
+Root Cause
+Packet indexing walked all files under each adapter run directory and built packets for both JSON packet files and nested resolved artifacts. Flattened rows then repeated the same source artifact through multiple packet paths.
+Solution
+Updated `main.py` document indexing to make JSON packet files the source of truth, skip nested resolved/fetched URL files as standalone packets, and dedupe flattened rows by stable evidence/locator keys. Added direct-file quality calibration helper and preserved link metadata (`title`, `link_type`, `source_key`) in flattened API rows. Added regression coverage in `tests/test_main_api.py` to ensure resolved artifacts are surfaced as linked docs, not duplicate packets.
+Notes
+This is contract-safe: API shapes remain unchanged, but packet quality/readability now better reflects actual pulled evidence.
+
 [2026-04-03] - Resolve Seed Search URLs Into Pulled Local Artifacts During Adapter Pulls
 Problem
 Runs could complete with seed-only provider-search rows (for example Project MUSE/JSTOR placeholder links), so click-through often landed on broad search pages and still required manual source hunting.

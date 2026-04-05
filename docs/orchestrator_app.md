@@ -56,6 +56,7 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - run launch is blocked until pre-run sign-in stage is marked complete
   - `Analyze Sources` runs analysis/reflection preflight for the selected manuscript and derives sign-in targets from planned providers
   - `Test Login` probes each derived provider URL and reports per-source `ok` / `blocked` / `unreachable` status with action hints
+  - `Test Login` now opens a blocking sign-in splash prompt first so users explicitly sign into university/provider systems before checks continue
   - status colors are semantic and consistent across workflow UI: green (`ready`), red (`blocked`), black (`completed`)
   - Settings `Detected Library Databases` rows include per-database `Test Login` actions with row-level pass/fail badges
   - auto-expanded log while active with live event count/stage header
@@ -100,6 +101,7 @@ Environment controls all behavior (`config.py`):
 - Seed URL resolution now detects blocked pages (CAPTCHA/challenge/login/access-denied), tags those rows with `blocked_reason` + `action_required`, and emits `pulling/warn` events so users know to complete provider verification/login before retry.
 - Blocked snapshots are demoted to seed quality and excluded from `pulled_docs` counts used for pull-status quality accounting.
 - Pull source selection prefers keyed/API sources over same-family Playwright fallbacks when both are available (for example prefer `ebsco_api` over `ebscohost`).
+- CDP seed fetch now attempts a storage-state-backed request-context pull before opening a transient browser page, reducing focus-stealing tab activity during automated checks.
 - Docker CDP attach now normalizes `host.docker.internal` to a resolved IP before probe/connect because Chrome DevTools can reject hostname Host headers with HTTP 500.
 - Document indexing preserves adapter-provided quality metadata (`quality_rank`, `quality_label`) and sorts flattened run-document rows by quality so high-confidence links remain first even when mixed with raw artifact files.
 - Results packet indexing is JSON-first: nested `_resolved_urls`/`_fetched_urls` artifacts are surfaced through packet-linked rows (not as duplicate standalone packets), and flattened rows dedupe by stable evidence/locator keys.

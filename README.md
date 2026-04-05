@@ -14,6 +14,7 @@ Contract-enforced automated pipeline for manuscript research runs.
 - Workflow statuses now use explicit semantic colors in Run UI: green = ready, red = blocked, black = completed.
 - Settings now provides per-database `Test Login` actions with row-level green/red status badges for quick provider-access checks.
 - Clicking `Test Login` now opens a sign-in splash prompt first, so users explicitly sign into university/provider systems before checks run.
+- Sign-in splash `Open Sign-In Pages` now targets the attached Playwright/CDP browser session first so login state carries into automated checks and pulls.
 - CDP retrieval now uses a background request path first (session-state request context) to reduce browser focus stealing during automated checks.
 - UI highlights progress with active-stage color pulse and run heartbeat.
 - Completed runs expose click-through artifact files in a document panel.
@@ -59,6 +60,7 @@ Contract-enforced automated pipeline for manuscript research runs.
 - `GET /api/orchestrator/sources/catalog`
 - `POST /api/orchestrator/signin/preflight`
 - `POST /api/orchestrator/signin/test`
+- `POST /api/orchestrator/signin/open`
 
 ## Extension point
 Add a new source by:

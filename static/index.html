@@ -850,7 +850,7 @@
         <p id="login_splash_note" class="login-splash-note">Sign into your university/library systems in the browser session before running login tests.</p>
         <div id="login_splash_links" class="login-splash-links"></div>
         <div class="login-splash-actions">
-          <button id="login_splash_open_btn" title="Open all listed sign-in portals in new tabs.">Open Sign-In Pages</button>
+          <button id="login_splash_open_btn" title="Open all listed sign-in portals in your active Playwright/browser session.">Open Sign-In Pages</button>
           <button id="login_splash_continue_btn" class="primary" title="Continue after signing in.">I Signed In, Continue Test</button>
           <button id="login_splash_cancel_btn" title="Cancel this login test.">Cancel</button>
         </div>
@@ -1015,6 +1015,51 @@
       const resolver = state.loginSplashResolver;
       state.loginSplashResolver = null;
       if (typeof resolver === "function") resolver(Boolean(proceed));
+    }
+
+    // Open sign-in URLs in the same CDP-backed browser session used by login tests.
+    async function openLoginSplashPages() {
+      const links = Array.isArray(state.loginSplashLinks) ? state.loginSplashLinks : [];
+      const sourceIds = [];
+      const urls = [];
+      links.forEach((row) => {
+        const sourceId = String(row?.source_id || "").trim().toLowerCase();
+        const href = String(row?.url || "").trim();
+        if (sourceId) sourceIds.push(sourceId);
+        if (href) urls.push(href);
+      });
+      if (!sourceIds.length && !urls.length) return;
+
+      const openBtn = q("login_splash_open_btn");
+      setButtonBusy("login_splash_open_btn", true, "Opening...", "Open Sign-In Pages");
+      try {
+        const out = await api("/api/orchestrator/signin/open", "POST", { source_ids: sourceIds, urls });
+        const opened = Number(out?.opened || 0);
+        const requested = Number(out?.requested || 0);
+        if (opened > 0) {
+          appendLog(
+            `[${new Date().toLocaleTimeString()}] opened ${opened}/${requested} sign-in pages in active test browser session`,
+            opened === requested ? "ok" : "warn"
+          );
+          return;
+        }
+      } catch (err) {
+        appendLog(
+          `[${new Date().toLocaleTimeString()}] cdp open failed, falling back to local tabs: ${String(err?.message || err || "open failed")}`,
+          "warn"
+        );
+      } finally {
+        setButtonBusy("login_splash_open_btn", false, "Opening...", "Open Sign-In Pages");
+      }
+
+      links.forEach((row) => {
+        const href = String(row?.url || "").trim();
+        if (!href) return;
+        window.open(href, "_blank", "noopener,noreferrer");
+      });
+      if (openBtn) {
+        appendLog(`[${new Date().toLocaleTimeString()}] opened sign-in pages in current browser window`, "warn");
+      }
     }
 
     function promptLoginSplash(sourceIds) {
@@ -1929,11 +1974,8 @@
         });
       });
       q("login_splash_open_btn")?.addEventListener("click", () => {
-        const links = Array.isArray(state.loginSplashLinks) ? state.loginSplashLinks : [];
-        links.forEach((row) => {
-          const href = String(row?.url || "").trim();
-          if (!href) return;
-          window.open(href, "_blank", "noopener,noreferrer");
+        openLoginSplashPages().catch((err) => {
+          appendLog(`[${new Date().toLocaleTimeString()}] failed to open sign-in pages: ${err.message}`, "warn");
         });
       });
       q("login_splash_continue_btn")?.addEventListener("click", () => closeLoginSplash(true));

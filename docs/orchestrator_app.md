@@ -37,6 +37,7 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 - `GET /api/orchestrator/sources/catalog`
 - `POST /api/orchestrator/signin/preflight`
 - `POST /api/orchestrator/signin/test`
+- `POST /api/orchestrator/signin/open`
 
 ## Removed MVP concepts
 - `Intent` endpoints and intent state are removed.
@@ -57,6 +58,7 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - `Analyze Sources` runs analysis/reflection preflight for the selected manuscript and derives sign-in targets from planned providers
   - `Test Login` probes each derived provider URL and reports per-source `ok` / `blocked` / `unreachable` status with action hints
   - `Test Login` now opens a blocking sign-in splash prompt first so users explicitly sign into university/provider systems before checks continue
+  - sign-in splash `Open Sign-In Pages` now opens tabs through the attached CDP browser session used by Playwright login tests/pulls (with local-tab fallback if CDP is unavailable)
   - status colors are semantic and consistent across workflow UI: green (`ready`), red (`blocked`), black (`completed`)
   - Settings `Detected Library Databases` rows include per-database `Test Login` actions with row-level pass/fail badges
   - auto-expanded log while active with live event count/stage header

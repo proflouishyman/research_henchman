@@ -1,3 +1,13 @@
+[2026-04-05] - Open Sign-In Splash Tabs in Active Playwright CDP Session
+Problem
+Clicking `Open Sign-In Pages` from the sign-in splash could open tabs only in the current UI browser window, which did not always match the browser session used for Playwright login tests/pulls. Users then had to sign in again.
+Root Cause
+Frontend splash action used `window.open(...)` only, so sign-in links were not opened through the attached CDP browser context that powers `Test Login` and seed URL pulls.
+Solution
+Added `POST /api/orchestrator/signin/open` (`SignInOpenInput`) in `main.py` to open selected sign-in URLs in the active CDP browser session. Updated sign-in splash UI (`static/index.html`) so `Open Sign-In Pages` calls this endpoint first and logs open counts; if CDP opening fails, it falls back to local `window.open(...)` tabs.
+Notes
+This preserves existing workflows while aligning sign-in actions with the authenticated Playwright session whenever CDP is available.
+
 [2026-04-05] - Add Mandatory Sign-In Splash Before Login Tests
 Problem
 Users could click `Test Login` without a clear, explicit pre-check instruction to sign into university/provider systems first, causing confusing blocked results.

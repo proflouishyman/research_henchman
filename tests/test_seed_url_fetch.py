@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import socket
+import sys
 import threading
+import types
 from contextlib import closing
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import adapters.seed_url_fetch as seed_url_fetch
 from adapters.seed_url_fetch import resolve_seed_rows
 
 
@@ -118,3 +121,58 @@ def test_resolve_seed_rows_flags_verification_challenge_as_blocked(tmp_path):
     assert "retry" in str(blocked[0].get("action_required", "")).lower()
     assert int(stats.get("blocked_files", 0)) >= 1
     assert int(stats.get("challenge_blocks", 0)) >= 1
+
+
+def test_fetch_via_cdp_keeps_user_browser_session_open(monkeypatch):
+    calls = {"browser_close": 0, "context_close": 0}
+
+    class _FakePage:
+        def goto(self, *_args, **_kwargs):
+            return None
+
+        def content(self):
+            return "<html><body>ok</body></html>"
+
+        def close(self):
+            return None
+
+    class _FakeContext:
+        def new_page(self):
+            return _FakePage()
+
+        def close(self):
+            calls["context_close"] += 1
+
+    class _FakeBrowser:
+        def __init__(self):
+            self.contexts = [_FakeContext()]
+
+        def new_context(self):
+            return _FakeContext()
+
+        def close(self):
+            calls["browser_close"] += 1
+
+    class _FakePlaywright:
+        def __init__(self):
+            self.chromium = self
+
+        def connect_over_cdp(self, _url):
+            return _FakeBrowser()
+
+    class _FakePlaywrightCtx:
+        def __enter__(self):
+            return _FakePlaywright()
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            return False
+
+    monkeypatch.setenv("ORCH_PLAYWRIGHT_CDP_URL", "http://host.docker.internal:9222")
+    monkeypatch.setattr(seed_url_fetch, "effective_cdp_url", lambda url: url)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", types.SimpleNamespace(sync_playwright=lambda: _FakePlaywrightCtx()))
+
+    html = seed_url_fetch._fetch_via_cdp("https://example.com")
+
+    assert "ok" in html
+    assert calls["browser_close"] == 0
+    assert calls["context_close"] == 0

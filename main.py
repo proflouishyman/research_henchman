@@ -20,8 +20,20 @@ from fastapi.staticfiles import StaticFiles
 
 from adapters.seed_url_fetch import probe_sign_in_access
 from config import OrchestratorSettings, load_runtime_env, read_env_values, write_env_updates
-from contracts import ConnectionSaveInput, RetryInput, RunCreateInput, RunRecord, RunStatus, SourceAvailability, run_record_from_dict, run_record_to_dict
+from contracts import (
+    ConnectionSaveInput,
+    RetryInput,
+    RunCreateInput,
+    RunRecord,
+    RunStatus,
+    SignInPreflightInput,
+    SignInTestInput,
+    SourceAvailability,
+    run_record_from_dict,
+    run_record_to_dict,
+)
 from library_profiles import get_active_library_profile, get_active_university_databases, load_library_profiles
+from layers import analyze_manuscript, reflect_on_gaps
 from layers.pull import SOURCE_REGISTRY, build_source_availability, source_capability_catalog
 from pipeline import run_orchestration
 from store import OrchestratorStore, now_utc
@@ -282,18 +294,25 @@ def _provider_sign_in_url(source_id: str, fallback_url: str = "") -> str:
     return str(fallback_url or "").strip()
 
 
-def _build_signin_targets(settings: OrchestratorSettings, availability: SourceAvailability) -> List[Dict[str, str]]:
+def _build_signin_targets(
+    settings: OrchestratorSettings,
+    availability: SourceAvailability,
+    source_filter: set[str] | None = None,
+) -> List[Dict[str, str]]:
     """Build deduped provider list for pre-run sign-in checks."""
 
     rows: List[Dict[str, str]] = []
     seen: set[str] = set()
     active_playwright = set(availability.playwright_sources)
+    allowed_sources = {str(source).strip().lower() for source in source_filter or set() if str(source).strip()}
 
     for db in get_active_university_databases(settings):
         if not isinstance(db, dict):
             continue
         source_id = str(db.get("source_id", "")).strip().lower()
         if not source_id or source_id not in active_playwright:
+            continue
+        if allowed_sources and source_id not in allowed_sources:
             continue
         if source_id in seen:
             continue
@@ -308,11 +327,42 @@ def _build_signin_targets(settings: OrchestratorSettings, availability: SourceAv
 
     # EBSCO API is API-first, but users may still need an authenticated browser
     # session for gated page retrieval after API discovery.
-    if "ebsco_api" in set(availability.keyed_apis) and "ebsco_api" not in seen:
+    if (
+        "ebsco_api" in set(availability.keyed_apis)
+        and "ebsco_api" not in seen
+        and (not allowed_sources or "ebsco_api" in allowed_sources)
+    ):
         rows.append({"source_id": "ebsco_api", "name": "EBSCOhost", "url": _provider_sign_in_url("ebsco_api", "")})
 
     rows.sort(key=lambda row: (row.get("name", ""), row.get("source_id", "")))
     return rows
+
+
+def _planned_sources_for_manuscript(
+    settings: OrchestratorSettings,
+    manuscript_path: str,
+    availability: SourceAvailability,
+) -> Dict[str, Any]:
+    """Analyze+reflect manuscript and return planned source IDs for preflight."""
+
+    gap_map = analyze_manuscript(manuscript_path, settings)
+    plan = reflect_on_gaps(gap_map, availability, run_id=_new_id("preview"), settings=settings)
+    planned_ids: List[str] = []
+    seen: set[str] = set()
+    for gap in plan.gaps:
+        if gap.skip:
+            continue
+        for source_id in gap.preferred_sources:
+            stable = str(source_id or "").strip().lower()
+            if not stable or stable in seen:
+                continue
+            seen.add(stable)
+            planned_ids.append(stable)
+    return {
+        "gap_map": gap_map,
+        "plan": plan,
+        "planned_source_ids": planned_ids,
+    }
 
 
 def _record_title(row: Dict[str, Any]) -> str:
@@ -1202,13 +1252,55 @@ def api_sources_catalog() -> Dict[str, Any]:
     }
 
 
-@app.post("/api/orchestrator/signin/test")
-def api_test_signin() -> Dict[str, Any]:
-    """Probe provider sign-in URLs and report login-readiness diagnostics."""
+@app.post("/api/orchestrator/signin/preflight")
+def api_signin_preflight(inp: SignInPreflightInput) -> Dict[str, Any]:
+    """Analyze manuscript and derive sign-in targets from planned sources."""
 
     settings = _settings()
+    manuscript_path = _resolve_manuscript_path(settings.workspace, inp.manuscript_path)
+    if not manuscript_path.exists():
+        raise HTTPException(status_code=400, detail="manuscript_path not found")
+
     availability = build_source_availability(settings)
-    targets = _build_signin_targets(settings, availability)
+    planned = _planned_sources_for_manuscript(settings, inp.manuscript_path, availability)
+    planned_source_ids = list(planned.get("planned_source_ids", []))
+    targets = _build_signin_targets(settings, availability, set(planned_source_ids))
+    gap_map = planned.get("gap_map")
+    plan = planned.get("plan")
+
+    return {
+        "status": "ok",
+        "manuscript_path": inp.manuscript_path,
+        "planned_gap_count": len(getattr(plan, "gaps", []) or []),
+        "planned_source_count": len(planned_source_ids),
+        "planned_source_ids": planned_source_ids,
+        "analysis_method": str(getattr(gap_map, "analysis_method", "")),
+        "reflection_method": str(getattr(plan, "reflection_method", "")),
+        "plan_summary": str(getattr(plan, "plan_summary", "")),
+        "cdp_unavailable_reason": availability.playwright_unavailable_reason,
+        "sign_in_targets": targets,
+    }
+
+
+@app.post("/api/orchestrator/signin/test")
+def api_test_signin(inp: SignInTestInput | None = None) -> Dict[str, Any]:
+    """Probe provider sign-in URLs and report login-readiness diagnostics."""
+
+    if inp is None:
+        inp = SignInTestInput()
+    settings = _settings()
+    availability = build_source_availability(settings)
+    requested_sources = {str(source).strip().lower() for source in inp.source_ids if str(source).strip()}
+
+    # Optional manuscript-aware planning pass: use reflected source routes to
+    # constrain login checks to likely providers for this manuscript.
+    if not requested_sources and str(inp.manuscript_path or "").strip():
+        manuscript_path = _resolve_manuscript_path(settings.workspace, inp.manuscript_path)
+        if manuscript_path.exists():
+            planned = _planned_sources_for_manuscript(settings, inp.manuscript_path, availability)
+            requested_sources = set(planned.get("planned_source_ids", []))
+
+    targets = _build_signin_targets(settings, availability, requested_sources or None)
     results: List[Dict[str, Any]] = []
 
     for target in targets:

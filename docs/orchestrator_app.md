@@ -35,6 +35,7 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 - `POST /api/orchestrator/connections/save`
 - `GET /api/orchestrator/library/profiles`
 - `GET /api/orchestrator/sources/catalog`
+- `POST /api/orchestrator/signin/preflight`
 - `POST /api/orchestrator/signin/test`
 
 ## Removed MVP concepts
@@ -46,14 +47,16 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 ## Frontend behavior
 - Single page (`static/index.html`):
   - manuscript select/upload
-  - explicit pre-run sign-in stage (platform checklist + login test + user confirmation gate) before `Run Research`
+  - explicit pre-run sign-in stage (manuscript-aware analysis preflight + platform checklist + login test + user confirmation gate) before `Run Research`
   - single `Run Research` button
   - top-level `Interface Style` selector (`editorial`, `operations`, `atlas`) with local preference persistence
   - plan panel appears once `research_plan` is available
   - live stage tracker and event log polling every 3s
   - active-stage pulse + heartbeat indicator while run is in progress
   - run launch is blocked until pre-run sign-in stage is marked complete
-  - `Test Login` probes each active provider URL and reports per-source `ok` / `blocked` / `unreachable` status with action hints
+  - `Analyze Sources` runs analysis/reflection preflight for the selected manuscript and derives sign-in targets from planned providers
+  - `Test Login` probes each derived provider URL and reports per-source `ok` / `blocked` / `unreachable` status with action hints
+  - status colors are semantic and consistent across workflow UI: green (`ready`), red (`blocked`), black (`completed`)
   - auto-expanded log while active with live event count/stage header
   - post-run document list with click-through links to pulled artifact files
   - pulled documents shown as collapsible source packets; packet JSON is parsed for linked document targets so users see source docs (PDF/web/DOI) first

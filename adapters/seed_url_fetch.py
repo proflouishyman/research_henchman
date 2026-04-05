@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
+from .cdp_utils import effective_cdp_url
 from .io_utils import safe_query_token
 
 
@@ -278,9 +279,10 @@ def _fetch_via_cdp(url: str) -> str:
         return ""
 
     timeout_ms = int(max(5, FETCH_TIMEOUT_SECONDS) * 1000)
+    target_cdp_url = effective_cdp_url(cdp_url)
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.connect_over_cdp(cdp_url)
+            browser = pw.chromium.connect_over_cdp(target_cdp_url)
             context = browser.contexts[0] if browser.contexts else browser.new_context()
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)

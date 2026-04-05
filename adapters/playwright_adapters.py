@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 
 from .base import PullAdapter
+from .cdp_utils import effective_cdp_url
 from .document_links import build_link_rows
 from .io_utils import write_json_records
 from .seed_url_fetch import blocked_reason_hint, resolve_seed_rows
@@ -208,13 +209,18 @@ class GalePrimarySourcesPlaywrightAdapter(PlaywrightAdapter):
 def check_cdp_endpoint(cdp_url: str, timeout_seconds: int = 5) -> str:
     """Return empty string when CDP endpoint is reachable, else error reason."""
 
-    probe_url = f"{cdp_url.rstrip('/')}/json"
+    probe_url = f"{effective_cdp_url(cdp_url).rstrip('/')}/json"
     try:
         with urllib.request.urlopen(probe_url, timeout=max(1, timeout_seconds)) as resp:
             payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
         if isinstance(payload, list):
             return ""
         return "unexpected CDP response payload"
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore").strip()
+        if detail:
+            return f"HTTP {exc.code}: {detail[:120]}"
+        return f"HTTP {exc.code}"
     except urllib.error.URLError as exc:
         return str(exc.reason)[:160]
     except Exception as exc:  # noqa: BLE001 - return reason string instead of raising.

@@ -399,6 +399,50 @@
       margin-top: 4px;
     }
 
+    .db-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+
+    .db-test-btn {
+      width: auto;
+      margin: 0;
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+
+    .db-test-status {
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 2px 8px;
+      background: #f2ece0;
+      color: var(--muted);
+    }
+
+    .db-test-status.ok {
+      background: #e8f4ee;
+      border-color: #90c2aa;
+      color: #1b6d2f;
+    }
+
+    .db-test-status.blocked,
+    .db-test-status.unreachable {
+      background: #fdeeee;
+      border-color: #d6a5a5;
+      color: #8f3f3f;
+    }
+
+    .db-test-status.testing {
+      background: #fff8ea;
+      border-color: #d8bf8d;
+      color: #7a5a21;
+    }
+
     .doc-packet {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -777,6 +821,8 @@
       signInEntries: [],
       signInTestResults: {},
       signInPlannedSources: [],
+      libraryDatabases: [],
+      libraryDbTestStatus: {},
     };
 
     async function api(path, method = "GET", body = null) {
@@ -901,17 +947,80 @@
       items.forEach((db) => {
         const card = document.createElement("div");
         card.className = "plan-gap";
+        const sourceId = String(db.source_id || "").trim();
+        const stableSourceId = sourceId.toLowerCase();
+        const status = state.libraryDbTestStatus[stableSourceId] || { status: "untested", label: "untested" };
+        const statusClass = String(status.status || "untested").toLowerCase();
+        const statusLabel = String(status.label || status.status || "untested");
         const categories = Array.isArray(db.categories) ? db.categories.join(", ") : "";
         const claimKinds = Array.isArray(db.claim_kinds) ? db.claim_kinds.join(", ") : "";
         card.innerHTML = `
-          <div><strong>${db.name || db.source_id || "database"}</strong></div>
-          <div class="muted">${db.source_id || ""}${db.provider ? ` · ${db.provider}` : ""}</div>
+          <div><strong>${db.name || sourceId || "database"}</strong></div>
+          <div class="muted">${sourceId || ""}${db.provider ? ` · ${db.provider}` : ""}</div>
           <div class="muted">${categories ? `categories: ${categories}` : ""}</div>
           <div class="muted">${claimKinds ? `claim kinds: ${claimKinds}` : ""}</div>
           <div class="muted">${db.url ? `<a class="doc-link" href="${db.url}" target="_blank" rel="noopener noreferrer">${db.url}</a>` : ""}</div>
+          <div class="db-actions">
+            <button class="db-test-btn" data-db-test="1" data-source-id="${sourceId}">Test Login</button>
+            <span class="db-test-status ${statusClass}">${statusLabel}</span>
+          </div>
+          ${status.message ? `<div class="muted">${status.message}</div>` : ""}
         `;
         list.appendChild(card);
       });
+    }
+
+    async function testSingleDatabaseLogin(sourceId, triggerBtn = null) {
+      const stableSourceId = String(sourceId || "").trim().toLowerCase();
+      if (!stableSourceId) return;
+      const button = triggerBtn || q(`button[data-db-test="1"][data-source-id="${sourceId}"]`);
+      if (button) button.disabled = true;
+      state.libraryDbTestStatus[stableSourceId] = { status: "testing", label: "testing", message: "" };
+      renderLibraryDatabases(state.libraryDatabases);
+      setStatusLine("settings_status", "blocked", `Testing login for ${stableSourceId}...`);
+
+      try {
+        const out = await api("/api/orchestrator/signin/test", "POST", { source_ids: [stableSourceId] });
+        const rows = Array.isArray(out?.results) ? out.results : [];
+        const matched = rows.find((row) => String(row?.source_id || "").trim().toLowerCase() === stableSourceId) || null;
+
+        if (matched) {
+          const rowStatus = String(matched.status || "unreachable").toLowerCase();
+          const isOk = rowStatus === "ok";
+          const label = isOk ? "ready" : rowStatus;
+          const detail = matched.blocked_reason
+            ? `${matched.blocked_reason}${matched.action_required ? ` · ${matched.action_required}` : ""}`
+            : (matched.error || "");
+          state.libraryDbTestStatus[stableSourceId] = {
+            status: isOk ? "ok" : (rowStatus || "unreachable"),
+            label,
+            message: String(detail || "").trim(),
+          };
+          setStatusLine(
+            "settings_status",
+            isOk ? "ready" : "blocked",
+            isOk ? `${stableSourceId} login test passed.` : `${stableSourceId} login test blocked.`
+          );
+        } else {
+          const cdpReason = String(out?.cdp_unavailable_reason || "").trim();
+          state.libraryDbTestStatus[stableSourceId] = {
+            status: "unreachable",
+            label: "unreachable",
+            message: cdpReason || "Source is not available in the current session/profile.",
+          };
+          setStatusLine("settings_status", "blocked", `${stableSourceId} login test unavailable.`);
+        }
+      } catch (err) {
+        state.libraryDbTestStatus[stableSourceId] = {
+          status: "unreachable",
+          label: "unreachable",
+          message: String(err?.message || err || "request failed"),
+        };
+        setStatusLine("settings_status", "blocked", `${stableSourceId} login test failed.`);
+      } finally {
+        if (button) button.disabled = false;
+        renderLibraryDatabases(state.libraryDatabases);
+      }
     }
 
     function populateLibrarySystems(profiles, activeKey) {
@@ -945,12 +1054,14 @@
       state.settingsValues = valueMap;
       renderApiFields(valueMap);
       populateLibrarySystems(profiles, String(catalog.library_system || profiles.library_system || valueMap.ORCH_LIBRARY_SYSTEM || ""));
-      renderLibraryDatabases(catalog.university_databases || []);
+      state.libraryDatabases = Array.isArray(catalog.university_databases) ? catalog.university_databases : [];
+      state.libraryDbTestStatus = {};
+      renderLibraryDatabases(state.libraryDatabases);
 
       const activeName = String(catalog.library_name || profiles.library_name || "");
       const activeKey = String(catalog.library_system || profiles.library_system || "");
       setText("library_summary", activeName ? `${activeName} (${activeKey})` : (activeKey || "No active library profile"));
-      setText("settings_status", `Settings loaded from ${valuesOut.env_path || ".env"}.`);
+      setStatusLine("settings_status", "ready", `Settings loaded from ${valuesOut.env_path || ".env"}.`);
       setText("api_save_status", "");
     }
 
@@ -958,7 +1069,7 @@
       const select = q("library_system_select");
       const key = select ? String(select.value || "").trim().toLowerCase() : "";
       if (!key) {
-        setText("settings_status", "Select a library profile first.");
+        setStatusLine("settings_status", "blocked", "Select a library profile first.");
         return;
       }
       setButtonBusy("save_library_btn", true, "Saving...", "Save Library Profile");
@@ -966,7 +1077,7 @@
         await api("/api/orchestrator/connections/save", "POST", { updates: { ORCH_LIBRARY_SYSTEM: key } });
         appendLog(`[${new Date().toLocaleTimeString()}] saved ORCH_LIBRARY_SYSTEM=${key}`, "ok");
         await loadSettings();
-        setText("settings_status", `Saved library profile: ${key}`);
+        setStatusLine("settings_status", "ready", `Saved library profile: ${key}`);
       } finally {
         setButtonBusy("save_library_btn", false, "Saving...", "Save Library Profile");
       }
@@ -1603,7 +1714,7 @@
       q("tab_run")?.addEventListener("click", () => setActivePage("run"));
       q("tab_settings")?.addEventListener("click", () => {
         setActivePage("settings");
-        loadSettings().catch((err) => setText("settings_status", `Settings load failed: ${err.message}`));
+        loadSettings().catch((err) => setStatusLine("settings_status", "blocked", `Settings load failed: ${err.message}`));
       });
       q("refresh_manuscripts_btn")?.addEventListener("click", async () => {
         setButtonBusy("refresh_manuscripts_btn", true, "Refreshing...", "Refresh Manuscripts");
@@ -1625,9 +1736,19 @@
         saveLastManuscript(String(evt.target.value || ""));
         resetSignInStage("Manuscript changed. Review sign-in checklist before running.");
       });
-      q("save_library_btn")?.addEventListener("click", () => saveLibraryProfile().catch((err) => setText("settings_status", err.message)));
+      q("save_library_btn")?.addEventListener("click", () => saveLibraryProfile().catch((err) => setStatusLine("settings_status", "blocked", err.message)));
       q("save_api_btn")?.addEventListener("click", () => saveApiSettings().catch((err) => setText("api_save_status", err.message)));
-      q("refresh_settings_btn")?.addEventListener("click", () => loadSettings().catch((err) => setText("settings_status", err.message)));
+      q("refresh_settings_btn")?.addEventListener("click", () => loadSettings().catch((err) => setStatusLine("settings_status", "blocked", err.message)));
+      q("library_db_list")?.addEventListener("click", (evt) => {
+        const target = evt?.target;
+        const button = target && typeof target.closest === "function" ? target.closest("button[data-db-test='1']") : null;
+        if (!button) return;
+        const sourceId = String(button.getAttribute("data-source-id") || "").trim();
+        if (!sourceId) return;
+        testSingleDatabaseLogin(sourceId, button).catch((err) => {
+          setStatusLine("settings_status", "blocked", `Login test failed: ${err.message}`);
+        });
+      });
     }
 
     async function init() {

@@ -12,6 +12,7 @@ Contract-enforced automated pipeline for manuscript research runs.
 - Pre-run sign-in stage now includes `Test Login`, which probes provider URLs using your active browser session and reports per-source access status before launch.
 - Sign-in checklist generation is now manuscript-aware: `Analyze Sources` runs analysis+planning first, then derives login targets from planned providers.
 - Workflow statuses now use explicit semantic colors in Run UI: green = ready, red = blocked, black = completed.
+- Settings now provides per-database `Test Login` actions with row-level green/red status badges for quick provider-access checks.
 - UI highlights progress with active-stage color pulse and run heartbeat.
 - Completed runs expose click-through artifact files in a document panel.
 - Results document panel now renders collapsible source packets and prioritizes extracted linked documents (PDF/HTML/DOI/record URLs) over raw JSON artifact filenames.

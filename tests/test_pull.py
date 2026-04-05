@@ -69,6 +69,35 @@ class _DocCountAdapter(PullAdapter):
         )
 
 
+class _BlockedAdapter(PullAdapter):
+    source_id = "blocked_source"
+    source_type = SourceType.PLAYWRIGHT
+
+    def is_available(self, availability: SourceAvailability) -> bool:
+        return True
+
+    def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
+        root = Path(run_dir) / gap.gap_id / self.source_id
+        root.mkdir(parents=True, exist_ok=True)
+        return SourceResult(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            query=query,
+            gap_id=gap.gap_id,
+            document_count=1,
+            run_dir=str(root),
+            artifact_type="json_records",
+            status="partial",
+            stats={
+                "blocked_files": 1,
+                "captcha_blocks": 0,
+                "challenge_blocks": 1,
+                "login_blocks": 0,
+                "pulled_docs": 0,
+            },
+        )
+
+
 def test_build_source_availability_marks_missing_keys(settings_factory, monkeypatch) -> None:
     settings = settings_factory(
         BLS_API_KEY="",
@@ -242,6 +271,29 @@ def test_rank_sources_diversifies_provider_families_for_history() -> None:
     assert any(source_id.startswith("ebsco") for source_id in ranked)
 
 
+def test_source_ids_for_gap_prefers_keyed_api_over_same_family_playwright(settings_factory) -> None:
+    settings = settings_factory()
+    availability = SourceAvailability(
+        keyed_apis=["ebsco_api"],
+        playwright_sources=["ebscohost", "jstor"],
+    )
+    gap = PlannedGap(
+        gap_id="AUTO-01-G1",
+        chapter="Chapter One",
+        claim_text="Claim",
+        gap_type=GapType.IMPLICIT,
+        priority=GapPriority.MEDIUM,
+        source_types=[SourceType.KEYED_API, SourceType.PLAYWRIGHT],
+        preferred_sources=["ebscohost", "ebsco_api", "jstor"],
+    )
+
+    source_ids = pull._source_ids_for_gap(gap, availability, settings)
+
+    assert "ebsco_api" in source_ids
+    assert "jstor" in source_ids
+    assert "ebscohost" not in source_ids
+
+
 def test_query_attempt_chain_splits_compound_query_and_adds_backoff() -> None:
     gap = PlannedGap(
         gap_id="AUTO-01-G1",
@@ -317,3 +369,44 @@ def test_execute_with_accordion_early_accept_skips_synonyms(settings_factory, mo
     assert result.total_documents == 6
     assert len(adapter.queries) == 1
     assert any((row.get("meta") or {}).get("action") == "early_accept" for row in events)
+
+
+def test_execute_with_accordion_emits_warn_event_for_blocked_pages(settings_factory, tmp_path) -> None:
+    settings = settings_factory(
+        ORCH_PULL_MAX_QUERY_ATTEMPTS="1",
+        ORCH_PULL_MIN_ACCEPT_DOCS="2",
+    )
+    adapter = _BlockedAdapter()
+    gap = PlannedGap(
+        gap_id="AUTO-01-G1",
+        chapter="Chapter One",
+        claim_text="Claim",
+        gap_type=GapType.IMPLICIT,
+        priority=GapPriority.MEDIUM,
+        claim_kind=ClaimKind.HISTORICAL_NARRATIVE,
+        evidence_need=EvidenceNeed.SCHOLARLY_SECONDARY,
+        query_ladder={
+            "constrained": "{PRIMARY}",
+            "contextual": "{PRIMARY}",
+            "broad": "{PRIMARY}",
+            "fallback": "{PRIMARY}",
+            "primary_term": "Claim",
+            "synonym_ring": {"terminology_shifts": [], "institutional_names": [], "era_modifiers": []},
+            "claim_kind": "historical_narrative",
+            "evidence_need": "scholarly_secondary",
+            "generation_method": "llm",
+        },
+    )
+    events: list[dict] = []
+
+    _ = pull._execute_with_accordion(
+        adapter=adapter,
+        gap=gap,
+        run_dir=str(tmp_path / "run"),
+        timeout_seconds=60,
+        emit_fn=lambda **kwargs: events.append(kwargs),
+        settings=settings,
+    )
+
+    assert any(row.get("status") == "warn" for row in events)
+    assert any("blocked by login/CAPTCHA/verification" in str(row.get("message", "")) for row in events)

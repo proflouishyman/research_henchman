@@ -478,6 +478,7 @@
     }
 
     .log-line.ok { color: #2f6f4f; background: #f3faf6; }
+    .log-line.warn { color: #7a5a21; background: #fff8ea; }
     .log-line.err { color: #8f3f3f; background: #fff6f6; }
     .log-line.live { background: #f7fbf8; }
 
@@ -1212,6 +1213,7 @@
               row.innerHTML = `
                 <div><span class="quality-pill ${qualityClass}">${qualityLabel}</span>${jumpHref ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${jumpHref}\">${item.title || item.name || "document"}</a>` : `<strong>${item.title || item.name || "document"}</strong>`}</div>
                 <div class="muted">${item.kind || ""}${item.source_key ? ` · ${item.source_key}` : ""}${item.quality_rank ? ` · rank ${item.quality_rank}` : ""}</div>
+                ${item.blocked_reason ? `<div class="muted">blocked: ${item.blocked_reason}${item.action_required ? ` · ${item.action_required}` : ""}</div>` : ""}
                 <div class="doc-inline-links">
                   ${sourceHref ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${sourceHref}\">Open Source</a>` : ""}
                   ${item.anchor_url ? `<a class=\"doc-link\" target=\"_blank\" rel=\"noopener noreferrer\" href=\"${item.anchor_url}\">Open Snippet</a>` : ""}
@@ -1345,7 +1347,11 @@
       (evt.events || []).forEach((row) => {
         if (state.eventsSeen.has(row.event_id)) return;
         state.eventsSeen.add(row.event_id);
-        const klass = row.status === "failed" ? "err" : (row.status === "completed" ? "ok" : "live");
+        const klass = row.status === "failed"
+          ? "err"
+          : (row.status === "completed"
+              ? "ok"
+              : ((row.status === "warn" || row.status === "warning") ? "warn" : "live"));
         appendLog(summarizeEvent(row), klass);
       });
       updateActivity(run);

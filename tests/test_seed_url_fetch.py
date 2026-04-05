@@ -65,3 +65,56 @@ def test_resolve_seed_rows_fetches_parent_and_child_documents(tmp_path):
     assert any(str(row.get("quality_label", "")).lower() == "medium" for row in out_rows)
     assert any(str(row.get("quality_label", "")).lower() == "high" for row in out_rows)
 
+
+def test_resolve_seed_rows_flags_verification_challenge_as_blocked(tmp_path):
+    web_root = tmp_path / "web"
+    web_root.mkdir(parents=True, exist_ok=True)
+    (web_root / "index.html").write_text(
+        "<html><body>Verification required! Please complete this challenge to continue.</body></html>",
+        encoding="utf-8",
+    )
+
+    class _Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(web_root), **kwargs)
+
+        def log_message(self, format, *args):  # noqa: A003
+            return
+
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.bind(("127.0.0.1", 0))
+        host, port = sock.getsockname()
+    server = ThreadingHTTPServer((host, port), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        rows = [
+            {
+                "title": "seed search row",
+                "url": f"http://127.0.0.1:{port}/index.html",
+                "link_type": "provider_search",
+                "quality_label": "seed",
+                "quality_rank": "20",
+            }
+        ]
+        source_root = tmp_path / "output" / "AUTO-01-G1" / "project_muse"
+        out_rows, stats = resolve_seed_rows(
+            rows=rows,
+            source_root=source_root,
+            source_id="project_muse",
+            query="history of capitalism",
+            gap_id="AUTO-01-G1",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    assert out_rows
+    blocked = [row for row in out_rows if str(row.get("blocked_reason", ""))]
+    assert blocked
+    assert str(blocked[0].get("blocked_reason", "")) == "verification_challenge"
+    assert str(blocked[0].get("quality_label", "")).lower() == "seed"
+    assert "retry" in str(blocked[0].get("action_required", "")).lower()
+    assert int(stats.get("blocked_files", 0)) >= 1
+    assert int(stats.get("challenge_blocks", 0)) >= 1

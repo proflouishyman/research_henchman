@@ -89,6 +89,9 @@ Environment controls all behavior (`config.py`):
 - Route confidence includes a seed-source penalty for discovery-only adapters (for example `ebsco_api`) so plan confidence reflects retrieval uncertainty when full-text sources are unavailable.
 - Seed adapters for EBSCO/Playwright now emit normalized click-through links (`url` and best-effort local `path`) so packet extraction can render document links even before full site-specific automation is complete.
 - Seed adapters now also perform best-effort URL resolution: provider-search links are fetched into local `_resolved_urls/<query>/` artifacts (HTML/PDF when available), and those pulled files are emitted as medium/high-quality document rows alongside seed links.
+- Seed URL resolution now detects blocked pages (CAPTCHA/challenge/login/access-denied), tags those rows with `blocked_reason` + `action_required`, and emits `pulling/warn` events so users know to complete provider verification/login before retry.
+- Blocked snapshots are demoted to seed quality and excluded from `pulled_docs` counts used for pull-status quality accounting.
+- Pull source selection prefers keyed/API sources over same-family Playwright fallbacks when both are available (for example prefer `ebsco_api` over `ebscohost`).
 - Document indexing preserves adapter-provided quality metadata (`quality_rank`, `quality_label`) and sorts flattened run-document rows by quality so high-confidence links remain first even when mixed with raw artifact files.
 - Results packet indexing is JSON-first: nested `_resolved_urls`/`_fetched_urls` artifacts are surfaced through packet-linked rows (not as duplicate standalone packets), and flattened rows dedupe by stable evidence/locator keys.
 

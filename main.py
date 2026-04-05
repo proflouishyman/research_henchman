@@ -555,6 +555,10 @@ def _extract_linked_documents_from_json(json_path: Path, max_docs: int = 40) -> 
                     row["quality_label"] = node.get("quality_label")
                 if node.get("link_type") is not None:
                     row["link_type"] = node.get("link_type")
+                if node.get("blocked_reason") is not None:
+                    row["blocked_reason"] = node.get("blocked_reason")
+                if node.get("action_required") is not None:
+                    row["action_required"] = node.get("action_required")
                 if excerpt:
                     row["excerpt"] = excerpt
                 _append(row)
@@ -757,6 +761,8 @@ def _run_document_rows(settings: OrchestratorSettings, rec_row: Dict[str, Any], 
                     "quality_label": item.get("quality_label", ""),
                     "link_type": item.get("link_type", ""),
                     "source_key": item.get("source_key", ""),
+                    "blocked_reason": item.get("blocked_reason", ""),
+                    "action_required": item.get("action_required", ""),
                     "evidence_id": item.get("evidence_id", ""),
                     "quote_hash": item.get("quote_hash", ""),
                     "source_locator": item.get("source_locator", ""),

@@ -15,6 +15,7 @@ from contracts import (
     PlannedGap,
     RunRecord,
     RunStatus,
+    SourceAvailability,
     SourceResult,
     SourceType,
     run_record_to_dict,
@@ -26,6 +27,60 @@ def test_settings_defaults_workspace_to_repo_root(monkeypatch):
     monkeypatch.delenv("ORCH_WORKSPACE", raising=False)
     settings = orchestrator_main._settings()
     assert settings.workspace == orchestrator_main.BASE_DIR
+
+
+def test_signin_test_endpoint_reports_per_source_status(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state_dir = tmp_path / "state"
+    uploads = state_dir / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
+    monkeypatch.setenv("ORCH_LIBRARY_SYSTEM", "generic")
+
+    store = OrchestratorStore(state_dir)
+    monkeypatch.setattr(orchestrator_main, "store", store)
+    monkeypatch.setattr(orchestrator_main, "UPLOAD_DIR", uploads)
+    monkeypatch.setattr(
+        orchestrator_main,
+        "build_source_availability",
+        lambda _settings: SourceAvailability(
+            free_apis=[],
+            keyed_apis=["ebsco_api"],
+            playwright_sources=["jstor", "project_muse"],
+            missing_keys={},
+            playwright_unavailable_reason="",
+        ),
+    )
+
+    def _fake_probe(url: str):
+        if "jstor" in str(url):
+            return {"status": "ok", "fetch_mode": "cdp", "blocked_reason": "", "action_required": "", "excerpt": "", "error": ""}
+        return {
+            "status": "blocked",
+            "fetch_mode": "cdp",
+            "blocked_reason": "login_required",
+            "action_required": "Sign in through your library/institution in-browser, then retry this run.",
+            "excerpt": "",
+            "error": "",
+        }
+
+    monkeypatch.setattr(orchestrator_main, "probe_sign_in_access", _fake_probe)
+
+    client = TestClient(orchestrator_main.app)
+    resp = client.post("/api/orchestrator/signin/test")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload.get("status") == "ok"
+    assert payload.get("targets_tested") == 3
+    assert payload.get("summary", {}).get("ok") == 1
+    assert payload.get("summary", {}).get("blocked") == 2
+    assert payload.get("summary", {}).get("unreachable") == 0
+    rows = payload.get("results", [])
+    assert any(row.get("source_id") == "jstor" and row.get("status") == "ok" for row in rows)
+    assert any(row.get("source_id") == "project_muse" and row.get("status") == "blocked" for row in rows)
+    assert any(row.get("source_id") == "ebsco_api" and row.get("status") == "blocked" for row in rows)
 
 
 def test_documents_endpoint_and_file_clickthrough(tmp_path, monkeypatch):

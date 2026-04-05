@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 from .cdp_utils import effective_cdp_url
 from .io_utils import safe_query_token
@@ -195,6 +195,83 @@ def blocked_reason_hint(reason: str) -> str:
     """Return user-action hint for blocked retrieval pages."""
 
     return BLOCK_REASON_HINTS.get(str(reason or "").strip().lower(), "")
+
+
+def probe_sign_in_access(url: str) -> Dict[str, Any]:
+    """Probe one provider URL and classify whether login access appears ready.
+
+    Non-obvious logic:
+    - For login readiness we prefer CDP-backed fetch first so existing
+      authenticated browser session state is respected.
+    - If CDP is unavailable, fall back to direct HTTP to still provide
+      basic reachability diagnostics.
+    """
+
+    target_url = str(url or "").strip()
+    if not target_url.lower().startswith(("http://", "https://")):
+        return {
+            "status": "unreachable",
+            "fetch_mode": "none",
+            "error": "invalid url",
+            "blocked_reason": "",
+            "action_required": "",
+            "excerpt": "",
+        }
+
+    body: bytes | None = None
+    content_type = ""
+    fetch_mode = "none"
+    error = ""
+
+    html = _fetch_via_cdp(target_url)
+    if html:
+        body = html.encode("utf-8", errors="ignore")
+        content_type = "text/html"
+        fetch_mode = "cdp"
+
+    if body is None:
+        try:
+            req = urllib.request.Request(
+                target_url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                    )
+                },
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=min(FETCH_TIMEOUT_SECONDS, 12)) as resp:
+                content_type = str(resp.headers.get("Content-Type", "")).lower()
+                body = resp.read(MAX_FETCH_BYTES)
+            fetch_mode = "direct_http"
+        except Exception as exc:  # noqa: BLE001 - structured diagnostic response.
+            error = str(exc)[:180]
+
+    if body is None:
+        return {
+            "status": "unreachable",
+            "fetch_mode": fetch_mode,
+            "error": error or "fetch failed",
+            "blocked_reason": "",
+            "action_required": "",
+            "excerpt": "",
+        }
+
+    suffix = _suffix_for_response(target_url, content_type, body)
+    excerpt = _excerpt_from_bytes(body, suffix)
+    raw_probe = body[:2048].decode("utf-8", errors="ignore")
+    blocked_reason = _detect_block_reason(excerpt, raw_probe, target_url)
+    action_required = blocked_reason_hint(blocked_reason) if blocked_reason else ""
+    status = "blocked" if blocked_reason else "ok"
+    return {
+        "status": status,
+        "fetch_mode": fetch_mode,
+        "error": "",
+        "blocked_reason": blocked_reason,
+        "action_required": action_required,
+        "excerpt": excerpt,
+    }
 
 
 def _seed_urls(rows: List[Dict[str, str]]) -> List[str]:

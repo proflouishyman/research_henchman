@@ -360,12 +360,16 @@ def _fetch_via_cdp(url: str) -> str:
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.connect_over_cdp(target_cdp_url)
-            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            had_contexts = bool(browser.contexts)
+            context = browser.contexts[0] if had_contexts else browser.new_context()
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             html = page.content()
             page.close()
-            browser.close()
+            # When attached via CDP, do not close the user browser session.
+            # Close only temporary context if we had to create one.
+            if not had_contexts:
+                context.close()
             return str(html or "")
     except Exception:
         return ""

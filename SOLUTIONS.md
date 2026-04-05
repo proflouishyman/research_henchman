@@ -1,3 +1,13 @@
+[2026-04-05] - Prevent CDP Login Tests From Closing User Browser Session
+Problem
+Clicking login/test actions could make the Chrome debug window disappear, interrupting sign-in and causing follow-up CDP connection failures.
+Root Cause
+CDP fetch helper (`_fetch_via_cdp`) called `browser.close()` after `connect_over_cdp(...)`, which can close the attached user browser session instead of only cleaning up transient test artifacts.
+Solution
+Updated `adapters/seed_url_fetch.py` CDP fetch flow to avoid closing the connected browser. The helper now closes only a temporary context when one is explicitly created, and leaves the user’s existing browser session intact. Added regression coverage in `tests/test_seed_url_fetch.py` to ensure browser close is not invoked for attached CDP sessions.
+Notes
+This is a runtime behavior fix only; API contracts and pull outputs are unchanged.
+
 [2026-04-05] - Add Per-Database Login Test Controls in Settings
 Problem
 Users could test login readiness only from the run preflight flow, but there was no quick way in Settings to verify individual library databases and see pass/fail state per provider.

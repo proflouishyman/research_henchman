@@ -134,6 +134,49 @@ def test_signin_test_endpoint_reports_per_source_status(tmp_path, monkeypatch):
     assert any(row.get("source_id") == "ebsco_api" and row.get("status") == "blocked" for row in rows)
 
 
+def test_signin_open_endpoint_opens_filtered_sources(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state_dir = tmp_path / "state"
+    uploads = state_dir / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
+    monkeypatch.setenv("ORCH_LIBRARY_SYSTEM", "generic")
+
+    store = OrchestratorStore(state_dir)
+    monkeypatch.setattr(orchestrator_main, "store", store)
+    monkeypatch.setattr(orchestrator_main, "UPLOAD_DIR", uploads)
+    monkeypatch.setattr(
+        orchestrator_main,
+        "build_source_availability",
+        lambda _settings: SourceAvailability(
+            free_apis=[],
+            keyed_apis=["ebsco_api"],
+            playwright_sources=["jstor", "project_muse"],
+            missing_keys={},
+            playwright_unavailable_reason="",
+        ),
+    )
+
+    captured = {"urls": []}
+
+    def _fake_open(_cdp_url: str, urls):
+        captured["urls"] = list(urls)
+        return {"opened": len(urls), "opened_urls": list(urls)}
+
+    monkeypatch.setattr(orchestrator_main, "_open_signin_urls_in_cdp", _fake_open)
+
+    client = TestClient(orchestrator_main.app)
+    resp = client.post("/api/orchestrator/signin/open", json={"source_ids": ["jstor"]})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload.get("status") == "ok"
+    assert payload.get("requested") == 1
+    assert payload.get("opened") == 1
+    assert captured["urls"] == ["https://www.jstor.org/"]
+
+
 def test_documents_endpoint_and_file_clickthrough(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     state_dir = tmp_path / "state"

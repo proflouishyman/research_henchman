@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from adapters.cdp_utils import effective_cdp_url
 from adapters.seed_url_fetch import probe_sign_in_access
 from config import OrchestratorSettings, load_runtime_env, read_env_values, write_env_updates
 from contracts import (
@@ -26,6 +27,7 @@ from contracts import (
     RunCreateInput,
     RunRecord,
     RunStatus,
+    SignInOpenInput,
     SignInPreflightInput,
     SignInTestInput,
     SourceAvailability,
@@ -363,6 +365,35 @@ def _planned_sources_for_manuscript(
         "plan": plan,
         "planned_source_ids": planned_ids,
     }
+
+
+def _open_signin_urls_in_cdp(cdp_url: str, urls: List[str]) -> Dict[str, Any]:
+    """Open URLs as tabs in the attached CDP browser/session."""
+
+    clean_urls = [str(url).strip() for url in urls if str(url).strip().lower().startswith(("http://", "https://"))]
+    if not clean_urls:
+        return {"opened": 0, "opened_urls": []}
+
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore
+    except Exception as exc:  # noqa: BLE001 - runtime dependency diagnostic.
+        raise RuntimeError(f"playwright_unavailable: {str(exc)[:120]}") from exc
+
+    target_cdp_url = effective_cdp_url(cdp_url)
+    timeout_ms = 25_000
+    opened: List[str] = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.connect_over_cdp(target_cdp_url)
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        for url in clean_urls:
+            try:
+                page = context.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                opened.append(url)
+            except Exception:
+                # Keep opening remaining URLs even if one provider blocks/nav-fails.
+                continue
+    return {"opened": len(opened), "opened_urls": opened}
 
 
 def _record_title(row: Dict[str, Any]) -> str:
@@ -1345,6 +1376,45 @@ def api_test_signin(inp: SignInTestInput | None = None) -> Dict[str, Any]:
         "targets_tested": len(targets),
         "message": message,
         "results": results,
+    }
+
+
+@app.post("/api/orchestrator/signin/open")
+def api_open_signin_pages(inp: SignInOpenInput | None = None) -> Dict[str, Any]:
+    """Open sign-in pages in attached CDP browser session."""
+
+    if inp is None:
+        inp = SignInOpenInput()
+
+    settings = _settings()
+    availability = build_source_availability(settings)
+    if availability.playwright_unavailable_reason:
+        raise HTTPException(status_code=409, detail=availability.playwright_unavailable_reason)
+
+    source_filter = {str(source).strip().lower() for source in inp.source_ids if str(source).strip()}
+    targets = _build_signin_targets(settings, availability, source_filter or None)
+    target_urls = [str(row.get("url", "")).strip() for row in targets if str(row.get("url", "")).strip()]
+    extra_urls = [str(url).strip() for url in inp.urls if str(url).strip()]
+
+    urls: List[str] = []
+    seen: set[str] = set()
+    for url in target_urls + extra_urls:
+        stable = str(url).strip()
+        if not stable or stable in seen:
+            continue
+        seen.add(stable)
+        urls.append(stable)
+
+    try:
+        opened = _open_signin_urls_in_cdp(settings.playwright_cdp_url, urls)
+    except Exception as exc:  # noqa: BLE001 - API returns actionable diagnostics.
+        raise HTTPException(status_code=500, detail=str(exc)[:200]) from exc
+
+    return {
+        "status": "ok",
+        "requested": len(urls),
+        "opened": int(opened.get("opened", 0)),
+        "opened_urls": opened.get("opened_urls", []),
     }
 
 

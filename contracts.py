@@ -293,6 +293,13 @@ class SignInTestInput(BaseModel):
     source_ids: List[str] = Field(default_factory=list)
 
 
+class SignInOpenInput(BaseModel):
+    """Open provider sign-in pages in attached CDP browser session."""
+
+    source_ids: List[str] = Field(default_factory=list)
+    urls: List[str] = Field(default_factory=list)
+
+
 T = TypeVar("T")
 
 

@@ -354,6 +354,21 @@
       font-size: 12px;
     }
 
+    .signin-test-ok {
+      color: #1b6d2f;
+      font-weight: 600;
+    }
+
+    .signin-test-blocked {
+      color: #9a6e24;
+      font-weight: 600;
+    }
+
+    .signin-test-unreachable {
+      color: #8f3f3f;
+      font-weight: 600;
+    }
+
     .settings-grid {
       display: grid;
       gap: 10px;
@@ -638,6 +653,7 @@
           <div><strong>Pre-Run Sign-In Stage</strong></div>
           <div id="signin_status" class="muted">Load checklist and sign into required platforms before running.</div>
           <button id="load_signin_btn" title="Load required sign-in platforms from active library profile and source availability.">Load Sign-In Checklist</button>
+          <button id="test_signin_btn" title="Probe each required provider URL to confirm your current login session can access it.">Test Login</button>
           <button id="signin_done_btn" title="Confirm sign-ins are complete and allow run start.">Mark Sign-In Complete</button>
           <div id="signin_list" class="signin-list"></div>
         </div>
@@ -745,6 +761,7 @@
       signInReady: false,
       signInChecklistLoaded: false,
       signInEntries: [],
+      signInTestResults: {},
     };
 
     async function api(path, method = "GET", body = null) {
@@ -965,6 +982,7 @@
 
     function resetSignInStage(reason = "Sign-in checklist needs review before the next run.") {
       state.signInReady = false;
+      state.signInTestResults = {};
       if (reason) setText("signin_status", reason);
     }
 
@@ -996,9 +1014,24 @@
         const row = document.createElement("div");
         row.className = "signin-row";
         const href = String(entry.url || "").trim();
+        const test = state.signInTestResults[String(entry.source_id || "").toLowerCase()] || null;
+        const testStatus = String(test?.status || "").toLowerCase();
+        const statusClass = testStatus === "ok"
+          ? "signin-test-ok"
+          : (testStatus === "blocked" ? "signin-test-blocked" : (testStatus ? "signin-test-unreachable" : ""));
+        const statusLabel = testStatus
+          ? `Login test: ${testStatus}${test.fetch_mode ? ` (${test.fetch_mode})` : ""}`
+          : "Login test not run yet.";
+        const blockLine = test?.blocked_reason
+          ? `blocked reason: ${test.blocked_reason}${test.action_required ? ` · ${test.action_required}` : ""}`
+          : "";
+        const errorLine = test?.error ? `error: ${test.error}` : "";
         row.innerHTML = `
           <div><strong>${entry.name || entry.source_id || "Platform"}</strong> ${entry.source_id ? `(${entry.source_id})` : ""}</div>
           <div class="muted">${entry.note || "Sign in and verify access before run start."}</div>
+          <div class="${statusClass || "muted"}">${statusLabel}</div>
+          ${blockLine ? `<div class="muted">${blockLine}</div>` : ""}
+          ${errorLine ? `<div class="muted">${errorLine}</div>` : ""}
           <div>${href ? `<a class="doc-link" target="_blank" rel="noopener noreferrer" href="${href}">Open Platform</a>` : "<span class=\"muted\">No URL configured</span>"}</div>
         `;
         list.appendChild(row);
@@ -1051,6 +1084,7 @@
         ]);
         const entries = buildSignInEntries(catalogOut, healthOut);
         state.signInEntries = entries;
+        state.signInTestResults = {};
         state.signInChecklistLoaded = true;
         state.signInReady = false;
         renderSignInChecklist(entries);
@@ -1062,6 +1096,44 @@
         }
       } finally {
         setButtonBusy("load_signin_btn", false, "Loading...", "Load Sign-In Checklist");
+      }
+    }
+
+    async function testSignInAccess() {
+      if (!state.signInChecklistLoaded) {
+        await loadSignInChecklist();
+      }
+      setText("signin_status", "Testing provider login access...");
+      setButtonBusy("test_signin_btn", true, "Testing...", "Test Login");
+      try {
+        const out = await api("/api/orchestrator/signin/test", "POST", {});
+        const results = Array.isArray(out?.results) ? out.results : [];
+        const bySource = {};
+        results.forEach((row) => {
+          const sourceId = String(row?.source_id || "").trim().toLowerCase();
+          if (sourceId) bySource[sourceId] = row;
+        });
+        state.signInTestResults = bySource;
+        renderSignInChecklist(state.signInEntries);
+
+        const summary = out?.summary || {};
+        const okCount = Number(summary.ok || 0);
+        const blockedCount = Number(summary.blocked || 0);
+        const unreachableCount = Number(summary.unreachable || 0);
+        setText(
+          "signin_status",
+          `Login test results: ${okCount} ok, ${blockedCount} blocked, ${unreachableCount} unreachable.`
+        );
+        const logLevel = blockedCount > 0 || unreachableCount > 0 ? "warn" : "ok";
+        appendLog(
+          `[${new Date().toLocaleTimeString()}] login test complete · ok=${okCount} blocked=${blockedCount} unreachable=${unreachableCount}`,
+          logLevel
+        );
+        if (blockedCount > 0 || unreachableCount > 0) {
+          state.signInReady = false;
+        }
+      } finally {
+        setButtonBusy("test_signin_btn", false, "Testing...", "Test Login");
       }
     }
 
@@ -1538,6 +1610,7 @@
       });
       q("upload_manuscript_btn")?.addEventListener("click", () => uploadManuscript().catch((err) => setText("launch_status", err.message)));
       q("load_signin_btn")?.addEventListener("click", () => loadSignInChecklist().catch((err) => setText("signin_status", `Sign-in checklist failed: ${err.message}`)));
+      q("test_signin_btn")?.addEventListener("click", () => testSignInAccess().catch((err) => setText("signin_status", `Login test failed: ${err.message}`)));
       q("signin_done_btn")?.addEventListener("click", () => markSignInComplete());
       q("run_btn")?.addEventListener("click", () => startRun().catch((err) => setText("launch_status", err.message)));
       q("manuscript_select")?.addEventListener("change", (evt) => {

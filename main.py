@@ -18,8 +18,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from adapters.seed_url_fetch import probe_sign_in_access
 from config import OrchestratorSettings, load_runtime_env, read_env_values, write_env_updates
-from contracts import ConnectionSaveInput, RetryInput, RunCreateInput, RunRecord, RunStatus, run_record_from_dict, run_record_to_dict
+from contracts import ConnectionSaveInput, RetryInput, RunCreateInput, RunRecord, RunStatus, SourceAvailability, run_record_from_dict, run_record_to_dict
 from library_profiles import get_active_library_profile, get_active_university_databases, load_library_profiles
 from layers.pull import SOURCE_REGISTRY, build_source_availability, source_capability_catalog
 from pipeline import run_orchestration
@@ -258,6 +259,60 @@ def _reset_for_stage(rec: RunRecord, from_stage: str) -> RunRecord:
     elif stage == "fitting":
         rec.fit_results = []
     return rec
+
+
+def _provider_sign_in_url(source_id: str, fallback_url: str = "") -> str:
+    """Return canonical sign-in URL for a source (or profile URL fallback)."""
+
+    source = str(source_id or "").strip().lower()
+    if source in {"ebsco_api", "ebscohost"}:
+        return "https://search.ebscohost.com/"
+    if source == "jstor":
+        return "https://www.jstor.org/"
+    if source == "project_muse":
+        return "https://muse.jhu.edu/"
+    if source == "proquest_historical_newspapers":
+        return "https://www.proquest.com/"
+    if source == "americas_historical_newspapers":
+        return "https://infoweb.newsbank.com/"
+    if source == "gale_primary_sources":
+        return "https://go.gale.com/ps/"
+    if source == "statista":
+        return "https://www.statista.com/"
+    return str(fallback_url or "").strip()
+
+
+def _build_signin_targets(settings: OrchestratorSettings, availability: SourceAvailability) -> List[Dict[str, str]]:
+    """Build deduped provider list for pre-run sign-in checks."""
+
+    rows: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    active_playwright = set(availability.playwright_sources)
+
+    for db in get_active_university_databases(settings):
+        if not isinstance(db, dict):
+            continue
+        source_id = str(db.get("source_id", "")).strip().lower()
+        if not source_id or source_id not in active_playwright:
+            continue
+        if source_id in seen:
+            continue
+        seen.add(source_id)
+        rows.append(
+            {
+                "source_id": source_id,
+                "name": str(db.get("name", source_id)).strip() or source_id,
+                "url": _provider_sign_in_url(source_id, str(db.get("url", ""))),
+            }
+        )
+
+    # EBSCO API is API-first, but users may still need an authenticated browser
+    # session for gated page retrieval after API discovery.
+    if "ebsco_api" in set(availability.keyed_apis) and "ebsco_api" not in seen:
+        rows.append({"source_id": "ebsco_api", "name": "EBSCOhost", "url": _provider_sign_in_url("ebsco_api", "")})
+
+    rows.sort(key=lambda row: (row.get("name", ""), row.get("source_id", "")))
+    return rows
 
 
 def _record_title(row: Dict[str, Any]) -> str:
@@ -1144,6 +1199,60 @@ def api_sources_catalog() -> Dict[str, Any]:
         "closed_apis": sorted(keyed, key=lambda row: row["source_id"]),
         "playwright_sources": sorted(playwright, key=lambda row: row["source_id"]),
         "university_databases": sorted(universities, key=lambda row: row.get("source_id", "")),
+    }
+
+
+@app.post("/api/orchestrator/signin/test")
+def api_test_signin() -> Dict[str, Any]:
+    """Probe provider sign-in URLs and report login-readiness diagnostics."""
+
+    settings = _settings()
+    availability = build_source_availability(settings)
+    targets = _build_signin_targets(settings, availability)
+    results: List[Dict[str, Any]] = []
+
+    for target in targets:
+        source_id = str(target.get("source_id", "")).strip().lower()
+        url = str(target.get("url", "")).strip()
+        name = str(target.get("name", source_id)).strip() or source_id
+        probe = probe_sign_in_access(url)
+        results.append(
+            {
+                "source_id": source_id,
+                "name": name,
+                "url": url,
+                "status": str(probe.get("status", "unreachable")),
+                "fetch_mode": str(probe.get("fetch_mode", "")),
+                "blocked_reason": str(probe.get("blocked_reason", "")),
+                "action_required": str(probe.get("action_required", "")),
+                "excerpt": str(probe.get("excerpt", "")),
+                "error": str(probe.get("error", "")),
+            }
+        )
+
+    summary = {"ok": 0, "blocked": 0, "unreachable": 0}
+    for row in results:
+        status = str(row.get("status", "")).strip().lower()
+        if status in summary:
+            summary[status] += 1
+        else:
+            summary["unreachable"] += 1
+
+    if not targets:
+        message = "No active library sign-in targets for current profile."
+    elif summary["blocked"] > 0 or summary["unreachable"] > 0:
+        message = "Some provider logins are still blocked or unreachable."
+    else:
+        message = "Provider login test passed for all active targets."
+
+    return {
+        "status": "ok",
+        "library_system": settings.library_system,
+        "cdp_unavailable_reason": availability.playwright_unavailable_reason,
+        "summary": summary,
+        "targets_tested": len(targets),
+        "message": message,
+        "results": results,
     }
 
 

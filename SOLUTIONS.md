@@ -1,3 +1,13 @@
+[2026-04-05] - Add Pre-Run "Test Login" Provider Access Probe
+Problem
+Users could mark pre-run sign-in complete without any direct verification that their active browser/library session could access required provider platforms.
+Root Cause
+The sign-in stage only rendered checklist links and manual confirmation; there was no automated provider-access probe tied to active library profile and source availability.
+Solution
+Added `POST /api/orchestrator/signin/test` in `main.py` to probe active provider sign-in URLs and return per-source status (`ok`, `blocked`, `unreachable`) with fetch mode, blocked reason, and action hints. Added `probe_sign_in_access(...)` in `adapters/seed_url_fetch.py` (CDP-first with direct-HTTP fallback) and wired a new `Test Login` button in `static/index.html` to run this probe and render status per platform before launch.
+Notes
+This is additive and contract-safe. Run launch gating remains user-confirmed (`Mark Sign-In Complete`), while `Test Login` provides explicit readiness diagnostics.
+
 [2026-04-05] - Include Playwright Python Client in Docker Runtime
 Problem
 Dockerized runs could report Playwright source availability but still never perform browser-backed seed URL fetches, leaving pull output at seed links only.

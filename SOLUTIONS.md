@@ -1,3 +1,13 @@
+[2026-04-05] - Add Per-Database Login Test Controls in Settings
+Problem
+Users could test login readiness only from the run preflight flow, but there was no quick way in Settings to verify individual library databases and see pass/fail state per provider.
+Root Cause
+Settings database rows were informational only; they did not include source-specific login probe actions or persistent row-level status indicators.
+Solution
+Updated `static/index.html` Settings database rendering to include a `Test Login` button on each row and row-level status badges. Wired these actions to `POST /api/orchestrator/signin/test` with `source_ids=[source_id]`, and display green for pass (`ok`) and red for blocked/unreachable outcomes, including diagnostic messages.
+Notes
+This is an additive UI enhancement. It reuses existing sign-in test backend contracts and does not change pipeline execution behavior.
+
 [2026-04-05] - Add Semantic Workflow Colors for Ready/Blocked/Completed States
 Problem
 Workflow status cues were visually inconsistent, making it harder to quickly tell whether a stage was ready to proceed, blocked, or fully completed.

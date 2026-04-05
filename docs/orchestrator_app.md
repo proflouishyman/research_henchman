@@ -57,6 +57,7 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - `Analyze Sources` runs analysis/reflection preflight for the selected manuscript and derives sign-in targets from planned providers
   - `Test Login` probes each derived provider URL and reports per-source `ok` / `blocked` / `unreachable` status with action hints
   - status colors are semantic and consistent across workflow UI: green (`ready`), red (`blocked`), black (`completed`)
+  - Settings `Detected Library Databases` rows include per-database `Test Login` actions with row-level pass/fail badges
   - auto-expanded log while active with live event count/stage header
   - post-run document list with click-through links to pulled artifact files
   - pulled documents shown as collapsible source packets; packet JSON is parsed for linked document targets so users see source docs (PDF/web/DOI) first

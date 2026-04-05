@@ -17,6 +17,8 @@ Contract-enforced automated pipeline for manuscript research runs.
 - EBSCO/Playwright seed adapters now emit clickable provider/local document links so pulled-document panels show actionable links instead of packet-only placeholders.
 - Seed/search links now run a best-effort follow-on pull pass that stores resolved local artifacts (`_resolved_urls`) and surfaces them as medium/high evidence rows.
 - Run document packet indexing now prefers JSON packet links over nested resolved-file packets to avoid duplicate click-through rows and inflated quality counts.
+- Pull runs now emit explicit warning events when retrieved pages are blocked by CAPTCHA/login/challenge and include user-action hints for bypass + retry.
+- Source selection now prefers keyed/API sources over same-family Playwright fallbacks (for example `ebsco_api` ahead of `ebscohost` when both are available).
 
 ## Core architecture
 - `contracts.py`: layer dataclasses and enums.

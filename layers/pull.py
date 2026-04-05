@@ -386,6 +386,29 @@ def _source_family(source_id: str) -> str:
     return source_id.split("_")[0] if "_" in source_id else source_id
 
 
+def _prefer_api_family_sources(source_ids: List[str]) -> List[str]:
+    """Prefer keyed/API sources over same-family Playwright routes."""
+
+    keyed_families = {
+        _source_family(source_id)
+        for source_id in source_ids
+        if (SOURCE_REGISTRY.get(source_id) is not None and SOURCE_REGISTRY[source_id].source_type == SourceType.KEYED_API)
+    }
+    if not keyed_families:
+        return list(source_ids)
+
+    out: List[str] = []
+    for source_id in source_ids:
+        adapter = SOURCE_REGISTRY.get(source_id)
+        if adapter is None:
+            continue
+        family = _source_family(source_id)
+        if adapter.source_type == SourceType.PLAYWRIGHT and family in keyed_families:
+            continue
+        out.append(source_id)
+    return out or list(source_ids)
+
+
 def _diversified_ranked_sources(
     scored: List[tuple[float, str]],
     source_types: List[SourceType],
@@ -539,7 +562,7 @@ def _source_ids_for_gap(gap: PlannedGap, availability: SourceAvailability, setti
     """Resolve source IDs for a planned gap using preferred list then type routing."""
 
     if gap.preferred_sources:
-        return gap.preferred_sources
+        return _prefer_api_family_sources(list(gap.preferred_sources))
 
     ranked = rank_sources_for_claim(
         gap.claim_kind,
@@ -549,7 +572,7 @@ def _source_ids_for_gap(gap: PlannedGap, availability: SourceAvailability, setti
         settings=settings,
     )
     if ranked:
-        return ranked
+        return _prefer_api_family_sources(list(ranked))
 
     out: List[str] = []
     for source_type in gap.source_types:
@@ -567,7 +590,7 @@ def _source_ids_for_gap(gap: PlannedGap, availability: SourceAvailability, setti
             continue
         seen.add(source_id)
         unique.append(source_id)
-    return unique
+    return _prefer_api_family_sources(unique)
 
 
 def _query_attempt_chain(gap: PlannedGap, query: str, max_attempts: int = 3) -> List[str]:
@@ -705,6 +728,31 @@ def _execute_with_accordion(
             timeout_seconds=timeout_seconds,
         )
         source_results.append(result)
+        stats = dict(result.stats or {})
+        blocked_files = int(stats.get("blocked_files", 0) or 0)
+        if blocked_files > 0 and emit_fn:
+            captcha_blocks = int(stats.get("captcha_blocks", 0) or 0)
+            login_blocks = int(stats.get("login_blocks", 0) or 0)
+            challenge_blocks = int(stats.get("challenge_blocks", 0) or 0)
+            emit_fn(
+                stage="pulling",
+                status="warn",
+                message=(
+                    f"[{gap.gap_id}] {adapter.source_id}: {blocked_files} pulled page(s) were blocked "
+                    "by login/CAPTCHA/verification. Complete provider access in the active browser "
+                    "session, then retry the run."
+                ),
+                meta={
+                    "gap_id": gap.gap_id,
+                    "source_id": adapter.source_id,
+                    "query": current_query,
+                    "blocked_files": blocked_files,
+                    "captcha_blocks": captcha_blocks,
+                    "login_blocks": login_blocks,
+                    "challenge_blocks": challenge_blocks,
+                    "action_required": "complete_login_or_captcha_and_retry",
+                },
+            )
         doc_count = int(result.document_count or 0)
 
         move = get_accordion_move(

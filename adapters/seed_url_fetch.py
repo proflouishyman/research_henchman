@@ -54,6 +54,55 @@ DISCOVERY_HINTS = {
 }
 MAX_FETCH_BYTES = 4_000_000
 FETCH_TIMEOUT_SECONDS = 20
+BLOCK_RULES = [
+    (
+        "captcha",
+        (
+            "captcha",
+            "recaptcha",
+            "hcaptcha",
+            "verify you are human",
+            "cf-chl",
+            "cloudflare",
+        ),
+    ),
+    (
+        "verification_challenge",
+        (
+            "verification required",
+            "please complete this challenge",
+            "security challenge",
+            "bot check",
+        ),
+    ),
+    (
+        "login_required",
+        (
+            "sign in",
+            "log in",
+            "login",
+            "institutional login",
+            "access through your institution",
+            "authentication required",
+            "login.aspx",
+        ),
+    ),
+    (
+        "access_denied",
+        (
+            "access denied",
+            "forbidden",
+            "not authorized",
+            "permission denied",
+        ),
+    ),
+]
+BLOCK_REASON_HINTS = {
+    "captcha": "Complete CAPTCHA in the signed-in browser session, then retry this run.",
+    "verification_challenge": "Complete site verification challenge in-browser, then retry this run.",
+    "login_required": "Sign in through your library/institution in-browser, then retry this run.",
+    "access_denied": "Verify your institutional access/login and retry this run.",
+}
 
 
 def resolve_seed_rows(
@@ -82,11 +131,24 @@ def resolve_seed_rows(
         if url in seen:
             continue
         seen.add(url)
-        parent_file, parent_excerpt = _fetch_and_save(url=url, out_root=out_root, prefix=f"seed_{idx:02d}")
+        parent_file, parent_excerpt, parent_block_reason = _fetch_and_save(url=url, out_root=out_root, prefix=f"seed_{idx:02d}")
         if parent_file is None:
             continue
-        resolved_rows.append(_row_for_local_fetch(source_id, query, gap_id, parent_file, url, parent_excerpt))
+        resolved_rows.append(
+            _row_for_local_fetch(
+                source_id,
+                query,
+                gap_id,
+                parent_file,
+                url,
+                parent_excerpt,
+                blocked_reason=parent_block_reason,
+            )
+        )
         resolved_files += 1
+
+        if parent_block_reason:
+            continue
 
         if parent_file.suffix.lower() in {".html", ".htm"}:
             html = parent_file.read_text(encoding="utf-8", errors="ignore")
@@ -95,17 +157,43 @@ def resolve_seed_rows(
                 if child_url in seen:
                     continue
                 seen.add(child_url)
-                child_file, child_excerpt = _fetch_and_save(
+                child_file, child_excerpt, child_block_reason = _fetch_and_save(
                     url=child_url,
                     out_root=out_root,
                     prefix=f"seed_{idx:02d}_child_{cidx:02d}",
                 )
                 if child_file is None:
                     continue
-                resolved_rows.append(_row_for_local_fetch(source_id, query, gap_id, child_file, child_url, child_excerpt))
+                resolved_rows.append(
+                    _row_for_local_fetch(
+                        source_id,
+                        query,
+                        gap_id,
+                        child_file,
+                        child_url,
+                        child_excerpt,
+                        blocked_reason=child_block_reason,
+                    )
+                )
                 resolved_files += 1
 
-    return resolved_rows, {"resolved_files": resolved_files, "seed_urls": min(len(urls), max_seed_urls)}
+    blocked_files = sum(1 for row in resolved_rows if str(row.get("blocked_reason", "")).strip())
+    return resolved_rows, {
+        "resolved_files": resolved_files,
+        "blocked_files": blocked_files,
+        "captcha_blocks": sum(1 for row in resolved_rows if str(row.get("blocked_reason", "")) == "captcha"),
+        "challenge_blocks": sum(
+            1 for row in resolved_rows if str(row.get("blocked_reason", "")) == "verification_challenge"
+        ),
+        "login_blocks": sum(1 for row in resolved_rows if str(row.get("blocked_reason", "")) == "login_required"),
+        "seed_urls": min(len(urls), max_seed_urls),
+    }
+
+
+def blocked_reason_hint(reason: str) -> str:
+    """Return user-action hint for blocked retrieval pages."""
+
+    return BLOCK_REASON_HINTS.get(str(reason or "").strip().lower(), "")
 
 
 def _seed_urls(rows: List[Dict[str, str]]) -> List[str]:
@@ -138,7 +226,7 @@ def _suffix_for_response(url: str, content_type: str, body: bytes) -> str:
     return ".html"
 
 
-def _fetch_and_save(url: str, out_root: Path, prefix: str) -> Tuple[Path | None, str]:
+def _fetch_and_save(url: str, out_root: Path, prefix: str) -> Tuple[Path | None, str, str]:
     body: bytes | None = None
     content_type = ""
     failed = False
@@ -167,13 +255,15 @@ def _fetch_and_save(url: str, out_root: Path, prefix: str) -> Tuple[Path | None,
             body = html.encode("utf-8", errors="ignore")
             content_type = "text/html"
         else:
-            return None, ""
+            return None, "", ""
 
     suffix = _suffix_for_response(url, content_type, body)
     target = out_root / f"{prefix}{suffix}"
     target.write_bytes(body)
     excerpt = _excerpt_from_bytes(body, suffix)
-    return target, excerpt
+    raw_probe = body[:2048].decode("utf-8", errors="ignore")
+    block_reason = _detect_block_reason(excerpt, raw_probe, url)
+    return target, excerpt, block_reason
 
 
 def _fetch_via_cdp(url: str) -> str:
@@ -251,9 +341,14 @@ def _row_for_local_fetch(
     path: Path,
     source_url: str,
     excerpt: str,
+    *,
+    blocked_reason: str = "",
 ) -> Dict[str, str]:
     ext = path.suffix.lower()
-    if ext in {".pdf", ".doc", ".docx", ".txt", ".rtf"}:
+    if blocked_reason:
+        quality_label = "seed"
+        quality_rank = "18"
+    elif ext in {".pdf", ".doc", ".docx", ".txt", ".rtf"}:
         quality_label = "high"
         quality_rank = "92"
     else:
@@ -272,4 +367,19 @@ def _row_for_local_fetch(
     }
     if excerpt:
         row["excerpt"] = excerpt
+    if blocked_reason:
+        row["blocked_reason"] = blocked_reason
+        hint = blocked_reason_hint(blocked_reason)
+        if hint:
+            row["action_required"] = hint
     return row
+
+
+def _detect_block_reason(*texts: str) -> str:
+    """Detect common CAPTCHA/login/access walls in fetched page content."""
+
+    blob = " ".join(str(text or "") for text in texts).lower()
+    for reason, needles in BLOCK_RULES:
+        if any(needle in blob for needle in needles):
+            return reason
+    return ""

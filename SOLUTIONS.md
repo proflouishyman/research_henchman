@@ -1,3 +1,23 @@
+[2026-04-05] - Add Mandatory Sign-In Splash Before Login Tests
+Problem
+Users could click `Test Login` without a clear, explicit pre-check instruction to sign into university/provider systems first, causing confusing blocked results.
+Root Cause
+Login tests launched immediately from run/settings UI actions without an interstitial prompt that emphasized required sign-in behavior.
+Solution
+Updated `static/index.html` to add a blocking sign-in splash modal shown before both run-level and per-database login tests. The splash lists target providers, includes `Open Sign-In Pages`, and requires explicit continue/cancel before test execution.
+Notes
+This is a UI workflow clarity change only; sign-in test API contracts are unchanged.
+
+[2026-04-05] - Reduce Playwright Focus Stealing with Background-First CDP Fetch
+Problem
+Automated Playwright checks could pull browser focus by opening tabs while testing/pulling provider URLs.
+Root Cause
+CDP retrieval used direct page navigation as the primary path, which may create/focus transient tabs in attached browser sessions.
+Solution
+Updated `adapters/seed_url_fetch.py` CDP flow to try a storage-state request-context fetch first (authenticated background request) and only fall back to opening a transient page when needed.
+Notes
+This is a best-effort focus reduction; some provider flows may still require page fallback depending on site behavior.
+
 [2026-04-05] - Prevent CDP Login Tests From Closing User Browser Session
 Problem
 Clicking login/test actions could make the Chrome debug window disappear, interrupting sign-in and causing follow-up CDP connection failures.

@@ -362,6 +362,21 @@ def _fetch_via_cdp(url: str) -> str:
             browser = pw.chromium.connect_over_cdp(target_cdp_url)
             had_contexts = bool(browser.contexts)
             context = browser.contexts[0] if had_contexts else browser.new_context()
+            # Best effort: use a request context seeded from browser storage
+            # state so authenticated pulls can run without opening/focusing tabs.
+            try:
+                request_ctx = pw.request.new_context(storage_state=context.storage_state())
+                try:
+                    response = request_ctx.get(url, timeout=timeout_ms)
+                    body = response.text()
+                    if body:
+                        return str(body)
+                finally:
+                    request_ctx.dispose()
+            except Exception:
+                pass
+
+            # Fallback: open a transient page only when request-context fetch fails.
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             html = page.content()

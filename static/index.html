@@ -443,6 +443,70 @@
       color: #7a5a21;
     }
 
+    .login-splash {
+      position: fixed;
+      inset: 0;
+      background: rgba(22, 18, 15, 0.48);
+      display: grid;
+      place-items: center;
+      z-index: 1200;
+      padding: 20px;
+    }
+
+    .login-splash-card {
+      width: min(680px, 100%);
+      background: #fffdf8;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 18px 36px rgba(25, 20, 16, 0.25);
+      padding: 16px;
+    }
+
+    .login-splash-card h3 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      font-family: var(--font-display);
+    }
+
+    .login-splash-note {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .login-splash-links {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 10px;
+      max-height: 220px;
+      overflow: auto;
+      display: grid;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .login-splash-row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fcf9f2;
+      padding: 8px;
+      font-size: 12px;
+    }
+
+    .login-splash-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .login-splash-actions button {
+      width: auto;
+      margin: 0;
+      padding: 8px 12px;
+      font-size: 12px;
+    }
+
     .doc-packet {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -779,6 +843,19 @@
         <div id="api_save_status" class="status-line"></div>
       </section>
     </div>
+
+    <div id="login_splash" class="login-splash hidden" role="dialog" aria-modal="true" aria-labelledby="login_splash_title">
+      <div class="login-splash-card">
+        <h3 id="login_splash_title">Sign In Before Testing</h3>
+        <p id="login_splash_note" class="login-splash-note">Sign into your university/library systems in the browser session before running login tests.</p>
+        <div id="login_splash_links" class="login-splash-links"></div>
+        <div class="login-splash-actions">
+          <button id="login_splash_open_btn" title="Open all listed sign-in portals in new tabs.">Open Sign-In Pages</button>
+          <button id="login_splash_continue_btn" class="primary" title="Continue after signing in.">I Signed In, Continue Test</button>
+          <button id="login_splash_cancel_btn" title="Cancel this login test.">Cancel</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -823,6 +900,8 @@
       signInPlannedSources: [],
       libraryDatabases: [],
       libraryDbTestStatus: {},
+      loginSplashLinks: [],
+      loginSplashResolver: null,
     };
 
     async function api(path, method = "GET", body = null) {
@@ -861,6 +940,96 @@
 
     function setLaunchState(state, text) {
       setStatusLine("launch_status", state, text);
+    }
+
+    function canonicalLoginUrl(sourceId = "") {
+      const source = String(sourceId || "").trim().toLowerCase();
+      if (source === "ebsco_api" || source === "ebscohost") return "https://search.ebscohost.com/";
+      if (source === "jstor") return "https://www.jstor.org/";
+      if (source === "project_muse") return "https://muse.jhu.edu/";
+      if (source === "proquest_historical_newspapers") return "https://www.proquest.com/";
+      if (source === "americas_historical_newspapers") return "https://infoweb.newsbank.com/";
+      if (source === "gale_primary_sources") return "https://go.gale.com/ps/";
+      if (source === "statista") return "https://www.statista.com/";
+      return "";
+    }
+
+    function buildLoginSplashLinks(sourceIds) {
+      const ids = Array.isArray(sourceIds) ? sourceIds : [];
+      const seen = new Set();
+      const out = [];
+      ids.forEach((raw) => {
+        const sourceId = String(raw || "").trim().toLowerCase();
+        if (!sourceId || seen.has(sourceId)) return;
+        seen.add(sourceId);
+
+        const signInEntry = Array.isArray(state.signInEntries)
+          ? state.signInEntries.find((row) => String(row?.source_id || "").trim().toLowerCase() === sourceId)
+          : null;
+        const libraryEntry = Array.isArray(state.libraryDatabases)
+          ? state.libraryDatabases.find((row) => String(row?.source_id || "").trim().toLowerCase() === sourceId)
+          : null;
+        const url = String(signInEntry?.url || libraryEntry?.url || canonicalLoginUrl(sourceId) || "").trim();
+        const name = String(signInEntry?.name || libraryEntry?.name || sourceId).trim();
+        out.push({ source_id: sourceId, name, url });
+      });
+      return out;
+    }
+
+    function renderLoginSplash(links) {
+      const list = q("login_splash_links");
+      const note = q("login_splash_note");
+      const openBtn = q("login_splash_open_btn");
+      if (!list) return;
+      list.innerHTML = "";
+
+      const rows = Array.isArray(links) ? links : [];
+      if (!rows.length) {
+        const row = document.createElement("div");
+        row.className = "login-splash-row";
+        row.innerHTML = `<div class="muted">No provider links detected. Sign into your university system in the browser, then continue.</div>`;
+        list.appendChild(row);
+        if (note) note.textContent = "Sign into your university/library systems in the browser session before running login tests.";
+        if (openBtn) openBtn.disabled = true;
+        return;
+      }
+
+      if (note) note.textContent = `Sign in to ${rows.length} required provider system(s), then continue the login test.`;
+      if (openBtn) openBtn.disabled = false;
+
+      rows.forEach((rowData) => {
+        const row = document.createElement("div");
+        row.className = "login-splash-row";
+        const href = String(rowData.url || "").trim();
+        row.innerHTML = `
+          <div><strong>${rowData.name || rowData.source_id || "Provider"}</strong> (${rowData.source_id || ""})</div>
+          <div class="muted">${href ? `<a class="doc-link" target="_blank" rel="noopener noreferrer" href="${href}">${href}</a>` : "No sign-in URL configured"}</div>
+        `;
+        list.appendChild(row);
+      });
+    }
+
+    function closeLoginSplash(proceed) {
+      const splash = q("login_splash");
+      if (splash) splash.classList.add("hidden");
+      const resolver = state.loginSplashResolver;
+      state.loginSplashResolver = null;
+      if (typeof resolver === "function") resolver(Boolean(proceed));
+    }
+
+    function promptLoginSplash(sourceIds) {
+      if (typeof state.loginSplashResolver === "function") {
+        state.loginSplashResolver(false);
+        state.loginSplashResolver = null;
+      }
+      const links = buildLoginSplashLinks(sourceIds);
+      state.loginSplashLinks = links;
+      renderLoginSplash(links);
+      const splash = q("login_splash");
+      if (splash) splash.classList.remove("hidden");
+      return new Promise((resolve) => {
+        state.loginSplashResolver = resolve;
+      });
     }
 
     function normalizeUiVariant(value) {
@@ -973,6 +1142,11 @@
     async function testSingleDatabaseLogin(sourceId, triggerBtn = null) {
       const stableSourceId = String(sourceId || "").trim().toLowerCase();
       if (!stableSourceId) return;
+      const proceed = await promptLoginSplash([stableSourceId]);
+      if (!proceed) {
+        setStatusLine("settings_status", "blocked", "Login test cancelled. Sign in first, then retry.");
+        return;
+      }
       const button = triggerBtn || q(`button[data-db-test="1"][data-source-id="${sourceId}"]`);
       if (button) button.disabled = true;
       state.libraryDbTestStatus[stableSourceId] = { status: "testing", label: "testing", message: "" };
@@ -1231,6 +1405,11 @@
       const sourceIds = state.signInEntries
         .map((entry) => String(entry?.source_id || "").trim().toLowerCase())
         .filter((value) => !!value);
+      const proceed = await promptLoginSplash(sourceIds);
+      if (!proceed) {
+        setSignInState("blocked", "Login test cancelled. Sign in first, then retry.");
+        return;
+      }
       setSignInState("blocked", "Testing provider login access...");
       setButtonBusy("test_signin_btn", true, "Testing...", "Test Login");
       try {
@@ -1748,6 +1927,22 @@
         testSingleDatabaseLogin(sourceId, button).catch((err) => {
           setStatusLine("settings_status", "blocked", `Login test failed: ${err.message}`);
         });
+      });
+      q("login_splash_open_btn")?.addEventListener("click", () => {
+        const links = Array.isArray(state.loginSplashLinks) ? state.loginSplashLinks : [];
+        links.forEach((row) => {
+          const href = String(row?.url || "").trim();
+          if (!href) return;
+          window.open(href, "_blank", "noopener,noreferrer");
+        });
+      });
+      q("login_splash_continue_btn")?.addEventListener("click", () => closeLoginSplash(true));
+      q("login_splash_cancel_btn")?.addEventListener("click", () => closeLoginSplash(false));
+      document.addEventListener("keydown", (evt) => {
+        if (evt.key !== "Escape") return;
+        const splash = q("login_splash");
+        if (!splash || splash.classList.contains("hidden")) return;
+        closeLoginSplash(false);
       });
     }
 

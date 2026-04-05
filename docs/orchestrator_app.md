@@ -45,11 +45,13 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 ## Frontend behavior
 - Single page (`static/index.html`):
   - manuscript select/upload
+  - explicit pre-run sign-in stage (platform checklist + user confirmation gate) before `Run Research`
   - single `Run Research` button
   - top-level `Interface Style` selector (`editorial`, `operations`, `atlas`) with local preference persistence
   - plan panel appears once `research_plan` is available
   - live stage tracker and event log polling every 3s
   - active-stage pulse + heartbeat indicator while run is in progress
+  - run launch is blocked until pre-run sign-in stage is marked complete
   - auto-expanded log while active with live event count/stage header
   - post-run document list with click-through links to pulled artifact files
   - pulled documents shown as collapsible source packets; packet JSON is parsed for linked document targets so users see source docs (PDF/web/DOI) first
@@ -92,6 +94,7 @@ Environment controls all behavior (`config.py`):
 - Seed URL resolution now detects blocked pages (CAPTCHA/challenge/login/access-denied), tags those rows with `blocked_reason` + `action_required`, and emits `pulling/warn` events so users know to complete provider verification/login before retry.
 - Blocked snapshots are demoted to seed quality and excluded from `pulled_docs` counts used for pull-status quality accounting.
 - Pull source selection prefers keyed/API sources over same-family Playwright fallbacks when both are available (for example prefer `ebsco_api` over `ebscohost`).
+- Docker CDP attach now normalizes `host.docker.internal` to a resolved IP before probe/connect because Chrome DevTools can reject hostname Host headers with HTTP 500.
 - Document indexing preserves adapter-provided quality metadata (`quality_rank`, `quality_label`) and sorts flattened run-document rows by quality so high-confidence links remain first even when mixed with raw artifact files.
 - Results packet indexing is JSON-first: nested `_resolved_urls`/`_fetched_urls` artifacts are surfaced through packet-linked rows (not as duplicate standalone packets), and flattened rows dedupe by stable evidence/locator keys.
 
@@ -115,7 +118,8 @@ uvicorn main:app --reload --port 8876
 ## Docker runtime config
 - `docker-compose.yml` loads project-root `.env` through `env_file`.
 - Container runtime keeps `ORCH_WORKSPACE=/workspace` and mounts repository root at `/workspace`.
-- Set `ORCH_PLAYWRIGHT_CDP_URL` in `.env` when needed; compose falls back to `http://host.docker.internal:9222`.
+- Set `ORCH_PLAYWRIGHT_CDP_URL` in `.env` when needed; compose falls back to `http://host.docker.internal:9222` and runtime normalizes this hostname for Chrome CDP compatibility in Docker.
+- Docker image now includes the Python Playwright client so CDP-backed seed URL fetch fallback can execute in containerized runs.
 
 ## Tests
 ```bash

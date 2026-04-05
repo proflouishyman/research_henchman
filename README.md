@@ -8,6 +8,7 @@ Contract-enforced automated pipeline for manuscript research runs.
 - One run record now owns full state: analysis -> reflection -> pull -> ingest -> fit.
 - Frontend is a single launch + live monitor page.
 - Frontend now includes a switchable `Interface Style` control (`editorial`, `operations`, `atlas`) for live UI comparison without changing functionality.
+- Run workflow now includes an explicit pre-run sign-in stage that loads required platform logins from active library/profile availability and blocks run start until user confirmation.
 - UI highlights progress with active-stage color pulse and run heartbeat.
 - Completed runs expose click-through artifact files in a document panel.
 - Results document panel now renders collapsible source packets and prioritizes extracted linked documents (PDF/HTML/DOI/record URLs) over raw JSON artifact filenames.
@@ -153,5 +154,10 @@ docker compose up --build -d
 ```
 
 Runtime config is loaded from project-root `.env` via `env_file` plus `ORCH_WORKSPACE=/workspace` inside the container.
+
+Playwright note:
+- In Docker, `ORCH_PLAYWRIGHT_CDP_URL=http://host.docker.internal:9222` is supported.
+- Runtime now normalizes this hostname to an IP before CDP probe/connect because Chrome can reject hostname Host headers for DevTools endpoints.
+- Docker runtime includes the Python Playwright client so CDP-backed seed URL fallback can run inside the container.
 
 Open: <http://localhost:8876>

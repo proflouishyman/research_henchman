@@ -1,3 +1,23 @@
+[2026-04-05] - Add Semantic Workflow Colors for Ready/Blocked/Completed States
+Problem
+Workflow status cues were visually inconsistent, making it harder to quickly tell whether a stage was ready to proceed, blocked, or fully completed.
+Root Cause
+Status text and stage cards used mixed styles without a strict semantic mapping, and sign-in/launch state transitions did not consistently apply explicit state classes.
+Solution
+Updated `static/index.html` workflow styling and state transitions so semantic colors are enforced across launch/sign-in/stage surfaces: green for `ready`, red for `blocked`, and black for `completed`. Added explicit status helpers in UI logic to apply consistent state classes and synced sign-in box border styling with the same state model.
+Notes
+This is a frontend UX clarity improvement only; orchestration contracts and backend pipeline behavior remain unchanged.
+
+[2026-04-05] - Make Sign-In Checklist Manuscript-Aware via Analysis Preflight
+Problem
+Pre-run login checklist was generated from profile-level availability only, so users could be asked to sign into providers not actually needed for the selected manuscript run.
+Root Cause
+Sign-in target generation happened before manuscript-specific analysis/reflection planning, so it lacked knowledge of planned provider routes.
+Solution
+Added `POST /api/orchestrator/signin/preflight` to run analysis+reflection preflight for the selected manuscript and derive sign-in targets from planned source IDs. Updated frontend sign-in stage to require `Analyze Sources` before login confirmation, and wired `Test Login` to probe those manuscript-derived targets.
+Notes
+This is additive and contract-safe. Full run pipeline stages are unchanged; this only improves pre-run targeting precision for login checks.
+
 [2026-04-05] - Add Pre-Run "Test Login" Provider Access Probe
 Problem
 Users could mark pre-run sign-in complete without any direct verification that their active browser/library session could access required provider platforms.

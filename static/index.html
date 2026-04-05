@@ -188,7 +188,10 @@
 
     .muted { color: var(--muted); font-size: 12px; }
     .status-line { margin: 4px 0 12px; font-size: 13px; color: var(--muted); }
-    .status-line.live { color: #1d6a4e; font-weight: 700; }
+    .status-line.live,
+    .status-line.ready { color: #1d6a4e; font-weight: 700; }
+    .status-line.blocked { color: #8f3f3f; font-weight: 700; }
+    .status-line.completed { color: #0f0f0f; font-weight: 800; }
 
     .activity-row {
       display: flex;
@@ -243,6 +246,11 @@
     .event-box.ok { border-left-color: #3b7a56; background: var(--ok-bg); }
     .event-box.warn { border-left-color: #9a6e24; background: var(--warn-bg); }
     .event-box.err { border-left-color: #9f4444; background: var(--err-bg); }
+    .event-box.completed {
+      border-left-color: #101010;
+      background: #f0f0f0;
+      border-color: #1a1a1a;
+    }
 
     .stage-list {
       display: grid;
@@ -264,9 +272,9 @@
       transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
     }
 
-    .stage.done { background: var(--ok-bg); border-color: var(--ok-line); }
+    .stage.done { background: #111; border-color: #111; color: #fff; }
     .stage.failed { background: var(--err-bg); border-color: var(--err-line); }
-    .stage.pending { background: #fcf8ef; border-color: #dccdb7; }
+    .stage.pending { background: #fff3f3; border-color: #d8a8a8; }
     .stage.active {
       background: var(--active-bg);
       border-color: var(--active-line);
@@ -289,6 +297,12 @@
       color: var(--muted);
       background: #f7ecdc;
       white-space: nowrap;
+    }
+
+    .stage.done .pill {
+      background: #1a1a1a;
+      border-color: #303030;
+      color: #fff;
     }
 
     .plan-list {
@@ -360,7 +374,7 @@
     }
 
     .signin-test-blocked {
-      color: #9a6e24;
+      color: #8f3f3f;
       font-weight: 600;
     }
 
@@ -651,8 +665,8 @@
 
         <div class="event-box" id="signin_stage_box">
           <div><strong>Pre-Run Sign-In Stage</strong></div>
-          <div id="signin_status" class="muted">Load checklist and sign into required platforms before running.</div>
-          <button id="load_signin_btn" title="Load required sign-in platforms from active library profile and source availability.">Load Sign-In Checklist</button>
+          <div id="signin_status" class="status-line blocked">Analyze manuscript first, then sign into required platforms before running.</div>
+          <button id="load_signin_btn" title="Analyze manuscript and derive source-specific sign-in platforms from the pre-run plan.">Analyze Sources</button>
           <button id="test_signin_btn" title="Probe each required provider URL to confirm your current login session can access it.">Test Login</button>
           <button id="signin_done_btn" title="Confirm sign-ins are complete and allow run start.">Mark Sign-In Complete</button>
           <div id="signin_list" class="signin-list"></div>
@@ -762,6 +776,7 @@
       signInChecklistLoaded: false,
       signInEntries: [],
       signInTestResults: {},
+      signInPlannedSources: [],
     };
 
     async function api(path, method = "GET", body = null) {
@@ -778,6 +793,28 @@
     function setText(id, text) {
       const node = q(id);
       if (node) node.textContent = text || "";
+    }
+
+    function setStatusLine(id, state, text) {
+      const node = q(id);
+      if (!node) return;
+      if (text !== undefined) node.textContent = text || "";
+      node.classList.remove("ready", "blocked", "completed", "live");
+      if (state) node.classList.add(state);
+    }
+
+    function setSignInState(state, text) {
+      setStatusLine("signin_status", state, text);
+      const box = q("signin_stage_box");
+      if (!box) return;
+      box.classList.remove("ok", "warn", "err", "completed");
+      if (state === "ready") box.classList.add("ok");
+      else if (state === "blocked") box.classList.add("err");
+      else if (state === "completed") box.classList.add("completed");
+    }
+
+    function setLaunchState(state, text) {
+      setStatusLine("launch_status", state, text);
     }
 
     function normalizeUiVariant(value) {
@@ -983,19 +1020,11 @@
     function resetSignInStage(reason = "Sign-in checklist needs review before the next run.") {
       state.signInReady = false;
       state.signInTestResults = {};
-      if (reason) setText("signin_status", reason);
-    }
-
-    function providerSignInUrl(sourceId, fallbackUrl = "") {
-      const source = String(sourceId || "").trim().toLowerCase();
-      if (source === "ebsco_api" || source === "ebscohost") return "https://search.ebscohost.com/";
-      if (source === "jstor") return "https://www.jstor.org/";
-      if (source === "project_muse") return "https://muse.jhu.edu/";
-      if (source === "proquest_historical_newspapers") return "https://www.proquest.com/";
-      if (source === "americas_historical_newspapers") return "https://infoweb.newsbank.com/";
-      if (source === "gale_primary_sources") return "https://go.gale.com/ps/";
-      if (source === "statista") return "https://www.statista.com/";
-      return fallbackUrl || "";
+      state.signInPlannedSources = [];
+      state.signInChecklistLoaded = false;
+      state.signInEntries = [];
+      if (reason) setSignInState("blocked", reason);
+      renderSignInChecklist([]);
     }
 
     function renderSignInChecklist(entries) {
@@ -1038,64 +1067,47 @@
       });
     }
 
-    function buildSignInEntries(catalogOut, healthOut) {
-      const rows = [];
-      const seen = new Set();
-      const databases = Array.isArray(catalogOut?.university_databases) ? catalogOut.university_databases : [];
-      const availability = healthOut?.availability || {};
-      const playwrightSources = new Set(Array.isArray(availability.playwright_sources) ? availability.playwright_sources : []);
-
-      databases.forEach((db) => {
-        const sourceId = String(db?.source_id || "").trim();
-        if (!sourceId || !playwrightSources.has(sourceId)) return;
-        const stable = sourceId.toLowerCase();
-        if (seen.has(stable)) return;
-        seen.add(stable);
-        rows.push({
-          source_id: sourceId,
-          name: String(db?.name || sourceId),
-          url: providerSignInUrl(sourceId, String(db?.url || "")),
-          note: "Sign in via your library/institution in this browser session.",
-        });
-      });
-
-      const keyedApis = new Set(Array.isArray(availability.keyed_apis) ? availability.keyed_apis : []);
-      if (keyedApis.has("ebsco_api") && !seen.has("ebsco_api")) {
-        seen.add("ebsco_api");
-        rows.push({
-          source_id: "ebsco_api",
-          name: "EBSCOhost",
-          url: providerSignInUrl("ebsco_api", ""),
-          note: "API-first route is enabled. Sign-in may still be required for gated retrieval pages.",
-        });
-      }
-
-      rows.sort((a, b) => String(a.name || a.source_id).localeCompare(String(b.name || b.source_id)));
-      return rows;
-    }
-
     async function loadSignInChecklist() {
-      setText("signin_status", "Loading sign-in checklist...");
-      setButtonBusy("load_signin_btn", true, "Loading...", "Load Sign-In Checklist");
+      const manuscriptPath = String(q("manuscript_select")?.value || "").trim();
+      if (!manuscriptPath) {
+        setSignInState("blocked", "Select a manuscript first, then run analysis.");
+        return;
+      }
+      setSignInState("blocked", "Analyzing manuscript and planning source checks...");
+      setButtonBusy("load_signin_btn", true, "Analyzing...", "Analyze Sources");
       try {
-        const [catalogOut, healthOut] = await Promise.all([
-          api("/api/orchestrator/sources/catalog"),
-          api("/api/orchestrator/health"),
-        ]);
-        const entries = buildSignInEntries(catalogOut, healthOut);
+        const out = await api("/api/orchestrator/signin/preflight", "POST", { manuscript_path: manuscriptPath });
+        const entries = Array.isArray(out?.sign_in_targets) ? out.sign_in_targets : [];
+        const plannedSourceIds = Array.isArray(out?.planned_source_ids) ? out.planned_source_ids : [];
         state.signInEntries = entries;
+        state.signInPlannedSources = plannedSourceIds;
         state.signInTestResults = {};
         state.signInChecklistLoaded = true;
         state.signInReady = false;
         renderSignInChecklist(entries);
-        const library = String(catalogOut?.library_system || healthOut?.library_system || "").trim();
+
+        const plannedGapCount = Number(out?.planned_gap_count || 0);
         if (!entries.length) {
-          setText("signin_status", `No active Playwright sign-ins required for library profile ${library || "current"}.`);
+          if (plannedSourceIds.length) {
+            setSignInState(
+              "ready",
+              `Analysis complete (${plannedGapCount} gaps, ${plannedSourceIds.length} sources). No interactive sign-ins required for planned sources.`
+            );
+          } else {
+            setSignInState("ready", `Analysis complete (${plannedGapCount} gaps). No planned sources required sign-in checks.`);
+          }
         } else {
-          setText("signin_status", `${entries.length} platform sign-ins required for library profile ${library || "current"}.`);
+          setSignInState(
+            "blocked",
+            `Analysis complete (${plannedGapCount} gaps). ${entries.length} platform sign-ins required for ${plannedSourceIds.length} planned sources.`
+          );
         }
+        appendLog(
+          `[${new Date().toLocaleTimeString()}] preflight analysis complete · gaps=${plannedGapCount} planned_sources=${plannedSourceIds.length} login_targets=${entries.length}`,
+          "ok"
+        );
       } finally {
-        setButtonBusy("load_signin_btn", false, "Loading...", "Load Sign-In Checklist");
+        setButtonBusy("load_signin_btn", false, "Analyzing...", "Analyze Sources");
       }
     }
 
@@ -1103,10 +1115,18 @@
       if (!state.signInChecklistLoaded) {
         await loadSignInChecklist();
       }
-      setText("signin_status", "Testing provider login access...");
+      if (!state.signInChecklistLoaded) return;
+      const manuscriptPath = String(q("manuscript_select")?.value || "").trim();
+      const sourceIds = state.signInEntries
+        .map((entry) => String(entry?.source_id || "").trim().toLowerCase())
+        .filter((value) => !!value);
+      setSignInState("blocked", "Testing provider login access...");
       setButtonBusy("test_signin_btn", true, "Testing...", "Test Login");
       try {
-        const out = await api("/api/orchestrator/signin/test", "POST", {});
+        const out = await api("/api/orchestrator/signin/test", "POST", {
+          manuscript_path: manuscriptPath,
+          source_ids: sourceIds,
+        });
         const results = Array.isArray(out?.results) ? out.results : [];
         const bySource = {};
         results.forEach((row) => {
@@ -1120,10 +1140,8 @@
         const okCount = Number(summary.ok || 0);
         const blockedCount = Number(summary.blocked || 0);
         const unreachableCount = Number(summary.unreachable || 0);
-        setText(
-          "signin_status",
-          `Login test results: ${okCount} ok, ${blockedCount} blocked, ${unreachableCount} unreachable.`
-        );
+        const loginState = blockedCount > 0 || unreachableCount > 0 ? "blocked" : "ready";
+        setSignInState(loginState, `Login test results: ${okCount} ok, ${blockedCount} blocked, ${unreachableCount} unreachable.`);
         const logLevel = blockedCount > 0 || unreachableCount > 0 ? "warn" : "ok";
         appendLog(
           `[${new Date().toLocaleTimeString()}] login test complete · ok=${okCount} blocked=${blockedCount} unreachable=${unreachableCount}`,
@@ -1139,11 +1157,11 @@
 
     function markSignInComplete() {
       if (!state.signInChecklistLoaded) {
-        setText("signin_status", "Load the checklist first, then confirm completion.");
+        setSignInState("blocked", "Load the checklist first, then confirm completion.");
         return;
       }
       state.signInReady = true;
-      setText("signin_status", "Sign-in stage complete. You can start the run.");
+      setSignInState("completed", "Sign-in stage complete. You can start the run.");
       appendLog(`[${new Date().toLocaleTimeString()}] pre-run sign-in stage marked complete`, "ok");
     }
 
@@ -1156,7 +1174,6 @@
       const dot = q("heartbeat_dot");
       const text = q("heartbeat_text");
       const age = q("poll_age");
-      const launch = q("launch_status");
       const logDetails = q("log_details");
       const logSummary = q("log_summary");
       const runBtn = q("run_btn");
@@ -1173,10 +1190,7 @@
         if (text) text.textContent = `${runStatus} in progress`;
         const seconds = state.lastPollTs ? Math.max(0, Math.floor((Date.now() - state.lastPollTs) / 1000)) : 0;
         if (age) age.textContent = `checked ${seconds}s ago`;
-        if (launch) {
-          launch.classList.add("live");
-          launch.textContent = `Run active: ${runStatus}. ${run?.stage_detail || ""}`;
-        }
+        setLaunchState("ready", `Run active: ${runStatus}. ${run?.stage_detail || ""}`);
         if (logDetails) logDetails.open = true;
       } else if (runStatus === "failed") {
         if (runBtn) {
@@ -1187,10 +1201,7 @@
         if (dot) dot.classList.add("err");
         if (text) text.textContent = "run failed";
         if (age) age.textContent = "";
-        if (launch) {
-          launch.classList.remove("live");
-          launch.textContent = `Run failed: ${run?.error || "check live log"}`;
-        }
+        setLaunchState("blocked", `Run failed: ${run?.error || "check live log"}`);
       } else if (runStatus) {
         if (runBtn) {
           runBtn.disabled = false;
@@ -1200,10 +1211,7 @@
         if (dot) dot.classList.add("done");
         if (text) text.textContent = `${runStatus}`;
         if (age) age.textContent = "";
-        if (launch) {
-          launch.classList.remove("live");
-          launch.textContent = `Run finished with status: ${runStatus}`;
-        }
+        setLaunchState("completed", `Run finished with status: ${runStatus}`);
       }
 
       if (logSummary) {
@@ -1479,14 +1487,15 @@
       const out = await api("/api/orchestrator/manuscripts");
       state.manuscripts = out.manuscripts || [];
       fillManuscripts();
-      setText("launch_status", state.manuscripts.length ? "Ready to run." : "No manuscript files found.");
+      if (state.manuscripts.length) setLaunchState("ready", "Ready to run.");
+      else setLaunchState("blocked", "No manuscript files found.");
       resetSignInStage("Sign-in checklist needs review before the next run.");
     }
 
     async function uploadManuscript() {
       const input = q("manuscript_file_input");
       if (!input || !input.files || !input.files.length) {
-        setText("launch_status", "Choose a file to upload first.");
+        setLaunchState("blocked", "Choose a file to upload first.");
         return;
       }
 
@@ -1496,10 +1505,10 @@
         form.append("file", input.files[0]);
         const res = await fetch("/api/orchestrator/manuscripts/upload", { method: "POST", body: form });
         if (!res.ok) {
-          setText("launch_status", `Upload failed (${res.status}).`);
+          setLaunchState("blocked", `Upload failed (${res.status}).`);
           return;
         }
-        setText("launch_status", "Upload complete.");
+        setLaunchState("ready", "Upload complete.");
         input.value = "";
         resetSignInStage("Sign-in checklist needs review before the next run.");
         await loadManuscripts();
@@ -1512,22 +1521,21 @@
       const sel = q("manuscript_select");
       const manuscriptPath = sel ? String(sel.value || "") : "";
       if (!manuscriptPath) {
-        setText("launch_status", "Select a manuscript first.");
+        setLaunchState("blocked", "Select a manuscript first.");
         return;
       }
       if (!state.signInChecklistLoaded) {
-        await loadSignInChecklist();
-        setText("launch_status", "Complete the Pre-Run Sign-In Stage before starting the run.");
+        setLaunchState("blocked", "Run Analyze Sources first, then complete Pre-Run Sign-In Stage.");
         return;
       }
       if (!state.signInReady) {
-        setText("launch_status", "Complete the Pre-Run Sign-In Stage before starting the run.");
+        setLaunchState("blocked", "Complete the Pre-Run Sign-In Stage before starting the run.");
         return;
       }
 
       saveLastManuscript(manuscriptPath);
       setRunButtonBusy(true);
-      setText("launch_status", "Starting run...");
+      setLaunchState("ready", "Starting run...");
       try {
         const out = await api("/api/orchestrator/runs", "POST", { manuscript_path: manuscriptPath, force: false, pull_timeout_seconds: 60 });
         state.activeRunId = out.run_id;
@@ -1540,7 +1548,7 @@
         await pollRun();
         startPolling();
       } catch (err) {
-        setText("launch_status", `Run start failed: ${err.message}`);
+        setLaunchState("blocked", `Run start failed: ${err.message}`);
       } finally {
         setRunButtonBusy(false);
       }
@@ -1549,7 +1557,7 @@
     function startPolling() {
       if (state.pollTimer) clearInterval(state.pollTimer);
       state.pollTimer = setInterval(() => {
-        pollRun().catch((err) => setText("launch_status", `Polling error: ${err.message}`));
+        pollRun().catch((err) => setLaunchState("blocked", `Polling error: ${err.message}`));
       }, 3000);
     }
 
@@ -1583,7 +1591,7 @@
           setText("docs_status", `Could not load documents: ${err.message}`);
           q("docs_box")?.classList.remove("hidden");
         }
-        setText("launch_status", `Run finished with status: ${run.status}`);
+        setLaunchState("completed", `Run finished with status: ${run.status}`);
       }
     }
 
@@ -1603,16 +1611,16 @@
           await loadManuscripts();
           appendLog(`[${new Date().toLocaleTimeString()}] manuscripts refreshed`, "ok");
         } catch (err) {
-          setText("launch_status", err.message);
+          setLaunchState("blocked", err.message);
         } finally {
           setButtonBusy("refresh_manuscripts_btn", false, "Refreshing...", "Refresh Manuscripts");
         }
       });
-      q("upload_manuscript_btn")?.addEventListener("click", () => uploadManuscript().catch((err) => setText("launch_status", err.message)));
-      q("load_signin_btn")?.addEventListener("click", () => loadSignInChecklist().catch((err) => setText("signin_status", `Sign-in checklist failed: ${err.message}`)));
-      q("test_signin_btn")?.addEventListener("click", () => testSignInAccess().catch((err) => setText("signin_status", `Login test failed: ${err.message}`)));
+      q("upload_manuscript_btn")?.addEventListener("click", () => uploadManuscript().catch((err) => setLaunchState("blocked", err.message)));
+      q("load_signin_btn")?.addEventListener("click", () => loadSignInChecklist().catch((err) => setSignInState("blocked", `Source analysis failed: ${err.message}`)));
+      q("test_signin_btn")?.addEventListener("click", () => testSignInAccess().catch((err) => setSignInState("blocked", `Login test failed: ${err.message}`)));
       q("signin_done_btn")?.addEventListener("click", () => markSignInComplete());
-      q("run_btn")?.addEventListener("click", () => startRun().catch((err) => setText("launch_status", err.message)));
+      q("run_btn")?.addEventListener("click", () => startRun().catch((err) => setLaunchState("blocked", err.message)));
       q("manuscript_select")?.addEventListener("change", (evt) => {
         saveLastManuscript(String(evt.target.value || ""));
         resetSignInStage("Manuscript changed. Review sign-in checklist before running.");
@@ -1628,7 +1636,7 @@
       bindEvents();
       await loadManuscripts();
       await loadSettings();
-      await loadSignInChecklist();
+      setSignInState("blocked", "Run Analyze Sources to generate manuscript-specific login checks.");
       const runs = await api("/api/orchestrator/runs?limit=1");
       const first = Array.isArray(runs.runs) && runs.runs.length ? runs.runs[0] : null;
       if (first && !TERMINAL.has(String(first.status || ""))) {
@@ -1640,7 +1648,7 @@
     }
 
     init().catch((err) => {
-      setText("launch_status", `Initialization failed: ${err.message}`);
+      setLaunchState("blocked", `Initialization failed: ${err.message}`);
       appendLog(`init failed: ${err.message}`, "err");
     });
   </script>

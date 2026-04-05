@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -27,6 +28,56 @@ def test_settings_defaults_workspace_to_repo_root(monkeypatch):
     monkeypatch.delenv("ORCH_WORKSPACE", raising=False)
     settings = orchestrator_main._settings()
     assert settings.workspace == orchestrator_main.BASE_DIR
+
+
+def test_signin_preflight_endpoint_uses_analysis_planned_sources(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state_dir = tmp_path / "state"
+    uploads = state_dir / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    manuscript = workspace / "Manuscript" / "sample.txt"
+    manuscript.parent.mkdir(parents=True, exist_ok=True)
+    manuscript.write_text("sample manuscript", encoding="utf-8")
+
+    monkeypatch.setenv("ORCH_WORKSPACE", str(workspace))
+    monkeypatch.setenv("ORCH_DATA_ROOT", str(state_dir))
+    monkeypatch.setenv("ORCH_LIBRARY_SYSTEM", "generic")
+
+    store = OrchestratorStore(state_dir)
+    monkeypatch.setattr(orchestrator_main, "store", store)
+    monkeypatch.setattr(orchestrator_main, "UPLOAD_DIR", uploads)
+    monkeypatch.setattr(
+        orchestrator_main,
+        "build_source_availability",
+        lambda _settings: SourceAvailability(
+            free_apis=[],
+            keyed_apis=["ebsco_api"],
+            playwright_sources=["jstor", "project_muse"],
+            missing_keys={},
+            playwright_unavailable_reason="",
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator_main,
+        "_planned_sources_for_manuscript",
+        lambda _settings, _path, _availability: {
+            "planned_source_ids": ["jstor", "ebsco_api"],
+            "gap_map": SimpleNamespace(analysis_method="heuristic"),
+            "plan": SimpleNamespace(gaps=[1, 2], reflection_method="heuristic_fallback", plan_summary="summary"),
+        },
+    )
+
+    client = TestClient(orchestrator_main.app)
+    resp = client.post("/api/orchestrator/signin/preflight", json={"manuscript_path": "Manuscript/sample.txt"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload.get("status") == "ok"
+    assert payload.get("planned_gap_count") == 2
+    assert payload.get("planned_source_ids") == ["jstor", "ebsco_api"]
+    targets = payload.get("sign_in_targets", [])
+    assert len(targets) == 2
+    assert any(row.get("source_id") == "jstor" for row in targets)
+    assert any(row.get("source_id") == "ebsco_api" for row in targets)
 
 
 def test_signin_test_endpoint_reports_per_source_status(tmp_path, monkeypatch):

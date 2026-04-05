@@ -10,6 +10,8 @@ Contract-enforced automated pipeline for manuscript research runs.
 - Frontend now includes a switchable `Interface Style` control (`editorial`, `operations`, `atlas`) for live UI comparison without changing functionality.
 - Run workflow now includes an explicit pre-run sign-in stage that loads required platform logins from active library/profile availability and blocks run start until user confirmation.
 - Pre-run sign-in stage now includes `Test Login`, which probes provider URLs using your active browser session and reports per-source access status before launch.
+- Sign-in checklist generation is now manuscript-aware: `Analyze Sources` runs analysis+planning first, then derives login targets from planned providers.
+- Workflow statuses now use explicit semantic colors in Run UI: green = ready, red = blocked, black = completed.
 - UI highlights progress with active-stage color pulse and run heartbeat.
 - Completed runs expose click-through artifact files in a document panel.
 - Results document panel now renders collapsible source packets and prioritizes extracted linked documents (PDF/HTML/DOI/record URLs) over raw JSON artifact filenames.
@@ -52,6 +54,7 @@ Contract-enforced automated pipeline for manuscript research runs.
 - `POST /api/orchestrator/connections/save`
 - `GET /api/orchestrator/library/profiles`
 - `GET /api/orchestrator/sources/catalog`
+- `POST /api/orchestrator/signin/preflight`
 - `POST /api/orchestrator/signin/test`
 
 ## Extension point

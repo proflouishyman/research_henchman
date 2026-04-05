@@ -280,6 +280,19 @@ class ConnectionSaveInput(BaseModel):
     updates: Dict[str, str] = Field(default_factory=dict)
 
 
+class SignInPreflightInput(BaseModel):
+    """Pre-run manuscript planning payload for sign-in target generation."""
+
+    manuscript_path: str
+
+
+class SignInTestInput(BaseModel):
+    """Provider sign-in probe payload."""
+
+    manuscript_path: str = ""
+    source_ids: List[str] = Field(default_factory=list)
+
+
 T = TypeVar("T")
 
 

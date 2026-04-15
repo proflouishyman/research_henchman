@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 from .base import PullAdapter
 from .document_links import build_link_rows
-from .io_utils import write_json_records
+from .io_utils import era_years_from_gap, write_json_records
 from .seed_url_fetch import blocked_reason_hint, resolve_seed_rows
 from contracts import PlannedGap, SourceAvailability, SourceResult, SourceType
 
@@ -77,10 +77,14 @@ class BlsAdapter(KeyedApiAdapter):
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
         try:
+            era_start, era_end = era_years_from_gap(gap)
+            # Fall back to a recent 5-year window when era bounds are unavailable.
+            bls_start = str(era_start) if era_start is not None else "2019"
+            bls_end = str(era_end) if era_end is not None else "2024"
             payload = {
                 "seriesid": ["CUUR0000SA0"],
-                "startyear": "2019",
-                "endyear": "2024",
+                "startyear": bls_start,
+                "endyear": bls_end,
                 "registrationkey": self.api_key,
             }
             req = urllib.request.Request(
@@ -228,7 +232,8 @@ class EbscoApiAdapter(KeyedApiAdapter):
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
         try:
-            rows = build_link_rows(self.source_id, query, gap.gap_id, limit_local=6)
+            era_start, era_end = era_years_from_gap(gap)
+            rows = build_link_rows(self.source_id, query, gap.gap_id, limit_local=6, era_start=era_start, era_end=era_end)
             source_root = Path(run_dir) / gap.gap_id / self.source_id
             source_root.mkdir(parents=True, exist_ok=True)
             resolved_rows, resolved_stats = resolve_seed_rows(

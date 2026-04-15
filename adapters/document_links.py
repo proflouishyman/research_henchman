@@ -12,7 +12,7 @@ import os
 import re
 import urllib.parse
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 INDEX_REL_PATH = Path("codex/analysis_cache/source_index_summary.txt")
@@ -67,23 +67,51 @@ GENERIC_QUERY_TERMS = {
 DOC_EXTS = {".pdf", ".PDF", ".doc", ".docx", ".html", ".htm", ".txt", ".md"}
 
 
-def provider_search_url(source_id: str, query: str) -> str:
-    """Return provider-specific search URL for click-through."""
+def provider_search_url(
+    source_id: str,
+    query: str,
+    era_start: Optional[int] = None,
+    era_end: Optional[int] = None,
+) -> str:
+    """Return provider-specific search URL for click-through.
+
+    When era_start and era_end are provided they are appended as date-range
+    facet parameters for sources that support year filtering.  This narrows
+    click-through results to the historical period of the claim without
+    changing the query itself.
+    """
 
     encoded = urllib.parse.quote_plus(query.strip())
     source = (source_id or "").strip().lower()
+
+    # Build an era suffix when both bounds are available.
+    def _era_params(**kwargs: str) -> str:
+        if era_start is not None and era_end is not None:
+            return "&" + urllib.parse.urlencode(kwargs)
+        return ""
+
     if source in {"ebsco_api", "ebscohost"}:
-        return f"https://search.ebscohost.com/login.aspx?direct=true&bquery={encoded}"
+        # EBSCOhost uses DT1/DT2 as YYYYMMDD date range parameters.
+        era = ""
+        if era_start is not None and era_end is not None:
+            era = f"&DT1={era_start}0101&DT2={era_end}1231"
+        return f"https://search.ebscohost.com/login.aspx?direct=true&bquery={encoded}{era}"
     if source == "jstor":
-        return f"https://www.jstor.org/action/doBasicSearch?Query={encoded}"
+        # JSTOR uses sd (start decade/year) and ed (end decade/year) for date filtering.
+        era = _era_params(sd=str(era_start), ed=str(era_end))
+        return f"https://www.jstor.org/action/doBasicSearch?Query={encoded}{era}"
     if source == "project_muse":
         return f"https://muse.jhu.edu/search?action=search&query={encoded}"
     if source == "proquest_historical_newspapers":
-        return f"https://www.proquest.com/search?queryTerm={encoded}"
+        # ProQuest supports custom date range via startdate/enddate params.
+        era = _era_params(daterange="custom", startdate=str(era_start), enddate=str(era_end))
+        return f"https://www.proquest.com/search?queryTerm={encoded}{era}"
     if source == "americas_historical_newspapers":
-        return f"https://infoweb.newsbank.com/apps/readex/?p=EANX&q={encoded}"
+        era = _era_params(date_low=str(era_start), date_high=str(era_end))
+        return f"https://infoweb.newsbank.com/apps/readex/?p=EANX&q={encoded}{era}"
     if source == "gale_primary_sources":
-        return f"https://go.gale.com/ps/search?query={encoded}"
+        era = _era_params(startDate=str(era_start), endDate=str(era_end))
+        return f"https://go.gale.com/ps/search?query={encoded}{era}"
     if source == "statista":
         return f"https://www.statista.com/search/?q={encoded}"
     return f"https://duckduckgo.com/?q={encoded}"
@@ -169,7 +197,14 @@ def local_document_candidates(query: str, limit: int = 5) -> List[Tuple[Path, fl
     return [(path, score) for score, path in scored[:limit]]
 
 
-def build_link_rows(source_id: str, query: str, gap_id: str, limit_local: int = 5) -> List[Dict[str, str]]:
+def build_link_rows(
+    source_id: str,
+    query: str,
+    gap_id: str,
+    limit_local: int = 5,
+    era_start: Optional[int] = None,
+    era_end: Optional[int] = None,
+) -> List[Dict[str, str]]:
     """Build normalized link rows ordered by evidence quality.
 
     Quality hierarchy:
@@ -199,7 +234,7 @@ def build_link_rows(source_id: str, query: str, gap_id: str, limit_local: int = 
     rows.append(
         {
             "title": f"{source_id} search results",
-            "url": provider_search_url(source_id, query),
+            "url": provider_search_url(source_id, query, era_start=era_start, era_end=era_end),
             "query": query,
             "gap_id": gap_id,
             "link_type": "provider_search",

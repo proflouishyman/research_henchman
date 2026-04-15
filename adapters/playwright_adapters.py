@@ -10,7 +10,7 @@ from pathlib import Path
 from .base import PullAdapter
 from .cdp_utils import effective_cdp_url
 from .document_links import build_link_rows
-from .io_utils import write_json_records
+from .io_utils import era_years_from_gap, write_json_records
 from .seed_url_fetch import blocked_reason_hint, resolve_seed_rows
 from contracts import PlannedGap, SourceAvailability, SourceResult, SourceType
 
@@ -39,7 +39,8 @@ class PlaywrightAdapter(PullAdapter):
         """
 
         try:
-            rows = build_link_rows(self.source_id, query, gap.gap_id, limit_local=4)
+            era_start, era_end = era_years_from_gap(gap)
+            rows = build_link_rows(self.source_id, query, gap.gap_id, limit_local=4, era_start=era_start, era_end=era_end)
             source_root = Path(run_dir) / gap.gap_id / self.source_id
             source_root.mkdir(parents=True, exist_ok=True)
             resolved_rows, resolved_stats = resolve_seed_rows(

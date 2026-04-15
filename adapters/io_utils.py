@@ -6,7 +6,30 @@ import csv
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
+
+
+def era_years_from_gap(gap: Any) -> Tuple[Optional[int], Optional[int]]:
+    """Extract (era_start, era_end) from a PlannedGap's query_ladder synonym ring.
+
+    Returns (None, None) when the gap has no ladder or the ring has no era bounds.
+    Adapters use these values to apply date-range facets to provider search URLs
+    and API calls without changing the query string itself.
+    """
+
+    ladder_dict: Dict[str, Any] = getattr(gap, "query_ladder", {}) or {}
+    ring: Dict[str, Any] = ladder_dict.get("synonym_ring", {}) or {}
+    era_start = ring.get("era_start")
+    era_end = ring.get("era_end")
+    try:
+        start = int(era_start) if era_start is not None else None
+    except (TypeError, ValueError):
+        start = None
+    try:
+        end = int(era_end) if era_end is not None else None
+    except (TypeError, ValueError):
+        end = None
+    return (start, end)
 
 
 def safe_query_token(query: str) -> str:

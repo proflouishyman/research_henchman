@@ -126,17 +126,30 @@ export function SettingsModal() {
                   <label className="block text-xs font-medium text-ink mb-1.5">
                     LLM Provider
                   </label>
-                  <input
-                    type="text"
-                    value={
-                      updates['ORCH_LLM_PROVIDER'] ??
-                      (settings?.llm_provider as string) ??
-                      ''
-                    }
+                  <select
+                    value={updates['ORCH_LLM_PROVIDER'] ?? (settings?.llm_provider as string) ?? 'ollama'}
                     onChange={(e) => handleChange('ORCH_LLM_PROVIDER', e.target.value)}
-                    placeholder="e.g. ollama, openai"
                     className="w-full text-xs border border-border rounded-lg px-3 py-2 bg-surface text-ink focus:outline-none focus:border-accent transition-colors"
-                  />
+                  >
+                    <option value="ollama">Ollama (local)</option>
+                    <option value="claude">Claude (Anthropic API)</option>
+                    <option value="openai">OpenAI</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-ink mb-1.5">
+                    Browser Provider
+                  </label>
+                  <select
+                    value={updates['ORCH_BROWSER_PROVIDER'] ?? (settings?.browser_provider as string) ?? 'playwright_cdp'}
+                    onChange={(e) => handleChange('ORCH_BROWSER_PROVIDER', e.target.value)}
+                    className="w-full text-xs border border-border rounded-lg px-3 py-2 bg-surface text-ink focus:outline-none focus:border-accent transition-colors"
+                  >
+                    <option value="playwright_cdp">Playwright CDP (default)</option>
+                    <option value="http">HTTP only (no JS)</option>
+                    <option value="claude_cu">Claude Computer Use (stub)</option>
+                  </select>
                 </div>
               </div>
             )}

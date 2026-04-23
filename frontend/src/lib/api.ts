@@ -87,7 +87,19 @@ export async function fetchSources(): Promise<Source[]> {
 // --- Settings ---
 
 export async function fetchSettings(): Promise<Settings> {
-  return apiFetch<Settings>('/connections/values')
+  const data = await apiFetch<{ env_path: string; values: { key: string; value: string }[] }>(
+    '/connections/values'
+  )
+  // Normalize the array of env rows into a flat key→value map plus camelCase aliases
+  const out: Settings = {}
+  for (const { key, value } of data.values ?? []) {
+    out[key] = value
+  }
+  // Convenience aliases used by the settings modal
+  out.library_system = out['ORCH_LIBRARY_SYSTEM'] as string | undefined
+  out.llm_provider = out['ORCH_LLM_PROVIDER'] as string | undefined
+  out.browser_provider = out['ORCH_BROWSER_PROVIDER'] as string | undefined
+  return out
 }
 
 export async function saveSettings(updates: Record<string, string>): Promise<void> {

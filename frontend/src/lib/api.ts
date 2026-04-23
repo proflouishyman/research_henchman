@@ -50,6 +50,17 @@ export async function retryRun(runId: string): Promise<{ run_id: string }> {
   return apiFetch<{ run_id: string }>(`/runs/${runId}/retry`, { method: 'POST' })
 }
 
+export async function openGapFolder(
+  runId: string,
+  gapId: string
+): Promise<{ opened: boolean; path: string }> {
+  return apiFetch(`/runs/${runId}/gaps/${gapId}/open-folder`, { method: 'POST' })
+}
+
+export async function openRunFolder(runId: string): Promise<{ opened: boolean; path: string }> {
+  return apiFetch(`/runs/${runId}/open-folder`, { method: 'POST' })
+}
+
 // --- Events ---
 
 export async function fetchEvents(runId: string): Promise<Event[]> {

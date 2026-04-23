@@ -40,6 +40,7 @@ from contracts import (
 from library_profiles import get_active_library_profile, get_active_university_databases, load_library_profiles
 from layers import analyze_manuscript, reflect_on_gaps
 from layers.pull import SOURCE_REGISTRY, build_source_availability, source_capability_catalog
+from artifact_export import resolve_gap_folder, resolve_bundle_root
 from pipeline import run_orchestration
 from store import OrchestratorStore, now_utc
 
@@ -1117,6 +1118,64 @@ async def api_run_stream(run_id: str) -> EventSourceResponse:
             await asyncio.sleep(poll_interval)
 
     return EventSourceResponse(event_generator())
+
+
+@app.post("/api/orchestrator/runs/{run_id}/gaps/{gap_id}/open-folder")
+def api_open_gap_folder(run_id: str, gap_id: str) -> Dict[str, Any]:
+    """Open the export folder for one gap in the OS file manager (Finder on macOS)."""
+    import subprocess
+    import sys
+
+    row = store.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    settings = _settings()
+    rec = run_record_from_dict(row)
+    folder = resolve_gap_folder(rec, gap_id, settings)
+
+    if folder is None:
+        raise HTTPException(status_code=404, detail="manuscript not found")
+    if not folder.exists():
+        raise HTTPException(status_code=404, detail=f"folder not yet exported: {folder}")
+
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(folder)])
+    elif sys.platform == "win32":
+        subprocess.Popen(["explorer", str(folder)])
+    else:
+        subprocess.Popen(["xdg-open", str(folder)])
+
+    return {"opened": True, "path": str(folder)}
+
+
+@app.post("/api/orchestrator/runs/{run_id}/open-folder")
+def api_open_run_folder(run_id: str) -> Dict[str, Any]:
+    """Open the top-level export bundle folder for a run in the OS file manager."""
+    import subprocess
+    import sys
+
+    row = store.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    settings = _settings()
+    rec = run_record_from_dict(row)
+    folder = resolve_bundle_root(rec, settings)
+
+    if folder is None:
+        raise HTTPException(status_code=404, detail="manuscript not found")
+    if not folder.exists():
+        raise HTTPException(status_code=404, detail="bundle not yet exported")
+
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", str(folder)])
+    elif sys.platform == "win32":
+        subprocess.Popen(["explorer", str(folder)])
+    else:
+        subprocess.Popen(["xdg-open", str(folder)])
+
+    return {"opened": True, "path": str(folder)}
 
 
 @app.get("/api/orchestrator/runs/{run_id}/documents")

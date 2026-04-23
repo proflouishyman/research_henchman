@@ -1,12 +1,13 @@
 // Main pipeline view: stage rail, gap list, event log for the selected run.
 
+import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, AlertTriangle, FileText } from 'lucide-react'
+import { RefreshCw, AlertTriangle, FileText, FolderOpen } from 'lucide-react'
 import { useUIStore } from '../../store/ui'
 import { useRun } from '../../hooks/useRun'
 import { useEvents } from '../../hooks/useEvents'
 import { useDocuments } from '../../hooks/useDocuments'
-import { retryRun } from '../../lib/api'
+import { retryRun, openRunFolder } from '../../lib/api'
 import { PipelineRail } from './PipelineRail'
 import { EventLog } from './EventLog'
 import { GapList } from '../gaps/GapList'
@@ -22,6 +23,9 @@ export function PipelineView() {
   const { data: documents } = useDocuments(selectedRunId, run?.status)
   const qc = useQueryClient()
 
+  const [bundleOpened, setBundleOpened] = useState(false)
+  const [bundleError, setBundleError] = useState<string | null>(null)
+
   const retryMutation = useMutation({
     mutationFn: () => retryRun(selectedRunId!),
     onSuccess: () => {
@@ -29,6 +33,19 @@ export function PipelineView() {
       qc.invalidateQueries({ queryKey: ['run', selectedRunId] })
     },
   })
+
+  const handleOpenBundle = async () => {
+    if (!selectedRunId) return
+    setBundleError(null)
+    try {
+      await openRunFolder(selectedRunId)
+      setBundleOpened(true)
+      setTimeout(() => setBundleOpened(false), 2000)
+    } catch {
+      setBundleError('Not ready')
+      setTimeout(() => setBundleError(null), 3000)
+    }
+  }
 
   if (!selectedRunId) {
     return (
@@ -82,16 +99,34 @@ export function PipelineView() {
             </p>
           </div>
 
-          {(run.status === 'failed' || run.status === 'partial') && (
-            <button
-              onClick={() => retryMutation.mutate()}
-              disabled={retryMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-accent rounded-md hover:bg-accent-hover disabled:opacity-50 transition-colors shrink-0"
-            >
-              <RefreshCw size={12} className={retryMutation.isPending ? 'animate-spin' : ''} />
-              Retry
-            </button>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {run.status === 'complete' && (
+              <button
+                onClick={handleOpenBundle}
+                title="Open research bundle in Finder"
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border transition-colors ${
+                  bundleOpened
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                    : bundleError
+                    ? 'bg-red-50 border-red-200 text-red-600'
+                    : 'bg-surface-muted border-border text-ink-secondary hover:text-ink hover:bg-border/50'
+                }`}
+              >
+                <FolderOpen size={12} />
+                {bundleOpened ? 'Opened' : bundleError ?? 'Open Bundle'}
+              </button>
+            )}
+            {(run.status === 'failed' || run.status === 'partial') && (
+              <button
+                onClick={() => retryMutation.mutate()}
+                disabled={retryMutation.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-accent rounded-md hover:bg-accent-hover disabled:opacity-50 transition-colors"
+              >
+                <RefreshCw size={12} className={retryMutation.isPending ? 'animate-spin' : ''} />
+                Retry
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Stage rail */}
@@ -147,6 +182,7 @@ export function PipelineView() {
         {/* Gap list — shows research plan gaps when available, otherwise gap map */}
         {gaps.length > 0 && (
           <GapList
+            runId={selectedRunId}
             gapMapGaps={run.gap_map?.gaps ?? []}
             planGaps={planGaps}
             documents={documents}

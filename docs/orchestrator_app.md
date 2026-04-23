@@ -10,13 +10,15 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 
 ## Architecture
 - `contracts.py`: all layer dataclasses and enums (`GapMap`, `ResearchPlan`, `GapPullResult`, `IngestResult`, `FitResult`, `RunRecord`).
-- `layers/analysis.py`: Layer 1 analysis (Ollama-first with heuristic fallback, fingerprint cache).
+- `layers/analysis.py`: Layer 1 analysis (provider-abstracted LLM with heuristic fallback, fingerprint cache).
 - `layers/search_policy.py`: Accordion search-policy layer (claim classification, era synonym ring, ladder generation, move-state logic, hash cache).
 - `layers/reflection.py`: Layer 2 reflection + policy gates (claim typing, evidence typing, query-quality gate, ladder persistence on `PlannedGap.query_ladder`, local review pass for low-confidence routes).
 - `layers/pull.py`: Layer 3 router + `SOURCE_REGISTRY` + `SOURCE_CAPABILITIES` semantic routing table.
 - `layers/ingest.py`: Layer 4 ingest, tags artifacts with `gap_id` and `source_id`.
 - `layers/fit.py`: Layer 5 fit, per-gap scoring and idempotent skip of already-scored links.
 - `pipeline.py`: stage sequencer, run persistence, structured events.
+- `layers/llm_client.py`: LLM provider abstraction (`LLMClient`, `LLMProvider`, `make_llm_client()`). Supports `ollama` (default), `claude` (Anthropic SDK), and `openai`. Selected via `ORCH_LLM_PROVIDER`.
+- `adapters/browser_client.py`: Browser/HTTP provider abstraction (`BrowserClient`, `BrowserProvider`, `PageResult`, `make_browser_client()`). Supports `playwright_cdp` (default), `http` (urllib fallback), `claude_cu` (stub for future Anthropic Computer Use API). Selected via `ORCH_BROWSER_PROVIDER`.
 
 ## API Endpoints
 - `GET /api/orchestrator/health`
@@ -26,6 +28,7 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 - `GET /api/orchestrator/runs`
 - `GET /api/orchestrator/runs/{run_id}`
 - `GET /api/orchestrator/runs/{run_id}/events`
+- `GET /api/orchestrator/runs/{run_id}/stream` (SSE — live event stream via `EventSource`)
 - `GET /api/orchestrator/runs/{run_id}/documents`
 - `GET /api/orchestrator/runs/{run_id}/evidence/{evidence_id}`
 - `GET /api/orchestrator/evidence/{evidence_id}`
@@ -46,7 +49,26 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 - Frontend tabs/wizard flow is replaced by a two-page single app surface (`Run`, `Settings`).
 
 ## Frontend behavior
-- Single page (`static/index.html`):
+
+### React app (primary — `frontend/`)
+The primary frontend is a React 18 + Vite + TypeScript app served from `frontend/dist/` (built with `npm run build`). The legacy `static/index.html` is retained as a fallback only.
+
+Stack: React 18, Vite, TypeScript, Tailwind v3, Tanstack Query v5, Zustand, Framer Motion, Lucide React.
+
+Design aesthetic: warm off-white background, amber accent, clean serif/sans typography, card-based layout. Dark mode toggleable and persisted to `localStorage`.
+
+Key components:
+- `ManuscriptSelector` — pick or upload a manuscript from the workspace
+- `RunLauncher` — pre-run sign-in gate → `Run Research` button
+- `PipelineRail` — horizontal stage pills with pulsing dot for the active stage
+- `PlanPanel` — per-gap plan cards (claim kind, evidence need, confidence, ladder/synonym-ring context)
+- `EvidencePanel` — slide-in drawer (Framer Motion) with full source packet detail, quality-ranked document rows, excerpt previews, and anchor jump links
+- `ConfidenceBar` — green ≥75%, amber 50–74%, red <50%
+- `EventLog` — live log driven by SSE stream (`/api/orchestrator/runs/{id}/stream`) with auto-reconnect
+- `SettingsPage` — library profile, database discovery, credential save
+
+### Legacy static page (`static/index.html`)
+Still served at `/` when `frontend/dist/` is not built. Retains all existing behavior:
   - manuscript select/upload
   - explicit pre-run sign-in stage (manuscript-aware analysis preflight + platform checklist + login test + user confirmation gate) before `Run Research`
   - single `Run Research` button
@@ -69,16 +91,30 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
   - linked documents are quality-ranked (`high`, `medium`, `seed`) so direct/local PDFs and strong document links appear above provider-search seed links
   - plan cards show route details (`claim_kind`, `evidence_need`, confidence, review status) plus ladder/synonym-ring context when available
   - Settings page supports library-profile selection, database discovery, and credential save-to-`.env`
-  - run completion exports a manuscript bundle under `ORCH_DATA_ROOT/manuscript_exports/<manuscript title>/` containing:
-    - copied manuscript file
-    - `gap_report_<run_id>.md` with coded gaps + snippets + quality mix (`high`/`medium`/`seed`) and remediation notes when retrieval is seed-only
-    - refreshed `gaps/` artifacts per run (stale gap files from prior runs are cleared before export)
-    - `gaps/<gap_id>/related_documents/<source_id>/...` copied pull artifacts
-    - `gaps/<gap_id>/related_documents/<source_id>/_fetched_urls/...` best-effort fetched artifacts from seed URLs (HTML/PDF/bin)
-    - `gaps/<gap_id>/related_urls.txt` extracted URL references from JSON artifacts (when available)
+
+### Run export bundle (historian-friendly)
+Run completion exports a manuscript bundle under `ORCH_DATA_ROOT/manuscript_exports/<manuscript title>/`.
+
+New structure (v3):
+- copied manuscript file
+- `_INDEX.md` — master table of all gaps with chapter, claim, sources, quality, and synthesis
+- `_BIBLIOGRAPHY.md` — all unique URLs and document references collected across the run
+- `by_chapter/<chapter-slug>.md` — per-chapter gap summaries for chapter-by-chapter review
+- `gaps/<ch{N}--<claim-slug>/` — one folder per gap, named for chapter + claim for immediate readability
+  - `_README.md` — prose summary: claim, excerpt, source table, synthesis, next steps
+  - `_SOURCES.md` — URL list
+  - `related_urls.txt` — URLs extracted from JSON artifacts
+  - `documents/<source_id>/` — copied pull artifacts (packet JSON, PDFs, fetched HTML/PDF)
+  - `documents/<source_id>/_fetched_urls/` — best-effort fetched artifacts from seed URLs (HTML/PDF only)
+- `gap_report_<run_id>.md` — legacy flat report (backwards compat)
+- `bundle_manifest_<run_id>.json` — machine-readable manifest (backwards compat)
+
+Gap folder slug format: `ch{chapter-number}--{claim-slug}` (e.g. `ch2--flsa-wage-claims`). Chapter prefix is derived by extracting the leading ordinal word from the chapter heading.
 
 ## Configuration
 Environment controls all behavior (`config.py`):
+- **LLM provider**: `ORCH_LLM_PROVIDER` — `ollama` (default) | `claude` | `openai`. Selects which `LLMClient` backend all layers use.
+- **Browser provider**: `ORCH_BROWSER_PROVIDER` — `playwright_cdp` (default) | `http` | `claude_cu` (stub). Selects which `BrowserClient` backend seed-URL fetch and sign-in probing use.
 - analysis: `ORCH_GAP_ANALYSIS_*`
 - reflection: `ORCH_REFLECTION_*`
 - search policy cache: `ORCH_REFLECTION_*` + `search_policy_cache` directory under `ORCH_DATA_ROOT`

@@ -1,5 +1,7 @@
 # Frontend Interface Variants
 
+> **Note (v3):** The primary frontend is now the React app in `frontend/`. Build it with `cd frontend && npm run build`. The three style variants described below are retained in `static/index.html` as a fallback only.
+
 This app now supports three switchable interface variants from the top-right `Interface Style` selector in `static/index.html`.
 
 Selection is persisted in browser local storage (`orchestrator_v2_ui_variant`) so operators can compare and keep a preferred style.

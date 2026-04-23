@@ -32,10 +32,12 @@ def test_analysis_falls_back_when_ollama_errors(settings_factory, monkeypatch) -
     manuscript = Path(settings.workspace) / "Manuscript" / "chapter_one.txt"
     manuscript.write_text("Chapter One\nClaim without source and maybe could suggest risk.", encoding="utf-8")
 
-    def _boom(**_kwargs):
+    def _boom(*args, **kwargs):
         raise RuntimeError("ollama unavailable")
 
-    monkeypatch.setattr(analysis, "_call_ollama", _boom)
+    # Patch the LLMClient's Ollama backend so the fallback path triggers
+    from layers import llm_client
+    monkeypatch.setattr(llm_client.LLMClient, "_ollama_complete", _boom)
     out = analysis.analyze_manuscript("Manuscript/chapter_one.txt", settings, refresh=True)
 
     assert out.analysis_method == "heuristic"

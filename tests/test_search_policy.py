@@ -334,7 +334,7 @@ class TestClassifyAndBuildLadderLLM:
         }
 
     def test_llm_result_used(self, monkeypatch):
-        monkeypatch.setattr(search_policy, "_call_ollama", lambda *a, **kw: self._llm_data())
+        monkeypatch.setattr(search_policy, "_call_llm_for_classification", lambda *a, **kw: self._llm_data())
         ck, en, conf, ladder = classify_and_build_ladder(
             "NetMarket", "NetMarket enabled secure online purchases.", use_llm=True
         )
@@ -348,7 +348,7 @@ class TestClassifyAndBuildLadderLLM:
         assert ladder.synonym_ring.era_start == 1993
 
     def test_synonym_ring_stored_on_ladder(self, monkeypatch):
-        monkeypatch.setattr(search_policy, "_call_ollama", lambda *a, **kw: self._llm_data())
+        monkeypatch.setattr(search_policy, "_call_llm_for_classification", lambda *a, **kw: self._llm_data())
         _, _, _, ladder = classify_and_build_ladder(
             "Commerce", "NetMarket transformed commerce.", use_llm=True
         )
@@ -357,7 +357,7 @@ class TestClassifyAndBuildLadderLLM:
         assert d["synonym_ring"]["terminology_shifts"] == ["electronic commerce", "online retailing"]
 
     def test_llm_generates_era_vocabulary(self, monkeypatch):
-        monkeypatch.setattr(search_policy, "_call_ollama", lambda *a, **kw: self._llm_data())
+        monkeypatch.setattr(search_policy, "_call_llm_for_classification", lambda *a, **kw: self._llm_data())
         _, _, _, ladder = classify_and_build_ladder(
             "Commerce", "NetMarket transformed commerce.", use_llm=True
         )
@@ -368,7 +368,7 @@ class TestClassifyAndBuildLadderLLM:
 
     def test_falls_back_to_heuristic_on_ollama_error(self, monkeypatch):
         def _boom(*a, **kw): raise RuntimeError("ollama unavailable")
-        monkeypatch.setattr(search_policy, "_call_ollama", _boom)
+        monkeypatch.setattr(search_policy, "_call_llm_for_classification", _boom)
         ck, en, conf, ladder = classify_and_build_ladder(
             "NetMarket", "NetMarket enabled secure commerce.", use_llm=True
         )
@@ -378,19 +378,19 @@ class TestClassifyAndBuildLadderLLM:
 
     def test_use_llm_false_skips_llm(self, monkeypatch):
         called = []
-        monkeypatch.setattr(search_policy, "_call_ollama", lambda *a, **kw: called.append(1) or {})
+        monkeypatch.setattr(search_policy, "_call_llm_for_classification", lambda *a, **kw: called.append(1) or {})
         classify_and_build_ladder("Ch", "Claim.", use_llm=False)
         assert not called
 
     def test_invalid_enum_values_fall_to_defaults(self, monkeypatch):
         bad = {**self._llm_data(), "claim_kind": "nonsense", "evidence_need": "nonsense"}
-        monkeypatch.setattr(search_policy, "_call_ollama", lambda *a, **kw: bad)
+        monkeypatch.setattr(search_policy, "_call_llm_for_classification", lambda *a, **kw: bad)
         ck, en, _, ladder = classify_and_build_ladder("Ch", "Claim.", use_llm=True)
         assert ck == CLAIM_OTHER
         assert en == EVIDENCE_MIXED
 
     def test_existing_good_query_promoted_to_constrained(self, monkeypatch):
-        monkeypatch.setattr(search_policy, "_call_ollama", lambda *a, **kw: self._llm_data())
+        monkeypatch.setattr(search_policy, "_call_llm_for_classification", lambda *a, **kw: self._llm_data())
         existing = ["NetMarket 1994 secure online purchase newspaper historical press"]
         _, _, _, ladder = classify_and_build_ladder(
             "Commerce", "NetMarket transformed commerce.",
@@ -399,7 +399,7 @@ class TestClassifyAndBuildLadderLLM:
         assert ladder.constrained.startswith(existing[0])
 
     def test_low_quality_existing_queries_not_promoted(self, monkeypatch):
-        monkeypatch.setattr(search_policy, "_call_ollama", lambda *a, **kw: self._llm_data())
+        monkeypatch.setattr(search_policy, "_call_llm_for_classification", lambda *a, **kw: self._llm_data())
         bad = ["split claims and tie each to evidence"]
         _, _, _, ladder = classify_and_build_ladder(
             "Commerce", "NetMarket transformed commerce.",

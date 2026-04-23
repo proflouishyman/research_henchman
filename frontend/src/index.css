@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base typography */
+@layer base {
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-surface text-ink;
+  }
+
+  /* Dark mode overrides */
+  .dark body {
+    background-color: #1A1918;
+    color: #E7E4DF;
+  }
+
+  .dark .bg-surface-card {
+    background-color: #252320;
+  }
+
+  .dark .bg-surface-muted {
+    background-color: #201F1C;
+  }
+
+  .dark .border-border {
+    border-color: #38352F;
+  }
+
+  .dark .text-ink {
+    color: #E7E4DF;
+  }
+
+  .dark .text-ink-secondary {
+    color: #A09890;
+  }
+
+  .dark .text-ink-muted {
+    color: #6B645C;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border-strong rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-muted;
+  }
+}
+
+/* Smooth transitions for dark mode */
+@layer base {
+  * {
+    transition-property: background-color, border-color, color;
+    transition-duration: 150ms;
+    transition-timing-function: ease;
+  }
+
+  /* Don't animate layout properties */
+  .no-transition,
+  .no-transition * {
+    transition: none !important;
+  }
+}

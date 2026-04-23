@@ -177,6 +177,11 @@ class OrchestratorSettings:
     llm_temperature: float
     ollama_base_url: str
 
+    # Provider selection: "ollama" | "claude" | "openai"
+    llm_provider: str
+    # Browser provider: "playwright_cdp" | "http" | "claude_cu"
+    browser_provider: str
+
     stale_stage_timeout_seconds: int
 
     @staticmethod
@@ -254,5 +259,7 @@ class OrchestratorSettings:
             llm_timeout_seconds=int(os.getenv("ORCH_LLM_TIMEOUT_SECONDS", "90")),
             llm_temperature=float(os.getenv("ORCH_LLM_TEMPERATURE", "0.1")),
             ollama_base_url=os.getenv("ORCH_OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip(),
+            llm_provider=os.getenv("ORCH_LLM_PROVIDER", "ollama").strip().lower(),
+            browser_provider=os.getenv("ORCH_BROWSER_PROVIDER", "playwright_cdp").strip().lower(),
             stale_stage_timeout_seconds=int(os.getenv("ORCH_STALE_STAGE_TIMEOUT_SECONDS", "3600")),
         )

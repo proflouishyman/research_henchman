@@ -8,10 +8,22 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .browser_client import BrowserClient, BrowserProvider, make_browser_client
 from .cdp_utils import effective_cdp_url
 from .io_utils import safe_query_token
+
+
+def _default_browser_client() -> BrowserClient:
+    """Build a BrowserClient from env, defaulting to playwright_cdp."""
+    cdp_url = os.environ.get("ORCH_PLAYWRIGHT_CDP_URL", "http://127.0.0.1:9222").strip()
+    provider_raw = os.environ.get("ORCH_BROWSER_PROVIDER", "playwright_cdp").strip().lower()
+    try:
+        provider = BrowserProvider(provider_raw)
+    except ValueError:
+        provider = BrowserProvider.PLAYWRIGHT_CDP
+    return BrowserClient(provider=provider, cdp_url=cdp_url, timeout_seconds=FETCH_TIMEOUT_SECONDS)
 
 
 HREF_RE = re.compile(r"""href=["']([^"'#]+)["']""", re.IGNORECASE)
@@ -197,70 +209,40 @@ def blocked_reason_hint(reason: str) -> str:
     return BLOCK_REASON_HINTS.get(str(reason or "").strip().lower(), "")
 
 
-def probe_sign_in_access(url: str) -> Dict[str, Any]:
+def probe_sign_in_access(url: str, *, browser_client: Optional[BrowserClient] = None) -> Dict[str, Any]:
     """Probe one provider URL and classify whether login access appears ready.
 
-    Non-obvious logic:
-    - For login readiness we prefer CDP-backed fetch first so existing
-      authenticated browser session state is respected.
-    - If CDP is unavailable, fall back to direct HTTP to still provide
-      basic reachability diagnostics.
+    Prefers CDP-backed fetch (respects authenticated session state).
+    Falls back to HTTP for basic reachability diagnostics when CDP is unavailable.
     """
-
     target_url = str(url or "").strip()
     if not target_url.lower().startswith(("http://", "https://")):
-        return {
-            "status": "unreachable",
-            "fetch_mode": "none",
-            "error": "invalid url",
-            "blocked_reason": "",
-            "action_required": "",
-            "excerpt": "",
-        }
+        return {"status": "unreachable", "fetch_mode": "none", "error": "invalid url",
+                "blocked_reason": "", "action_required": "", "excerpt": ""}
 
-    body: bytes | None = None
-    content_type = ""
-    fetch_mode = "none"
-    error = ""
+    client = browser_client or _default_browser_client()
+    result = client.fetch(target_url)
+    fetch_mode = client.provider.value
 
-    html = _fetch_via_cdp(target_url)
-    if html:
-        body = html.encode("utf-8", errors="ignore")
-        content_type = "text/html"
-        fetch_mode = "cdp"
+    if not result.content and result.error:
+        # CDP failed; try plain HTTP
+        http_client = BrowserClient(provider=BrowserProvider.HTTP, timeout_seconds=min(FETCH_TIMEOUT_SECONDS, 12))
+        result = http_client.fetch(target_url)
+        fetch_mode = "direct_http"
 
-    if body is None:
-        try:
-            req = urllib.request.Request(
-                target_url,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-                    )
-                },
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=min(FETCH_TIMEOUT_SECONDS, 12)) as resp:
-                content_type = str(resp.headers.get("Content-Type", "")).lower()
-                body = resp.read(MAX_FETCH_BYTES)
-            fetch_mode = "direct_http"
-        except Exception as exc:  # noqa: BLE001 - structured diagnostic response.
-            error = str(exc)[:180]
-
-    if body is None:
+    if not result.content:
         return {
             "status": "unreachable",
             "fetch_mode": fetch_mode,
-            "error": error or "fetch failed",
+            "error": result.error or "fetch failed",
             "blocked_reason": "",
             "action_required": "",
             "excerpt": "",
         }
 
-    suffix = _suffix_for_response(target_url, content_type, body)
-    excerpt = _excerpt_from_bytes(body, suffix)
-    raw_probe = body[:2048].decode("utf-8", errors="ignore")
+    suffix = _suffix_for_response(target_url, result.content_type, result.content)
+    excerpt = _excerpt_from_bytes(result.content, suffix)
+    raw_probe = result.content[:2048].decode("utf-8", errors="ignore")
     blocked_reason = _detect_block_reason(excerpt, raw_probe, target_url)
     action_required = blocked_reason_hint(blocked_reason) if blocked_reason else ""
     status = "blocked" if blocked_reason else "ok"
@@ -304,36 +286,31 @@ def _suffix_for_response(url: str, content_type: str, body: bytes) -> str:
     return ".html"
 
 
-def _fetch_and_save(url: str, out_root: Path, prefix: str) -> Tuple[Path | None, str, str]:
-    body: bytes | None = None
-    content_type = ""
-    failed = False
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-                )
-            },
-            method="GET",
-        )
-        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_SECONDS) as resp:
-            content_type = str(resp.headers.get("Content-Type", "")).lower()
-            body = resp.read(MAX_FETCH_BYTES)
-    except (urllib.error.URLError, TimeoutError, OSError):
-        failed = True
-    except Exception:
-        failed = True
+def _fetch_and_save(
+    url: str,
+    out_root: Path,
+    prefix: str,
+    *,
+    browser_client: Optional[BrowserClient] = None,
+) -> Tuple[Path | None, str, str]:
+    """Fetch one URL via BrowserClient (CDP → HTTP fallback) and save locally."""
+    client = browser_client or _default_browser_client()
 
-    if failed or body is None:
-        html = _fetch_via_cdp(url)
-        if html:
-            body = html.encode("utf-8", errors="ignore")
-            content_type = "text/html"
-        else:
-            return None, "", ""
+    # Try browser-backed fetch first (respects authenticated session)
+    result = client.fetch(url)
+    body: bytes | None = result.content if (result.content and not result.error) else None
+    content_type = result.content_type
+
+    # Fall back to direct HTTP if browser failed (and we haven't tried HTTP yet)
+    if not body and client.provider != BrowserProvider.HTTP:
+        http_client = BrowserClient(provider=BrowserProvider.HTTP, timeout_seconds=FETCH_TIMEOUT_SECONDS)
+        http_result = http_client.fetch(url)
+        if http_result.content:
+            body = http_result.content
+            content_type = http_result.content_type
+
+    if not body:
+        return None, "", ""
 
     suffix = _suffix_for_response(url, content_type, body)
     target = out_root / f"{prefix}{suffix}"
@@ -345,49 +322,12 @@ def _fetch_and_save(url: str, out_root: Path, prefix: str) -> Tuple[Path | None,
 
 
 def _fetch_via_cdp(url: str) -> str:
-    """Best-effort browser-backed fetch using authenticated CDP session."""
-
-    cdp_url = str(os.environ.get("ORCH_PLAYWRIGHT_CDP_URL", "")).strip()
-    if not cdp_url:
-        return ""
-    try:
-        from playwright.sync_api import sync_playwright  # type: ignore
-    except Exception:
-        return ""
-
-    timeout_ms = int(max(5, FETCH_TIMEOUT_SECONDS) * 1000)
-    target_cdp_url = effective_cdp_url(cdp_url)
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.connect_over_cdp(target_cdp_url)
-            had_contexts = bool(browser.contexts)
-            context = browser.contexts[0] if had_contexts else browser.new_context()
-            # Best effort: use a request context seeded from browser storage
-            # state so authenticated pulls can run without opening/focusing tabs.
-            try:
-                request_ctx = pw.request.new_context(storage_state=context.storage_state())
-                try:
-                    response = request_ctx.get(url, timeout=timeout_ms)
-                    body = response.text()
-                    if body:
-                        return str(body)
-                finally:
-                    request_ctx.dispose()
-            except Exception:
-                pass
-
-            # Fallback: open a transient page only when request-context fetch fails.
-            page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            html = page.content()
-            page.close()
-            # When attached via CDP, do not close the user browser session.
-            # Close only temporary context if we had to create one.
-            if not had_contexts:
-                context.close()
-            return str(html or "")
-    except Exception:
-        return ""
+    """Backwards-compat shim. Delegates to BrowserClient."""
+    client = _default_browser_client()
+    result = client.fetch(url)
+    if result.content and not result.error:
+        return result.content.decode("utf-8", errors="ignore")
+    return ""
 
 
 def _excerpt_from_bytes(body: bytes, suffix: str, max_chars: int = 280) -> str:

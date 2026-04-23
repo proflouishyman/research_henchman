@@ -1,3 +1,19 @@
+[2026-04-22] - Historian Overhaul: LLM + Browser Abstractions, Export Redesign, React Frontend
+Problem
+App had LLM calls scattered across 4 layer files (each with its own _call_ollama function), browser/Playwright calls hardcoded in adapters with no provider abstraction, a flat artifact export structure using opaque gap_id folder names, and a 2,000-line monolithic vanilla JS frontend.
+Root Cause
+Original design grew organically without provider abstraction layers. Each layer had its own HTTP call to Ollama. Browser automation was tightly coupled to Playwright/CDP. Export structure used internal IDs instead of human-readable names. Frontend had no component system.
+Solution
+1. Created `layers/llm_client.py`: LLMClient abstraction with Ollama (default), Claude, and OpenAI backends. `complete()` → str, `complete_json()` → dict with retry. Config selects provider via ORCH_LLM_PROVIDER. All 4 call sites (analysis, reflection, search_policy, fit) now use make_llm_client(settings).
+2. Created `adapters/browser_client.py`: BrowserClient abstraction with PlaywrightCDP (default), HTTP, and Claude Computer Use (stub) backends. PageResult envelope with blocked-page detection. `fetch()`, `probe_login()`, `open_tabs()`. Config selects via ORCH_BROWSER_PROVIDER. Updated seed_url_fetch.py and main.py sign-in open to delegate to BrowserClient.
+3. Added `llm_provider` and `browser_provider` fields to OrchestratorSettings.
+4. Rewrote `artifact_export.py` for historian-friendly output: human-readable gap folder slugs from chapter+claim text, `_README.md` per gap (claim, context, sources table, Ollama synthesis), `_INDEX.md` master cross-reference table, `_BIBLIOGRAPHY.md` deduplicated URLs, `by_chapter/` mirror, `synthesis/` Ollama-generated "what was found / what's missing" summaries. Documents moved to `gaps/<slug>/documents/<source>/` instead of `gaps/<id>/related_documents/<source>/`.
+5. Added SSE streaming endpoint `/api/orchestrator/runs/{id}/stream` via sse-starlette (keeps polling endpoint for backwards compat).
+6. Built complete React frontend at `frontend/` (Vite + React 18 + TypeScript + Tailwind). FastAPI serves `frontend/dist/` with SPA fallback route. Components: PipelineRail, GapCard with ConfidenceBar + AccordionLadder, EvidencePanel (framer-motion slide-in), SignInSplash, SettingsModal.
+7. Created 3 historian test manuscripts in `Manuscript/`: labor_history_new_deal.md, civil_rights_voting_rights.md, federal_reserve_early_history.md.
+Notes
+Backwards compat: `_call_ollama` kept as shim in analysis.py (reflection.py imports it). Polling events endpoint kept alongside SSE. Legacy static/index.html preserved alongside React build. All 114 tests pass after updating monkeypatching targets to new function names.
+
 [2026-04-05] - Open Sign-In Splash Tabs in Active Playwright CDP Session
 Problem
 Clicking `Open Sign-In Pages` from the sign-in splash could open tabs only in the current UI browser window, which did not always match the browser session used for Playwright login tests/pulls. Users then had to sign in again.

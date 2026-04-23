@@ -1,10 +1,12 @@
 // Slide-in right panel showing evidence documents for the selected gap.
 
+import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, BookOpen, Loader2 } from 'lucide-react'
+import { X, BookOpen, Loader2, FolderOpen } from 'lucide-react'
 import { useUIStore } from '../../store/ui'
 import { useDocuments } from '../../hooks/useDocuments'
 import { useRun } from '../../hooks/useRun'
+import { openGapFolder } from '../../lib/api'
 import { SourcePacketSection } from './SourcePacketSection'
 
 interface EvidencePanelProps {
@@ -16,6 +18,21 @@ export function EvidencePanel({ open }: EvidencePanelProps) {
     useUIStore()
   const { data: run } = useRun(selectedRunId)
   const { data: documents, isLoading } = useDocuments(selectedRunId, run?.status)
+  const [folderOpened, setFolderOpened] = useState(false)
+  const [folderError, setFolderError] = useState<string | null>(null)
+
+  const handleOpenFolder = async () => {
+    if (!selectedRunId || !selectedGapId) return
+    setFolderError(null)
+    try {
+      await openGapFolder(selectedRunId, selectedGapId)
+      setFolderOpened(true)
+      setTimeout(() => setFolderOpened(false), 2000)
+    } catch (err) {
+      setFolderError((err as Error).message.includes('404') ? 'Not ready' : 'Error')
+      setTimeout(() => setFolderError(null), 3000)
+    }
+  }
 
   const handleClose = () => {
     setSelectedGapId(null)
@@ -54,12 +71,27 @@ export function EvidencePanel({ open }: EvidencePanelProps) {
                 <p className="text-xs font-medium text-ink leading-snug line-clamp-3">{gapClaim}</p>
               </div>
             </div>
-            <button
-              onClick={handleClose}
-              className="p-1.5 rounded-md text-ink-muted hover:text-ink hover:bg-surface-muted transition-colors shrink-0"
-            >
-              <X size={14} />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={handleOpenFolder}
+                title="Open gap folder in Finder"
+                className={`p-1.5 rounded-md transition-colors ${
+                  folderOpened
+                    ? 'text-emerald-600 bg-emerald-50'
+                    : folderError
+                    ? 'text-red-500 bg-red-50'
+                    : 'text-ink-muted hover:text-accent hover:bg-accent-light'
+                }`}
+              >
+                <FolderOpen size={14} />
+              </button>
+              <button
+                onClick={handleClose}
+                className="p-1.5 rounded-md text-ink-muted hover:text-ink hover:bg-surface-muted transition-colors"
+              >
+                <X size={14} />
+              </button>
+            </div>
           </div>
 
           {/* Content */}

@@ -1,14 +1,16 @@
 // Full gap card showing claim, type/priority badges, confidence, sources, ladder.
 
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, BookOpen } from 'lucide-react'
+import { ChevronDown, ChevronRight, BookOpen, FolderOpen } from 'lucide-react'
 import type { Gap, PlannedGap, GapPacket } from '../../types/contracts'
 import { useUIStore } from '../../store/ui'
+import { openGapFolder } from '../../lib/api'
 import { ConfidenceBar } from './ConfidenceBar'
 import { SourceBadges } from './SourceBadges'
 import { AccordionLadder } from './AccordionLadder'
 
 interface GapCardProps {
+  runId: string
   gap: Gap | PlannedGap
   planGap?: PlannedGap
   packet?: GapPacket
@@ -31,9 +33,24 @@ function gapTypeClasses(type: string): string {
     : 'bg-violet-50 text-violet-700 border-violet-200'
 }
 
-export function GapCard({ gap, planGap, packet }: GapCardProps) {
+export function GapCard({ runId, gap, planGap, packet }: GapCardProps) {
   const [expanded, setExpanded] = useState(false)
+  const [folderOpened, setFolderOpened] = useState(false)
+  const [folderError, setFolderError] = useState<string | null>(null)
   const { setSelectedGapId } = useUIStore()
+
+  const handleOpenFolder = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setFolderError(null)
+    try {
+      await openGapFolder(runId, gap.gap_id)
+      setFolderOpened(true)
+      setTimeout(() => setFolderOpened(false), 2000)
+    } catch (err) {
+      setFolderError((err as Error).message.includes('404') ? 'Folder not ready yet' : 'Could not open folder')
+      setTimeout(() => setFolderError(null), 3000)
+    }
+  }
 
   const claim = gap.claim_text ?? ''
   const truncatedClaim = claim.length > 120 ? claim.slice(0, 120) + '…' : claim
@@ -80,6 +97,20 @@ export function GapCard({ gap, planGap, packet }: GapCardProps) {
                 {docCount} doc{docCount !== 1 ? 's' : ''}
               </button>
             )}
+            <button
+              onClick={handleOpenFolder}
+              title="Open in Finder"
+              className={`flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border transition-colors ${
+                folderOpened
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                  : folderError
+                  ? 'bg-red-50 border-red-200 text-red-600'
+                  : 'bg-surface-muted border-border text-ink-muted hover:text-ink hover:bg-border/50'
+              }`}
+            >
+              <FolderOpen size={9} />
+              {folderOpened ? 'Opened' : folderError ?? 'Folder'}
+            </button>
           </div>
         </div>
 
@@ -185,16 +216,32 @@ export function GapCard({ gap, planGap, packet }: GapCardProps) {
             <AccordionLadder ladder={ladder} />
           )}
 
-          {/* View evidence button */}
-          {docCount > 0 && (
+          {/* Action buttons row */}
+          <div className="flex gap-2">
+            {docCount > 0 && (
+              <button
+                onClick={() => setSelectedGapId(gap.gap_id)}
+                className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-accent-light border border-accent/30 rounded-lg text-xs font-medium text-accent hover:bg-accent hover:text-white transition-colors"
+              >
+                <BookOpen size={12} />
+                View {docCount} doc{docCount !== 1 ? 's' : ''}
+              </button>
+            )}
             <button
-              onClick={() => setSelectedGapId(gap.gap_id)}
-              className="w-full flex items-center justify-center gap-1.5 py-2 bg-accent-light border border-accent/30 rounded-lg text-xs font-medium text-accent hover:bg-accent hover:text-white transition-colors"
+              onClick={handleOpenFolder}
+              title="Open gap folder in Finder"
+              className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-medium border transition-colors ${
+                folderOpened
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                  : folderError
+                  ? 'bg-red-50 border-red-200 text-red-600'
+                  : 'bg-surface-muted border-border text-ink-secondary hover:text-ink hover:bg-border/50'
+              } ${docCount === 0 ? 'flex-1' : ''}`}
             >
-              <BookOpen size={12} />
-              View {docCount} document{docCount !== 1 ? 's' : ''}
+              <FolderOpen size={12} />
+              {folderOpened ? 'Opened in Finder' : folderError ?? 'Open Folder'}
             </button>
-          )}
+          </div>
         </div>
       )}
     </div>

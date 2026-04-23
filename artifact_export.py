@@ -61,6 +61,28 @@ MAX_CHILD_LINKS_PER_SEED = 3
 # Public entry point
 # ---------------------------------------------------------------------------
 
+def resolve_gap_folder(rec: RunRecord, gap_id: str, settings: OrchestratorSettings) -> Optional[Path]:
+    """Return the export folder path for one gap (may not exist if run hasn't exported yet)."""
+    manuscript_src = _resolve_path(rec.manuscript_path, settings.workspace)
+    if not manuscript_src.exists():
+        return None
+    bundle_root = _bundle_root(settings.data_root, manuscript_src)
+    if rec.gap_map:
+        for gap in rec.gap_map.gaps:
+            if str(gap.gap_id) == str(gap_id):
+                slug = _gap_slug(gap.gap_id, gap.chapter, gap.claim_text)
+                return bundle_root / "gaps" / slug
+    return bundle_root / "gaps" / _sanitize_name(gap_id)
+
+
+def resolve_bundle_root(rec: RunRecord, settings: OrchestratorSettings) -> Optional[Path]:
+    """Return the export bundle root folder for a run (may not exist yet)."""
+    manuscript_src = _resolve_path(rec.manuscript_path, settings.workspace)
+    if not manuscript_src.exists():
+        return None
+    return _bundle_root(settings.data_root, manuscript_src)
+
+
 def export_run_bundle(rec: RunRecord, settings: OrchestratorSettings) -> Optional[Path]:
     """Write historian-friendly artifact bundle; return bundle root or None on error."""
     manuscript_src = _resolve_path(rec.manuscript_path, settings.workspace)

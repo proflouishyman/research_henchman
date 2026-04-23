@@ -5,12 +5,13 @@ import type { Gap, PlannedGap, GapPacket } from '../../types/contracts'
 import { GapCard } from './GapCard'
 
 interface GapListProps {
+  runId: string
   gapMapGaps: Gap[]
   planGaps: PlannedGap[]
   documents?: GapPacket[]
 }
 
-export function GapList({ gapMapGaps, planGaps, documents }: GapListProps) {
+export function GapList({ runId, gapMapGaps, planGaps, documents }: GapListProps) {
   // Prefer plan gaps when available; fall back to gap map gaps
   const displayGaps: (Gap | PlannedGap)[] = planGaps.length > 0 ? planGaps : gapMapGaps
 
@@ -43,6 +44,7 @@ export function GapList({ gapMapGaps, planGaps, documents }: GapListProps) {
           return (
             <GapCard
               key={gap.gap_id}
+              runId={runId}
               gap={gapMapGap ?? gap}
               planGap={planGap}
               packet={packet}

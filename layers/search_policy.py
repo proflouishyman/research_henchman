@@ -35,10 +35,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from layers.llm_client import LLMClient, LLMProvider
 
 
 # ---------------------------------------------------------------------------
@@ -461,29 +462,16 @@ CLAIM: {claim_text}
 """
 
 
-def _call_ollama(prompt: str, model: str, base_url: str, timeout_seconds: int) -> Dict[str, object]:
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "options": {"temperature": 0.0},
-    }
-    req = urllib.request.Request(
-        f"{base_url.rstrip('/')}/api/generate",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+def _call_llm_for_classification(prompt: str, model: str, base_url: str, timeout_seconds: int) -> Dict[str, object]:
+    """Call the configured LLM for gap classification and return parsed JSON."""
+    client = LLMClient(
+        provider=LLMProvider.OLLAMA,
+        model=model,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        temperature=0.0,  # deterministic classification
     )
-    with urllib.request.urlopen(req, timeout=max(1, timeout_seconds)) as resp:
-        body = json.loads(resp.read().decode("utf-8", errors="ignore"))
-    raw = str(body.get("response", "")).strip()
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(raw[start:end + 1])
-        raise RuntimeError(f"classify_response_not_json: {raw[:200]}")
+    return client.complete_json(prompt=prompt)
 
 
 def _parse_llm_response(data: Dict[str, object]) -> Tuple[str, str, float, str, SynonymRing, Dict[str, str]]:
@@ -736,7 +724,7 @@ def classify_and_build_ladder(
                     chapter=chapter.strip()[:300],
                     claim_text=claim_text.strip()[:400],
                 )
-                data = _call_ollama(prompt, model, base_url, timeout_seconds)
+                data = _call_llm_for_classification(prompt, model, base_url, timeout_seconds)
                 claim_kind, evidence_need, confidence, primary_term, ring, queries = _parse_llm_response(data)
                 archival = _ARCHIVAL_SUFFIX.get(evidence_need, _ARCHIVAL_SUFFIX[EVIDENCE_MIXED])
                 ladder = AccordionLadder(

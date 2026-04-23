@@ -13,10 +13,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
+import asyncio
+
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from sse_starlette.sse import EventSourceResponse
 
 from adapters.cdp_utils import effective_cdp_url
 from adapters.seed_url_fetch import probe_sign_in_access
@@ -41,9 +44,11 @@ from pipeline import run_orchestration
 from store import OrchestratorStore, now_utc
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR   = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
-DATA_DIR = BASE_DIR / "data"
+# React app built output; fall back to legacy static dir if not present
+FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
+DATA_DIR   = BASE_DIR / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -56,6 +61,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Serve React build assets; fall back to legacy static dir
+_ui_dir = FRONTEND_DIST if FRONTEND_DIST.exists() else STATIC_DIR
+app.mount("/assets", StaticFiles(directory=str(_ui_dir / "assets") if (FRONTEND_DIST / "assets").exists() else str(STATIC_DIR)), name="assets")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 RUN_CREATE_LOCK = threading.Lock()
@@ -368,32 +376,14 @@ def _planned_sources_for_manuscript(
 
 
 def _open_signin_urls_in_cdp(cdp_url: str, urls: List[str]) -> Dict[str, Any]:
-    """Open URLs as tabs in the attached CDP browser/session."""
-
-    clean_urls = [str(url).strip() for url in urls if str(url).strip().lower().startswith(("http://", "https://"))]
-    if not clean_urls:
-        return {"opened": 0, "opened_urls": []}
-
-    try:
-        from playwright.sync_api import sync_playwright  # type: ignore
-    except Exception as exc:  # noqa: BLE001 - runtime dependency diagnostic.
-        raise RuntimeError(f"playwright_unavailable: {str(exc)[:120]}") from exc
-
-    target_cdp_url = effective_cdp_url(cdp_url)
-    timeout_ms = 25_000
-    opened: List[str] = []
-    with sync_playwright() as pw:
-        browser = pw.chromium.connect_over_cdp(target_cdp_url)
-        context = browser.contexts[0] if browser.contexts else browser.new_context()
-        for url in clean_urls:
-            try:
-                page = context.new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                opened.append(url)
-            except Exception:
-                # Keep opening remaining URLs even if one provider blocks/nav-fails.
-                continue
-    return {"opened": len(opened), "opened_urls": opened}
+    """Open URLs as tabs using the configured BrowserClient."""
+    from adapters.browser_client import BrowserClient, BrowserProvider
+    client = BrowserClient(
+        provider=BrowserProvider.PLAYWRIGHT_CDP,
+        cdp_url=cdp_url,
+        timeout_seconds=30,
+    )
+    return client.open_tabs(urls)
 
 
 def _record_title(row: Dict[str, Any]) -> str:
@@ -1091,6 +1081,44 @@ def api_run_events(run_id: str, limit: int = Query(default=500, ge=1, le=5000)) 
     return {"run_id": run_id, "events": store.list_events(run_id, limit=limit)}
 
 
+@app.get("/api/orchestrator/runs/{run_id}/stream")
+async def api_run_stream(run_id: str) -> EventSourceResponse:
+    """SSE endpoint: stream events for a run as they arrive.
+
+    Clients connect once and receive a continuous stream until the run
+    reaches a terminal state (complete | failed | partial).
+    Each event is: data: <json>\n\n
+    """
+    row = store.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    TERMINAL = {"complete", "failed", "partial"}
+
+    async def event_generator():
+        sent_ids: set[str] = set()
+        poll_interval = 1.5  # seconds
+
+        while True:
+            events = store.list_events(run_id, limit=2000)
+            for evt in events:
+                evt_id = str(evt.get("event_id", ""))
+                if evt_id and evt_id not in sent_ids:
+                    sent_ids.add(evt_id)
+                    yield {"data": json.dumps(evt, ensure_ascii=False)}
+
+            current = store.get_run(run_id)
+            status = str((current or {}).get("status", "")).strip().lower()
+            if status in TERMINAL:
+                # Send a final sentinel and close
+                yield {"data": json.dumps({"type": "stream_end", "status": status})}
+                break
+
+            await asyncio.sleep(poll_interval)
+
+    return EventSourceResponse(event_generator())
+
+
 @app.get("/api/orchestrator/runs/{run_id}/documents")
 def api_run_documents(run_id: str, limit: int = Query(default=300, ge=1, le=2000)) -> Dict[str, Any]:
     """List pulled artifact files for run-complete click-through in UI."""
@@ -1429,6 +1457,21 @@ def api_file(path: str = Query(...)) -> FileResponse:
 
 @app.get("/", include_in_schema=False)
 def root_index() -> FileResponse:
+    # Serve React build if available; fall back to legacy HTML
+    react_index = FRONTEND_DIST / "index.html"
+    if react_index.exists():
+        return FileResponse(str(react_index))
+    return FileResponse(str(STATIC_DIR / "index.html"))
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def spa_catch_all(full_path: str) -> FileResponse:
+    """Serve React SPA for all non-API routes (enables client-side routing)."""
+    if full_path.startswith("api/") or full_path.startswith("static/") or full_path.startswith("assets/"):
+        raise HTTPException(status_code=404, detail="not found")
+    react_index = FRONTEND_DIST / "index.html"
+    if react_index.exists():
+        return FileResponse(str(react_index))
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 

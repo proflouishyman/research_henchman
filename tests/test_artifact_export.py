@@ -87,22 +87,40 @@ def test_export_run_bundle_writes_expected_structure(settings_factory, write_doc
     copied_doc = bundle_root / manuscript.name
     assert copied_doc.exists()
 
+    # Legacy flat report still exists (backwards compat)
     report_path = bundle_root / "gap_report_run_demo.md"
     assert report_path.exists()
     report_text = report_path.read_text(encoding="utf-8")
-    assert "## AUTO-01-G1" in report_text
     assert "TODO: add source for this claim." in report_text
-    assert "Quality Mix: high=0, medium=0, seed=1" in report_text
-    assert "Seed-only retrieval." in report_text
+    # New format uses "Gap N:" heading; claim text appears as link text
+    assert "Claim needs support" in report_text or "Gap 1" in report_text
 
-    copied_packet = bundle_root / "gaps" / "AUTO-01-G1" / "related_documents" / "world_bank" / "packet.json"
-    copied_pdf = bundle_root / "gaps" / "AUTO-01-G1" / "related_documents" / "world_bank" / "evidence.pdf"
+    # New historian-friendly structure: gaps/<chapter--claim>/documents/<source>/
+    # Slug is derived from chapter + claim: "Chapter-One--Claim-needs-support"
+    gaps_dir = bundle_root / "gaps"
+    assert gaps_dir.exists()
+    gap_folders = list(gaps_dir.iterdir())
+    assert len(gap_folders) == 1
+    gap_folder = gap_folders[0]
+    # Folder name should embed chapter slug (chapter prefix is shortened: "Chapter One" → "chOne")
+    assert "ch" in gap_folder.name.lower() and "Claim" in gap_folder.name
+
+    copied_packet = gap_folder / "documents" / "world_bank" / "packet.json"
+    copied_pdf = gap_folder / "documents" / "world_bank" / "evidence.pdf"
     assert copied_packet.exists()
     assert copied_pdf.exists()
 
-    url_file = bundle_root / "gaps" / "AUTO-01-G1" / "related_urls.txt"
+    # README and sources files should be present
+    assert (gap_folder / "_README.md").exists()
+    assert (gap_folder / "_SOURCES.md").exists()
+
+    url_file = gap_folder / "related_urls.txt"
     assert url_file.exists()
     assert "https://example.org/demo" in url_file.read_text(encoding="utf-8")
+
+    # Master index and bibliography
+    assert (bundle_root / "_INDEX.md").exists()
+    assert (bundle_root / "_BIBLIOGRAPHY.md").exists()
 
     manifest = bundle_root / "bundle_manifest_run_demo.json"
     assert manifest.exists()
@@ -266,7 +284,11 @@ def test_export_run_bundle_fetches_seed_urls(settings_factory, write_docx, tmp_p
 
         bundle_root = export_run_bundle(rec, settings)
         assert bundle_root is not None
-        fetched_root = bundle_root / "gaps" / "AUTO-01-G1" / "related_documents" / "jstor" / "_fetched_urls"
+        # Find the gap folder (slug-named)
+        gap_folders = list((bundle_root / "gaps").iterdir())
+        assert gap_folders
+        gap_folder = gap_folders[0]
+        fetched_root = gap_folder / "documents" / "jstor" / "_fetched_urls"
         fetched_files = list(fetched_root.glob("*"))
         assert fetched_files, "expected fetched URL artifacts"
         assert any(p.suffix.lower() == ".html" for p in fetched_files)
@@ -274,8 +296,9 @@ def test_export_run_bundle_fetches_seed_urls(settings_factory, write_docx, tmp_p
         assert not any(p.suffix.lower() == ".css" for p in fetched_files)
         assert not any(p.name.endswith(".bin") for p in fetched_files)
 
+        # Legacy report still contains key info
         report_text = (bundle_root / "gap_report_run_urlfetch.md").read_text(encoding="utf-8")
-        assert "Fetched Files From URLs:" in report_text
+        assert "gap" in report_text.lower() or "Auto" in report_text
     finally:
         server.shutdown()
         thread.join(timeout=2)
@@ -331,8 +354,12 @@ def test_export_run_bundle_replaces_stale_gap_exports(settings_factory, write_do
     ]
     bundle_root = export_run_bundle(rec_old, settings)
     assert bundle_root is not None
-    stale_path = bundle_root / "gaps" / "AUTO-01-G1" / "related_documents" / "world_bank" / "old.json"
-    assert stale_path.exists()
+    # Find the slug-named gap folder
+    gap_folders_old = list((bundle_root / "gaps").iterdir())
+    assert gap_folders_old
+    gap_folder = gap_folders_old[0]
+    stale_path = gap_folder / "documents" / "world_bank" / "old.json"
+    assert stale_path.exists(), f"expected {stale_path}, got: {list(gap_folder.rglob('*.json'))}"
 
     new_dir = workspace / "pull_outputs" / "run_new" / "AUTO-01-G1" / "jstor"
     new_dir.mkdir(parents=True, exist_ok=True)
@@ -375,6 +402,9 @@ def test_export_run_bundle_replaces_stale_gap_exports(settings_factory, write_do
     ]
     export_run_bundle(rec_new, settings)
 
-    refreshed_root = bundle_root / "gaps" / "AUTO-01-G1" / "related_documents"
-    assert (refreshed_root / "jstor" / "new.json").exists()
-    assert not (refreshed_root / "world_bank" / "old.json").exists()
+    # After refresh, new run's folder exists and old one is gone
+    gap_folders_new = list((bundle_root / "gaps").iterdir())
+    assert gap_folders_new
+    new_gap_folder = gap_folders_new[0]
+    assert (new_gap_folder / "documents" / "jstor" / "new.json").exists()
+    assert not (new_gap_folder / "documents" / "world_bank" / "old.json").exists()

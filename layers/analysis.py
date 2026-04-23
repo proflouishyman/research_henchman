@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import urllib.request
 import zipfile
 from html import unescape as html_unescape
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from config import OrchestratorSettings
 from contracts import Gap, GapMap, GapPriority, GapType, from_primitive, to_primitive
+from layers.llm_client import make_llm_client
 
 
 EXPLICIT_PATTERNS = [
@@ -405,12 +405,13 @@ def _analyze_with_ollama(
     settings: OrchestratorSettings,
 ) -> GapMap:
     prompt = _build_analysis_prompt(text, settings.gap_analysis_max_chars)
-    response = _call_ollama(
-        prompt=prompt,
+    client = make_llm_client(
+        settings,
         model=settings.gap_analysis_model,
-        base_url=settings.ollama_base_url,
         timeout_seconds=settings.gap_analysis_timeout_seconds,
+        temperature=0.1,
     )
+    response = client.complete(prompt=prompt)
     parsed = _parse_gap_json(response)
 
     gaps: List[Gap] = []
@@ -468,20 +469,13 @@ def _analyze_with_ollama(
 
 
 def _call_ollama(*, prompt: str, model: str, base_url: str, timeout_seconds: int) -> str:
-    """Send one prompt to Ollama generate endpoint and return plain response text."""
-
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "options": {"temperature": 0.1},
-    }
-    req = urllib.request.Request(
-        f"{base_url.rstrip('/')}/api/generate",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    """Backwards-compat shim used by reflection.py. Delegates to LLMClient."""
+    from layers.llm_client import LLMClient, LLMProvider
+    client = LLMClient(
+        provider=LLMProvider.OLLAMA,
+        model=model,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        temperature=0.1,
     )
-    with urllib.request.urlopen(req, timeout=max(1, timeout_seconds)) as resp:
-        body = json.loads(resp.read().decode("utf-8", errors="ignore"))
-    return str(body.get("response", "")).strip()
+    return client.complete(prompt=prompt)

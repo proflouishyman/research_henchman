@@ -19,7 +19,7 @@ from contracts import (
     SourceType,
 )
 from store import now_utc
-from .analysis import _call_ollama
+from .llm_client import make_llm_client
 from .pull import rank_sources_for_claim, source_capability_catalog, source_fit_reason
 from .search_policy import AccordionLadder, classify_and_build_ladder, query_quality_score
 
@@ -246,12 +246,12 @@ def _reflect_with_ollama(
     settings: OrchestratorSettings,
 ) -> ResearchPlan:
     prompt = _build_reflection_prompt(gap_map, availability, settings)
-    response = _call_ollama(
-        prompt=prompt,
+    client = make_llm_client(
+        settings,
         model=settings.reflection_model,
-        base_url=settings.ollama_base_url,
         timeout_seconds=settings.reflection_timeout_seconds,
     )
+    response = client.complete(prompt=prompt)
     parsed = _parse_reflection_json(response)
     planned_gaps = _parse_planned_gaps(parsed.get("gaps", []), gap_map)
     return ResearchPlan(
@@ -279,12 +279,12 @@ def _review_needs_review_gaps_with_ollama(
         return
 
     try:
-        response = _call_ollama(
-            prompt=_review_prompt(plan, availability, settings),
+        client = make_llm_client(
+            settings,
             model=settings.plan_review_model,
-            base_url=settings.ollama_base_url,
             timeout_seconds=settings.plan_review_timeout_seconds,
         )
+        response = client.complete(prompt=_review_prompt(plan, availability, settings))
         payload = _parse_reflection_json(response)
     except Exception as exc:  # noqa: BLE001 - review is best-effort.
         note = f"review_unavailable:{str(exc)[:120]}"

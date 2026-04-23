@@ -1,3 +1,13 @@
+[2026-04-22] - Fix Settings API Shape Mismatch and Add Provider Dropdowns
+Problem
+React settings modal showed empty LLM Provider and Browser Provider fields. Selecting a provider value had no effect.
+Root Cause
+`fetchSettings()` in `api.ts` was returning the raw `/connections/values` response (`{env_path, values[]}`) unmodified. The modal was reading `settings.llm_provider` which is never a key in that shape. Also used free-text inputs for enum-valued fields (ollama/claude/openai, playwright_cdp/http/claude_cu).
+Solution
+Updated `fetchSettings()` to transform the values array into a flat `key→value` dict and add `llm_provider`/`browser_provider`/`library_system` aliases. Changed Settings modal LLM/browser provider inputs to `<select>` dropdowns with the valid enum options.
+Notes
+All credential fields still work since they read `settings['ORCH_*']` which is now populated from the flat dict.
+
 [2026-04-22] - Historian Overhaul: LLM + Browser Abstractions, Export Redesign, React Frontend
 Problem
 App had LLM calls scattered across 4 layer files (each with its own _call_ollama function), browser/Playwright calls hardcoded in adapters with no provider abstraction, a flat artifact export structure using opaque gap_id folder names, and a 2,000-line monolithic vanilla JS frontend.

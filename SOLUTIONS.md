@@ -1,3 +1,13 @@
+[2026-04-24] - Reset Wrote Wrong Empty Value to events.json
+Problem
+After clicking Reset in the sidebar, all new runs would get stuck in "queued" state forever with no events appearing.
+Root Cause
+The reset endpoint wrote `{}` (empty dict) to both `runs.json` and `events.json`. But `runs.json` is a dict keyed by run_id while `events.json` is a flat list. `store.append_event()` calls `events.append(event)` — which fails with `AttributeError: 'dict' object has no attribute 'append'` on a dict. Since this happens inside the background thread before any status update, the run stays in "queued" silently.
+Solution
+Reset endpoint now writes `{}` for `runs.json` and `[]` for `events.json`, matching the shape each file expects.
+Notes
+Runs created before the fix can be unblocked by hitting the Retry button.
+
 [2026-04-22] - Fix Settings API Shape Mismatch and Add Provider Dropdowns
 Problem
 React settings modal showed empty LLM Provider and Browser Provider fields. Selecting a provider value had no effect.

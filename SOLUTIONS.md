@@ -1,3 +1,13 @@
+[2026-04-24] - Export Bundle Race Condition: Status Set Before Files Written
+Problem
+End-to-end test reported _INDEX.md, _BIBLIOGRAPHY.md, and _README.md missing from the export bundle even though the files existed on disk at the time of inspection.
+Root Cause
+pipeline.py called `save(final_status, "Run complete")` to set status to "complete" BEFORE calling `export_run_bundle()`. The test (and any external caller) polls for "complete", then immediately checks the bundle — but the export hadn't started yet, so the files appeared missing.
+Solution
+Moved `export_run_bundle(rec, settings)` to run before `save(final_status, ...)` in pipeline.py so the bundle is fully written to disk before the status transitions to "complete".
+Notes
+The race only affected callers that check bundle contents right after polling for terminal status.
+
 [2026-04-24] - Reset Wrote Wrong Empty Value to events.json
 Problem
 After clicking Reset in the sidebar, all new runs would get stuck in "queued" state forever with no events appearing.

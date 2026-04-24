@@ -1189,11 +1189,11 @@ def api_reset_all() -> Dict[str, Any]:
     cleared: List[str] = []
     errors: List[str] = []
 
-    # Reset JSON stores
-    for fname in ("runs.json", "events.json"):
+    # Reset JSON stores (runs uses {}, events uses [])
+    for fname, empty in (("runs.json", "{}"), ("events.json", "[]")):
         p = data_root / fname
         try:
-            p.write_text("{}", encoding="utf-8")
+            p.write_text(empty, encoding="utf-8")
             cleared.append(fname)
         except Exception as exc:
             errors.append(f"{fname}: {exc}")

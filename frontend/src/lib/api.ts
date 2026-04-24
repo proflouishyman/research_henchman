@@ -88,6 +88,19 @@ export async function fetchManuscripts(): Promise<Manuscript[]> {
   return data.manuscripts
 }
 
+export async function uploadManuscript(
+  file: File
+): Promise<{ stored_path: string; name: string }> {
+  const body = new FormData()
+  body.append('file', file)
+  const res = await fetch(`${BASE}/manuscripts/upload`, { method: 'POST', body })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(`Upload failed: ${text}`)
+  }
+  return res.json()
+}
+
 // --- Sources ---
 
 export async function fetchSources(): Promise<Source[]> {

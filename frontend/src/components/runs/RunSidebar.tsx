@@ -1,13 +1,32 @@
 // Left sidebar listing all runs.
 
-import { Layers } from 'lucide-react'
+import { useState } from 'react'
+import { Layers, Trash2, Loader2 } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useRuns } from '../../hooks/useRuns'
 import { useUIStore } from '../../store/ui'
 import { RunCard } from './RunCard'
 
+async function resetAll(): Promise<{ reset: boolean; cleared: string[] }> {
+  const res = await fetch('/api/orchestrator/reset', { method: 'POST' })
+  if (!res.ok) throw new Error(`Reset failed: ${res.status}`)
+  return res.json()
+}
+
 export function RunSidebar() {
   const { data: runs, isLoading, isError } = useRuns()
-  const { selectedRunId } = useUIStore()
+  const { selectedRunId, setSelectedRunId } = useUIStore()
+  const qc = useQueryClient()
+  const [confirming, setConfirming] = useState(false)
+
+  const resetMutation = useMutation({
+    mutationFn: resetAll,
+    onSuccess: () => {
+      setConfirming(false)
+      setSelectedRunId(null)
+      qc.invalidateQueries({ queryKey: ['runs'] })
+    },
+  })
 
   return (
     <div className="flex flex-col h-full">
@@ -19,10 +38,38 @@ export function RunSidebar() {
             Runs
           </span>
           {runs && (
-            <span className="ml-auto text-[10px] text-ink-muted bg-surface-muted px-1.5 py-0.5 rounded">
+            <span className="text-[10px] text-ink-muted bg-surface-muted px-1.5 py-0.5 rounded">
               {runs.length}
             </span>
           )}
+          <div className="ml-auto flex items-center gap-1">
+            {confirming ? (
+              <>
+                <span className="text-[10px] text-red-600 font-medium">Clear all?</span>
+                <button
+                  onClick={() => resetMutation.mutate()}
+                  disabled={resetMutation.isPending}
+                  className="text-[10px] px-2 py-0.5 bg-red-600 text-white rounded font-medium hover:bg-red-700 disabled:opacity-50 transition-colors"
+                >
+                  {resetMutation.isPending ? <Loader2 size={9} className="animate-spin" /> : 'Yes'}
+                </button>
+                <button
+                  onClick={() => setConfirming(false)}
+                  className="text-[10px] px-2 py-0.5 border border-border text-ink-muted rounded hover:text-ink transition-colors"
+                >
+                  No
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setConfirming(true)}
+                title="Clear all runs and exports"
+                className="p-1 rounded text-ink-muted hover:text-red-500 hover:bg-red-50 transition-colors"
+              >
+                <Trash2 size={12} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

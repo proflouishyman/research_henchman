@@ -1178,6 +1178,81 @@ def api_open_run_folder(run_id: str) -> Dict[str, Any]:
     return {"opened": True, "path": str(folder)}
 
 
+@app.post("/api/orchestrator/reset")
+def api_reset_all() -> Dict[str, Any]:
+    """Wipe all run history, events, gap maps, caches, and exports. Keeps uploads."""
+    import shutil
+
+    settings = _settings()
+    data_root = settings.data_root
+
+    cleared: List[str] = []
+    errors: List[str] = []
+
+    # Reset JSON stores
+    for fname in ("runs.json", "events.json"):
+        p = data_root / fname
+        try:
+            p.write_text("{}", encoding="utf-8")
+            cleared.append(fname)
+        except Exception as exc:
+            errors.append(f"{fname}: {exc}")
+
+    # Empty JSONL files
+    for fname in ("fit_scores.jsonl", "ingest_index.jsonl"):
+        p = data_root / fname
+        try:
+            if p.exists():
+                p.write_text("", encoding="utf-8")
+            cleared.append(fname)
+        except Exception as exc:
+            errors.append(f"{fname}: {exc}")
+
+    # Clear gap maps
+    gap_maps_dir = data_root / "gap_maps"
+    if gap_maps_dir.exists():
+        for f in gap_maps_dir.glob("*.json"):
+            try:
+                f.unlink()
+            except Exception as exc:
+                errors.append(f"gap_maps/{f.name}: {exc}")
+        cleared.append("gap_maps/")
+
+    # Clear search policy cache
+    cache_dir = data_root / "search_policy_cache"
+    if cache_dir.exists():
+        for f in cache_dir.glob("*.json"):
+            try:
+                f.unlink()
+            except Exception as exc:
+                errors.append(f"search_policy_cache/{f.name}: {exc}")
+        cleared.append("search_policy_cache/")
+
+    # Clear manuscript exports
+    exports_dir = data_root / "manuscript_exports"
+    if exports_dir.exists():
+        for child in exports_dir.iterdir():
+            if child.is_dir():
+                try:
+                    shutil.rmtree(child)
+                    cleared.append(f"manuscript_exports/{child.name}")
+                except Exception as exc:
+                    errors.append(f"manuscript_exports/{child.name}: {exc}")
+
+    # Also clear pull output root
+    pull_root = settings.pull_output_root
+    if pull_root.exists():
+        for child in pull_root.iterdir():
+            if child.is_dir() and child.name.startswith("run_"):
+                try:
+                    shutil.rmtree(child)
+                    cleared.append(f"pull_outputs/{child.name}")
+                except Exception as exc:
+                    errors.append(f"pull_outputs/{child.name}: {exc}")
+
+    return {"reset": True, "cleared": cleared, "errors": errors}
+
+
 @app.get("/api/orchestrator/runs/{run_id}/documents")
 def api_run_documents(run_id: str, limit: int = Query(default=300, ge=1, le=2000)) -> Dict[str, Any]:
     """List pulled artifact files for run-complete click-through in UI."""

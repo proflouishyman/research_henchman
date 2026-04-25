@@ -1,3 +1,19 @@
+[2026-04-24] - EbscoApiAdapter Was Not Calling the EDS API
+Problem
+Every EBSCO pull produced only seed links (search.ebscohost.com click-through URLs). No article titles, abstracts, or full text were ever retrieved.
+Root Cause
+The adapter never called the EBSCO Discovery Service (EDS) API at all. It only called build_link_rows() which constructs provider search URLs. The credentials in .env (EBSCO_PROF, EBSCO_PWD, EBSCO_PROFILE_ID) were completely unused.
+Solution
+Replaced the adapter with a full EDS API implementation:
+  1. POST /authservice/rest/uidauth → AuthToken
+  2. GET  /edsapi/rest/createsession → SessionToken
+  3. GET  /edsapi/rest/search (with query + DT1/DT2 era limiters) → records
+  4. GET  /edsapi/rest/retrieve (DbId + AN) → full-text HTML or PDF links per record
+  5. GET  /edsapi/rest/endsession
+Records are parsed for title, authors, journal, abstract, DOI, PDF URL, and full-text HTML. Quality label is "high" (full text), "medium" (abstract), or "seed" (link only). When EDS auth fails (invalid/missing credentials) the adapter falls back to seed click-through URLs with a clear api_error field in stats.
+Notes
+The credentials in .env return EDS auth error 1102 "Invalid Credentials" — the web UI login (lhyman6@jh.edu) is not an EDS API profile. JHU library IT needs to provision an EDS API profile in EBSCOadmin, or IP-based authentication can be configured. The code is fully ready for valid credentials.
+
 [2026-04-24] - Export Bundle Race Condition: Status Set Before Files Written
 Problem
 End-to-end test reported _INDEX.md, _BIBLIOGRAPHY.md, and _README.md missing from the export bundle even though the files existed on disk at the time of inspection.

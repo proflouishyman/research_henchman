@@ -230,6 +230,8 @@ def run_orchestration(
 
     had_unresolvable = any(row.status == "unresolvable" for row in pull_results)
     final_status = RunStatus.PARTIAL if had_unresolvable else RunStatus.COMPLETE
+    # Stamp the final status on rec before exporting so _INDEX.md shows the correct value.
+    rec.status = final_status
     # Export before marking complete so the bundle is on disk when callers poll the status.
     bundle_root = export_run_bundle(rec, settings)
     save(final_status, "Run complete")

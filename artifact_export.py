@@ -240,7 +240,7 @@ def _write_index(bundle_root: Path, rec: RunRecord, copied_docs: Dict[str, Dict[
     lines = [
         f"# Research Index: {Path(rec.manuscript_path).stem}",
         "",
-        f"Run: `{rec.run_id}`  |  Gaps found: {len(gaps)}  |  Status: `{rec.status}`",
+        f"Run: `{rec.run_id}`  |  Gaps found: {len(gaps)}  |  Status: `{getattr(rec.status, 'value', rec.status)}`",
         "",
         "## Gap Cross-Reference",
         "",
@@ -332,7 +332,7 @@ def _write_gap_readmes(
 
     for gap in rec.gap_map.gaps:
         doc     = copied_docs.get(gap.gap_id, {})
-        slug    = doc.get("slug") or _sanitize_name(gap.gap_id)
+        slug    = doc.get("slug") or _gap_slug(gap.gap_id, gap.chapter, gap.claim_text)
         gap_dir = bundle_root / "gaps" / slug
         gap_dir.mkdir(parents=True, exist_ok=True)
 

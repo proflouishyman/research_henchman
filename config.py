@@ -136,6 +136,7 @@ class OrchestratorSettings:
 
     auto_ingest: bool
     auto_llm_fit: bool
+    auto_render_charts: bool
     fail_fast: bool
 
     gap_analysis_use_ollama: bool
@@ -206,6 +207,7 @@ class OrchestratorSettings:
             gap_map_cache_dir=gap_cache_dir,
             auto_ingest=parse_bool(os.getenv("ORCH_AUTO_INGEST"), True),
             auto_llm_fit=parse_bool(os.getenv("ORCH_AUTO_LLM_FIT"), True),
+            auto_render_charts=parse_bool(os.getenv("ORCH_AUTO_RENDER_CHARTS"), True),
             fail_fast=parse_bool(os.getenv("ORCH_FAIL_FAST"), False),
             gap_analysis_use_ollama=parse_bool(os.getenv("ORCH_GAP_ANALYSIS_USE_OLLAMA"), True),
             gap_analysis_model=os.getenv("ORCH_GAP_ANALYSIS_MODEL", "qwen2.5:7b").strip(),

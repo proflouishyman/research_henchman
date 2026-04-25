@@ -31,6 +31,7 @@ def analyze_manuscript(
     settings: OrchestratorSettings,
     *,
     refresh: bool = False,
+    emit_event: Optional[Any] = None,
 ) -> GapMap:
     """Analyze manuscript with Ollama-first fallback to heuristic rules."""
 
@@ -59,7 +60,10 @@ def analyze_manuscript(
 
     if settings.gap_analysis_use_ollama and text.strip():
         try:
-            gap_map = _analyze_with_ollama(text, manuscript_path, fingerprint, extraction_meta, settings)
+            gap_map = _analyze_with_ollama(
+                text, manuscript_path, fingerprint, extraction_meta, settings,
+                emit_event=emit_event,
+            )
         except Exception as exc:  # noqa: BLE001 - fallback is part of contract.
             fallback_reason = str(exc)[:200]
 
@@ -354,28 +358,27 @@ def _analyze_heuristic(
     )
 
 
-def _build_analysis_prompt(text: str, max_chars: int = 40000) -> str:
-    truncated = text[:max_chars]
-    return f"""You are a research editor analyzing a manuscript for evidentiary gaps.
+def _build_section_prompt(chapter: str, section_text: str, max_chars: int = 6000) -> str:
+    truncated = section_text[:max_chars]
+    return f"""You are a research editor. Find EVERY evidentiary gap in the section below.
+Be exhaustive — do not stop early, do not self-limit. Include ALL gaps you find.
 
-A gap is a place where the manuscript makes a claim — explicitly or implicitly — that lacks
-adequate supporting evidence. There are two kinds:
+A gap is a place where the text makes a claim that lacks adequate supporting evidence:
+  EXPLICIT: author flagged it (TODO, [citation needed], INSERT, PLACEHOLDER, [FIND STAT]).
+  IMPLICIT: evidence is absent (hedged language with no citations, quantitative claims
+            without data sources, causal claims without references).
 
-EXPLICIT: The author has flagged the gap themselves (TODO, [citation needed], INSERT, placeholders).
-IMPLICIT: The argument requires evidence but none is present (hedged language with no citations,
-quantitative assertions without data, causal claims without sources).
-
-For each gap you find, return a JSON object with these fields:
-  chapter         — section heading (string)
-  claim_text      — the specific claim that needs evidence (string, 1-2 sentences)
+For each gap return a JSON object with:
+  chapter         — \"{chapter}\"
+  claim_text      — the specific claim needing evidence (1-2 sentences)
   gap_type        — \"explicit\" or \"implicit\"
   priority        — \"high\", \"medium\", or \"low\"
-  suggested_queries — list of 2-3 search strings that would find relevant evidence (array of strings)
-  excerpt         — the verbatim text that revealed this gap (string, max 200 chars)
+  suggested_queries — 2-3 search strings to find evidence (array)
+  excerpt         — verbatim text revealing the gap (max 200 chars)
 
-Return ONLY a JSON array. No preamble, no explanation, no markdown fences.
+Return ONLY a JSON array (no preamble, no fences). If there are no gaps return [].
 
-MANUSCRIPT:
+SECTION — {chapter}:
 {truncated}
 """
 
@@ -397,29 +400,76 @@ def _parse_gap_json(response: str) -> List[Dict[str, Any]]:
     return [row for row in payload if isinstance(row, dict)]
 
 
+def _parse_section_rows(response: str, chapter: str) -> List[Dict[str, Any]]:
+    """Parse LLM response for one section; fall back to empty list on error."""
+    try:
+        rows = _parse_gap_json(response)
+        # Back-fill chapter if LLM omitted it
+        for row in rows:
+            if not str(row.get("chapter", "")).strip():
+                row["chapter"] = chapter
+        return rows
+    except Exception:
+        return []
+
+
 def _analyze_with_ollama(
     text: str,
     manuscript_path: str,
     fingerprint: str,
     extraction_meta: Dict[str, Any],
     settings: OrchestratorSettings,
+    emit_event: Optional[Any] = None,
 ) -> GapMap:
-    prompt = _build_analysis_prompt(text, settings.gap_analysis_max_chars)
+    sections = _split_sections(text)
+    # Section char budget: leave room for prompt overhead
+    section_char_cap = min(settings.gap_analysis_max_chars, 6000)
+
     client = make_llm_client(
         settings,
         model=settings.gap_analysis_model,
         timeout_seconds=settings.gap_analysis_timeout_seconds,
         temperature=0.1,
     )
-    response = client.complete(prompt=prompt)
-    parsed = _parse_gap_json(response)
+
+    all_rows: List[Dict[str, Any]] = []
+    first_error: Optional[str] = None
+    for sec_idx, section in enumerate(sections, start=1):
+        chapter = str(section.get("heading", "Manuscript Body")).strip() or "Manuscript Body"
+        body = " ".join(section.get("lines", []))
+        if not body.strip():
+            continue
+
+        if emit_event:
+            emit_event(
+                stage="analyzing",
+                status="progress",
+                message=f"Analyzing section {sec_idx}/{len(sections)}: {chapter[:60]}",
+                meta={"section": sec_idx, "total_sections": len(sections), "chapter": chapter},
+            )
+
+        prompt = _build_section_prompt(chapter, body, section_char_cap)
+        try:
+            response = client.complete(prompt=prompt)
+            rows = _parse_section_rows(response, chapter)
+            all_rows.extend(rows)
+        except Exception as exc:
+            if first_error is None:
+                first_error = str(exc)[:200]
 
     gaps: List[Gap] = []
-    for index, row in enumerate(parsed, start=1):
+    seen_claims: set = set()
+    for index, row in enumerate(all_rows, start=1):
         chapter = str(row.get("chapter", "Manuscript Body")).strip() or "Manuscript Body"
         claim_text = str(row.get("claim_text", "")).strip()
         if len(claim_text) < 12:
             continue
+        # Deduplicate near-identical claims
+        claim_key = re.sub(r"\s+", " ", claim_text[:80].lower())
+        if claim_key in seen_claims:
+            continue
+        seen_claims.add(claim_key)
+
         gap_type_raw = str(row.get("gap_type", "implicit")).strip().lower()
         priority_raw = str(row.get("priority", "medium")).strip().lower()
 
@@ -451,7 +501,7 @@ def _analyze_with_ollama(
         )
 
     if not gaps:
-        raise RuntimeError("analysis_no_gaps")
+        raise RuntimeError(first_error or "analysis_no_gaps")
 
     explicit_count = sum(1 for gap in gaps if gap.gap_type == GapType.EXPLICIT)
     implicit_count = sum(1 for gap in gaps if gap.gap_type == GapType.IMPLICIT)

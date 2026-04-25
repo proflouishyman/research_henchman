@@ -95,7 +95,14 @@ def run_orchestration(
     try:
         save(RunStatus.ANALYZING, "Reading manuscript and identifying gaps")
         emit("analyzing", "started", "Starting manuscript analysis")
-        gap_map = analyze_manuscript(rec.manuscript_path, settings, refresh=rec.force)
+
+        def _analysis_progress(stage: str, status: str, message: str, meta: dict = None) -> None:
+            save(RunStatus.ANALYZING, message)
+            emit(stage, status, message, meta or {})
+
+        gap_map = analyze_manuscript(
+            rec.manuscript_path, settings, refresh=rec.force, emit_event=_analysis_progress
+        )
         rec.gap_map = gap_map
         save(RunStatus.ANALYZING, f"Found {len(gap_map.gaps)} gaps")
         emit(

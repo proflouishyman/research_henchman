@@ -42,6 +42,7 @@ class LLMClient:
     timeout_seconds: int = 120
     temperature: float = 0.1
     max_retries: int = 2
+    num_ctx: int = 0  # Ollama context window; 0 = use model default
 
     def complete(
         self,
@@ -89,11 +90,14 @@ class LLMClient:
 
     def _ollama_complete(self, *, prompt: str, system: str, temperature: float) -> str:
         full_prompt = f"{system.strip()}\n\n{prompt}" if system.strip() else prompt
+        options: Dict[str, Any] = {"temperature": temperature}
+        if self.num_ctx > 0:
+            options["num_ctx"] = self.num_ctx
         payload = {
             "model": self.model,
             "prompt": full_prompt,
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": options,
         }
         req = urllib.request.Request(
             f"{self.base_url.rstrip('/')}/api/generate",
@@ -211,6 +215,7 @@ def make_llm_client(
     model: Optional[str] = None,
     timeout_seconds: Optional[int] = None,
     temperature: float = 0.1,
+    num_ctx: int = 0,
 ) -> LLMClient:
     """Build an LLMClient from OrchestratorSettings.
 
@@ -223,6 +228,7 @@ def make_llm_client(
     except ValueError:
         provider = LLMProvider.OLLAMA
 
+    resolved_ctx = num_ctx or getattr(settings, "llm_ctx", 0) or 0
     return LLMClient(
         provider=provider,
         model=(model or settings.llm_model or "qwen2.5:7b").strip(),
@@ -230,4 +236,5 @@ def make_llm_client(
         timeout_seconds=timeout_seconds if timeout_seconds is not None else getattr(settings, "llm_timeout_seconds", 120),
         temperature=temperature,
         max_retries=2,
+        num_ctx=resolved_ctx,
     )

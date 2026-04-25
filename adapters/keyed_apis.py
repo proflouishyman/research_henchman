@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -491,6 +493,120 @@ class EbscoApiAdapter(KeyedApiAdapter):
             "source":        "eds_api",
         }
 
+    # ── EIT (EBSCOhost Integration Toolkit) REST search ────────────────────
+    # EIT requires: prof=<account_id>.<group>.eitws2 & pwd=<profile_password>
+    # The account_id is institution-specific; set EBSCO_ACCOUNT_ID in .env.
+    # (JHU library provided profile ID "eitws2" and password "ebs8451" but not
+    # the account prefix — contact library IT to obtain the full qualified ID.)
+
+    _EIT_URL = "http://eit.ebscohost.com/Services/SearchService.asmx/Search"
+
+    def _eit_search(
+        self, query: str, db: str, timeout: int,
+        era_start: Any, era_end: Any,
+    ) -> List[Dict[str, Any]]:
+        """Call EIT REST API; return list of parsed record dicts."""
+        account_id   = os.environ.get("EBSCO_ACCOUNT_ID", "").strip()
+        profile_name = os.environ.get("EBSCO_PROFILE_ID", "eitws2").strip()
+        pwd          = os.environ.get("EBSCO_PROFILE_PASSWORD", "").strip()
+        group        = os.environ.get("EBSCO_GROUP_ID", "main").strip() or "main"
+
+        if not account_id or not pwd:
+            raise RuntimeError("EBSCO_ACCOUNT_ID / EBSCO_PROFILE_PASSWORD not set for EIT")
+
+        full_profile = f"{account_id}.{group}.{profile_name}"
+        params: Dict[str, str] = {
+            "prof":     full_profile,
+            "pwd":      pwd,
+            "authType": "profile",
+            "query":    query,
+            "db":       db,
+            "numrec":   "10",
+            "format":   "detailed",
+            "startrec": "1",
+        }
+        if era_start and era_end:
+            params["date"] = f"{era_start}-{era_end}"
+
+        url = f"{self._EIT_URL}?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(url, headers={"Accept": "application/xml"}, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw = r.read().decode("utf-8", errors="ignore")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="ignore")
+            raise RuntimeError(f"EIT HTTP {exc.code}: {body[:200]}") from exc
+
+        return self._parse_eit_xml(raw, query)
+
+    @staticmethod
+    def _parse_eit_xml(xml: str, query: str) -> List[Dict[str, Any]]:
+        """Parse EIT XML response into standard row dicts."""
+        import xml.etree.ElementTree as ET
+
+        if "<Fault" in xml or "<fault" in xml.lower():
+            import re
+            msg = re.search(r"<Message>(.*?)</Message>", xml, re.DOTALL)
+            raise RuntimeError(f"EIT fault: {msg.group(1)[:200] if msg else xml[:200]}")
+
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError as exc:
+            raise RuntimeError(f"EIT XML parse error: {exc}") from exc
+
+        # Strip namespaces for simpler XPath
+        ns_strip = re.compile(r"\{[^}]+\}")
+
+        def tag(el: ET.Element) -> str:
+            return ns_strip.sub("", el.tag)
+
+        def find_text(el: ET.Element, *tags: str) -> str:
+            for t in tags:
+                node = el.find(f".//{{{el.tag.split('}')[0][1:] if '{' in el.tag else ''}}}{t}")
+                if node is None:
+                    # Try without namespace
+                    for child in el.iter():
+                        if tag(child) == t and child.text:
+                            return (child.text or "").strip()
+                elif node.text:
+                    return node.text.strip()
+            return ""
+
+        rows = []
+        for record in root.iter():
+            if tag(record) != "Record":
+                continue
+            title    = find_text(record, "atl")
+            authors  = find_text(record, "aug")
+            abstract = find_text(record, "ab")
+            full_text = find_text(record, "abody")
+            pub_info = find_text(record, "pubinfo")
+            pdf_url  = find_text(record, "pdfLink")
+            plink    = find_text(record, "plink")
+            subjects = find_text(record, "su")
+            rec_id   = find_text(record, "recordID")
+
+            has_full    = bool(full_text or pdf_url)
+            has_abstract = bool(abstract)
+            quality_label = "high" if has_full else ("medium" if has_abstract else "seed")
+
+            rows.append({
+                "title":          title,
+                "authors":        authors,
+                "abstract":       (abstract or full_text)[:2000],
+                "journal":        pub_info,
+                "pdf_url":        pdf_url,
+                "url":            plink or pdf_url,
+                "subjects":       subjects,
+                "record_id":      rec_id,
+                "query":          query,
+                "quality_label":  quality_label,
+                "quality_rank":   90 if quality_label == "high" else (60 if quality_label == "medium" else 20),
+                "source":         "eit_api",
+                "link_type":      "full_text" if has_full else ("abstract" if has_abstract else "record"),
+            })
+        return rows
+
     # ── main pull ────────────────────────────────────────────────────────────
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
@@ -499,64 +615,71 @@ class EbscoApiAdapter(KeyedApiAdapter):
         source_root.mkdir(parents=True, exist_ok=True)
         db = os.environ.get("EBSCO_DB", "bth").strip()
 
-        auth_token    = ""
-        session_token = ""
         api_rows: List[Dict[str, Any]] = []
         api_error = ""
+        link_mode = ""
 
-        # ── Try live EDS API ────────────────────────────────────────────────
+        # ── 1. Try EIT REST API (profile-based, stateless) ──────────────────
         try:
-            auth_token    = self._get_auth_token(min(20, timeout_seconds))
-            session_token = self._create_session(auth_token, min(15, timeout_seconds))
-            per_record_timeout = max(10, timeout_seconds // 6)
-            raw_records   = self._search(
-                query, auth_token, session_token,
-                db, min(30, timeout_seconds), era_start, era_end,
-            )
-            for rec in raw_records[:8]:
-                try:
-                    row = self._parse_record(
-                        rec, gap.gap_id, query,
-                        auth_token, session_token, per_record_timeout,
-                    )
-                    api_rows.append(row)
-                except Exception:
-                    pass
+            api_rows  = self._eit_search(query, db, min(30, timeout_seconds), era_start, era_end)
+            link_mode = "eit_api"
         except Exception as exc:
-            api_error = str(exc)[:200]
-        finally:
-            if auth_token and session_token:
-                self._end_session(auth_token, session_token)
+            eit_error = str(exc)[:200]
+            api_error = f"EIT: {eit_error}"
 
-        # ── Seed-link fallback when API unavailable ─────────────────────────
-        seed_rows: List[Dict[str, Any]] = []
+        # ── 2. Fall back to EDS API (requires separate provisioning) ─────────
         if not api_rows:
-            seed_rows = build_link_rows(
+            auth_token = session_token = ""
+            try:
+                auth_token    = self._get_auth_token(min(20, timeout_seconds))
+                session_token = self._create_session(auth_token, min(15, timeout_seconds))
+                per_rec       = max(10, timeout_seconds // 6)
+                raw_records   = self._search(
+                    query, auth_token, session_token,
+                    db, min(30, timeout_seconds), era_start, era_end,
+                )
+                for rec in raw_records[:8]:
+                    try:
+                        api_rows.append(self._parse_record(
+                            rec, gap.gap_id, query,
+                            auth_token, session_token, per_rec,
+                        ))
+                    except Exception:
+                        pass
+                if api_rows:
+                    link_mode = "eds_api"
+            except Exception as exc:
+                api_error = f"{api_error} | EDS: {str(exc)[:150]}"
+            finally:
+                if auth_token and session_token:
+                    self._end_session(auth_token, session_token)
+
+        # ── 3. Seed-link fallback ────────────────────────────────────────────
+        if not api_rows:
+            api_rows  = build_link_rows(
                 self.source_id, query, gap.gap_id,
                 limit_local=4, era_start=era_start, era_end=era_end,
             )
+            link_mode = "provider_search_seed"
 
-        rows = api_rows or seed_rows
-        root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
-
+        root = write_json_records(api_rows, run_dir, gap.gap_id, self.source_id, query)
         pulled_docs = sum(
-            1 for r in rows
+            1 for r in api_rows
             if str(r.get("quality_label", "")).lower() in {"high", "medium"}
         )
-        status = "completed" if pulled_docs > 0 else ("partial" if rows else "failed")
-        link_mode = "eds_api" if api_rows else "provider_search_seed"
+        status = "completed" if pulled_docs > 0 else ("partial" if api_rows else "failed")
 
         return SourceResult(
             source_id=self.source_id,
             source_type=self.source_type,
             query=query,
             gap_id=gap.gap_id,
-            document_count=len(rows),
+            document_count=len(api_rows),
             run_dir=root,
             artifact_type="json_records",
             status=status,
             stats={
-                "records":     len(rows),
+                "records":     len(api_rows),
                 "pulled_docs": pulled_docs,
                 "seed_only":   pulled_docs <= 0,
                 "api_error":   api_error,

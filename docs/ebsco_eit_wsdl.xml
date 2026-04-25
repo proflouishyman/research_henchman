@@ -1,0 +1,517 @@
+<?xml version="1.0" encoding="utf-8"?>
+<wsdl:definitions xmlns:s="http://www.w3.org/2001/XMLSchema" xmlns:soap12="http://schemas.xmlsoap.org/wsdl/soap12/" xmlns:http="http://schemas.xmlsoap.org/wsdl/http/" xmlns:mime="http://schemas.xmlsoap.org/wsdl/mime/" xmlns:tns="http://epnet.com/webservices/SearchService/2007/07/" xmlns:s1="http://epnet.com/webservices/SearchService/Response/2007/07/" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" xmlns:tm="http://microsoft.com/wsdl/mime/textMatching/" xmlns:soapenc="http://schemas.xmlsoap.org/soap/encoding/" targetNamespace="http://epnet.com/webservices/SearchService/2007/07/" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/">
+  <wsdl:documentation xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/">The Search Service provides access to EBSCOhost powerful reference system through a variety of proprietary web methods.  Using this service, you can search and browse full text databases and popular databases from leading information providers. The comprehensive databases range from general reference collections to specially designed, subject-specific databases for public, academic, medical, corporate and school libraries. </wsdl:documentation>
+  <wsdl:types>
+    <s:schema elementFormDefault="qualified" targetNamespace="http://epnet.com/webservices/SearchService/2007/07/">
+      <s:import namespace="http://epnet.com/webservices/SearchService/Response/2007/07/" />
+      <s:element name="Search">
+        <s:complexType>
+          <s:sequence>
+            <s:element minOccurs="0" maxOccurs="1" name="searchRequest" type="tns:SearchRequest" />
+          </s:sequence>
+        </s:complexType>
+      </s:element>
+      <s:complexType name="SearchRequest">
+        <s:complexContent mixed="false">
+          <s:extension base="tns:Request">
+            <s:sequence>
+              <s:element minOccurs="0" maxOccurs="1" name="Query" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="1" default="1" name="StartingRecordNumber" type="s:int" />
+              <s:element minOccurs="0" maxOccurs="1" default="10" name="NumberRecordsReturned" type="s:int" />
+              <s:element minOccurs="0" maxOccurs="1" default="date" name="Sort" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="unbounded" name="Databases" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="1" default="brief" name="RecordFormat" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="unbounded" name="RecordsDataSubSet" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="1" name="OrgID" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="1" default="false" name="Clusters" type="s:boolean" />
+            </s:sequence>
+          </s:extension>
+        </s:complexContent>
+      </s:complexType>
+      <s:complexType name="Request" />
+      <s:element name="SearchResponse">
+        <s:complexType>
+          <s:sequence>
+            <s:element minOccurs="1" maxOccurs="1" name="searchResponse" nillable="true" type="s1:EP.Services.EIT.SearchResponse" />
+          </s:sequence>
+        </s:complexType>
+      </s:element>
+      <s:element name="AuthorizationHeader" type="tns:AuthorizationHeader" />
+      <s:complexType name="AuthorizationHeader">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="1" name="Profile" type="s:string" />
+          <s:element minOccurs="0" maxOccurs="1" name="Password" type="s:string" />
+          <s:element minOccurs="0" maxOccurs="1" name="IpProfile" type="s:string" />
+          <s:element minOccurs="0" maxOccurs="1" name="AuthType" type="s:string" />
+          <s:element minOccurs="0" maxOccurs="1" name="IpAddress" type="s:string" />
+        </s:sequence>
+        <s:anyAttribute />
+      </s:complexType>
+      <s:element name="Info">
+        <s:complexType>
+          <s:sequence>
+            <s:element minOccurs="0" maxOccurs="1" name="infoRequest" type="tns:InfoRequest" />
+          </s:sequence>
+        </s:complexType>
+      </s:element>
+      <s:complexType name="InfoRequest">
+        <s:complexContent mixed="false">
+          <s:extension base="tns:Request">
+            <s:sequence>
+              <s:element minOccurs="0" maxOccurs="1" name="OrgID" type="s:string" />
+            </s:sequence>
+          </s:extension>
+        </s:complexContent>
+      </s:complexType>
+      <s:element name="InfoResponse">
+        <s:complexType>
+          <s:sequence>
+            <s:element minOccurs="1" maxOccurs="1" name="info" nillable="true" type="s1:EP.Services.EIT.InfoResponse" />
+          </s:sequence>
+        </s:complexType>
+      </s:element>
+      <s:element name="Browse">
+        <s:complexType>
+          <s:sequence>
+            <s:element minOccurs="0" maxOccurs="1" name="browseRequest" type="tns:BrowseRequest" />
+          </s:sequence>
+        </s:complexType>
+      </s:element>
+      <s:complexType name="BrowseRequest">
+        <s:complexContent mixed="false">
+          <s:extension base="tns:Request">
+            <s:sequence>
+              <s:element minOccurs="0" maxOccurs="1" name="Term" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="1" default="20" name="NumberRecordsReturned" type="s:int" />
+              <s:element minOccurs="0" maxOccurs="1" name="Databases" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="1" name="Index" type="s:string" />
+            </s:sequence>
+          </s:extension>
+        </s:complexContent>
+      </s:complexType>
+      <s:element name="BrowseResponse">
+        <s:complexType>
+          <s:sequence>
+            <s:element minOccurs="1" maxOccurs="1" name="browseResponse" nillable="true" type="s1:EP.Services.EIT.BrowseResponse" />
+          </s:sequence>
+        </s:complexType>
+      </s:element>
+      <s:element name="AuthoritySearch">
+        <s:complexType>
+          <s:sequence>
+            <s:element minOccurs="0" maxOccurs="1" name="searchRequest" type="tns:AuthoritySearchRequest" />
+          </s:sequence>
+        </s:complexType>
+      </s:element>
+      <s:complexType name="AuthoritySearchRequest">
+        <s:complexContent mixed="false">
+          <s:extension base="tns:Request">
+            <s:sequence>
+              <s:element minOccurs="0" maxOccurs="1" name="Query" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="1" default="1" name="StartingRecordNumber" type="s:int" />
+              <s:element minOccurs="0" maxOccurs="1" default="10" name="NumberRecordsReturned" type="s:int" />
+              <s:element minOccurs="0" maxOccurs="1" default="relevancy" name="SearchMode" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="1" name="Authority_x0020_Database" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="1" default="list" name="RecordFormat" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="1" name="Sort" type="s:string" />
+            </s:sequence>
+          </s:extension>
+        </s:complexContent>
+      </s:complexType>
+      <s:element name="AuthoritySearchResponse">
+        <s:complexType>
+          <s:sequence>
+            <s:element minOccurs="1" maxOccurs="1" name="AuthoritySearchResponse" nillable="true" type="s1:EP.Services.EIT.AuthoritySearchResponse" />
+          </s:sequence>
+        </s:complexType>
+      </s:element>
+      <s:element name="GetClusters">
+        <s:complexType>
+          <s:sequence>
+            <s:element minOccurs="0" maxOccurs="1" name="request" type="tns:ClusterSearchRequest" />
+          </s:sequence>
+        </s:complexType>
+      </s:element>
+      <s:complexType name="ClusterSearchRequest">
+        <s:complexContent mixed="false">
+          <s:extension base="tns:Request">
+            <s:sequence>
+              <s:element minOccurs="0" maxOccurs="1" name="Query" type="s:string" />
+              <s:element minOccurs="0" maxOccurs="unbounded" name="Databases" type="s:string" />
+            </s:sequence>
+          </s:extension>
+        </s:complexContent>
+      </s:complexType>
+      <s:element name="GetClustersResponse">
+        <s:complexType>
+          <s:sequence>
+            <s:element minOccurs="1" maxOccurs="1" name="clusterResponse" nillable="true" type="s1:EP.Services.EIT.ClusterResponse" />
+          </s:sequence>
+        </s:complexType>
+      </s:element>
+    </s:schema>
+    <s:schema elementFormDefault="qualified" targetNamespace="http://epnet.com/webservices/SearchService/Response/2007/07/">
+      <s:complexType name="EP.Services.EIT.SearchResponse">
+        <s:sequence>
+          <s:element minOccurs="1" maxOccurs="1" name="Hits" type="s:int" />
+          <s:element minOccurs="0" maxOccurs="1" name="Statistics" type="s1:ArrayOfStatistics" />
+          <s:element minOccurs="0" maxOccurs="1" name="Facets" type="s1:Facets" />
+          <s:element minOccurs="0" maxOccurs="1" name="SearchResults">
+            <s:complexType mixed="true">
+              <s:sequence>
+                <s:any />
+              </s:sequence>
+            </s:complexType>
+          </s:element>
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="ArrayOfStatistics">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="unbounded" name="Statistic" nillable="true" type="s1:Statistics" />
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="Statistics">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="1" name="Database" type="s:string" />
+          <s:element minOccurs="1" maxOccurs="1" name="Hits" type="s:int" />
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="Facets">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="1" name="Clusters" type="s1:SearchClusterResponse" />
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="SearchClusterResponse">
+        <s:complexContent mixed="false">
+          <s:extension base="s1:Response">
+            <s:sequence>
+              <s:element minOccurs="0" maxOccurs="unbounded" name="ClusterCategory" type="s1:ClusterCategory" />
+            </s:sequence>
+          </s:extension>
+        </s:complexContent>
+      </s:complexType>
+      <s:complexType name="Response" abstract="true" />
+      <s:complexType name="ClusterCategory">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="unbounded" name="Cluster" type="s:string" />
+        </s:sequence>
+        <s:attribute name="ID" type="s:string" />
+        <s:attribute name="Tag" type="s:string" />
+      </s:complexType>
+      <s:complexType name="EP.Services.EIT.InfoResponse">
+        <s:complexContent mixed="false">
+          <s:extension base="s1:Response">
+            <s:sequence>
+              <s:element minOccurs="0" maxOccurs="1" name="dbInfo" type="s1:ArrayOfDatabaseWithAuth" />
+            </s:sequence>
+          </s:extension>
+        </s:complexContent>
+      </s:complexType>
+      <s:complexType name="ArrayOfDatabaseWithAuth">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="unbounded" name="db" nillable="true" type="s1:DatabaseWithAuth" />
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="DatabaseWithAuth">
+        <s:complexContent mixed="false">
+          <s:extension base="s1:Database">
+            <s:sequence>
+              <s:element minOccurs="0" maxOccurs="1" name="authorityInfo" type="s1:ArrayOfDatabase" />
+            </s:sequence>
+          </s:extension>
+        </s:complexContent>
+      </s:complexType>
+      <s:complexType name="Database">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="1" name="sortOptions" type="s1:ArrayOfSort" />
+          <s:element minOccurs="0" maxOccurs="1" name="dbTags" type="s1:ArrayOfTag" />
+          <s:element minOccurs="0" maxOccurs="1" name="dbIndices" type="s1:ArrayOfIndex" />
+          <s:element minOccurs="0" maxOccurs="1" name="dbFormats" type="s1:ArrayOfFormat" />
+        </s:sequence>
+        <s:attribute name="shortName" type="s:string" />
+        <s:attribute name="longName" type="s:string" />
+        <s:attribute name="dbType" type="s:string" />
+        <s:attribute name="contentType" type="s:string" />
+        <s:attribute name="outsideSource" type="s:boolean" use="required" />
+      </s:complexType>
+      <s:complexType name="ArrayOfSort">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="unbounded" name="sort" nillable="true" type="s1:Sort" />
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="Sort">
+        <s:attribute name="name" type="s:string" />
+        <s:attribute name="id" type="s:string" />
+      </s:complexType>
+      <s:complexType name="ArrayOfTag">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="unbounded" name="dbTag" nillable="true" type="s1:Tag" />
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="Tag">
+        <s:attribute name="name" type="s:string" />
+        <s:attribute name="description" type="s:string" />
+      </s:complexType>
+      <s:complexType name="ArrayOfIndex">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="unbounded" name="dbIndex" nillable="true" type="s1:Index" />
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="Index">
+        <s:attribute name="name" type="s:string" />
+        <s:attribute name="description" type="s:string" />
+      </s:complexType>
+      <s:complexType name="ArrayOfFormat">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="unbounded" name="dbFormat" nillable="true" type="s1:Format" />
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="Format">
+        <s:attribute name="name" type="s:string" />
+        <s:attribute name="description" type="s:string" />
+      </s:complexType>
+      <s:complexType name="ArrayOfDatabase">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="unbounded" name="db" nillable="true" type="s1:Database" />
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="EP.Services.EIT.BrowseResponse">
+        <s:complexContent mixed="false">
+          <s:extension base="s1:Response">
+            <s:sequence>
+              <s:element minOccurs="0" maxOccurs="1" name="response">
+                <s:complexType mixed="true">
+                  <s:sequence>
+                    <s:any />
+                  </s:sequence>
+                </s:complexType>
+              </s:element>
+            </s:sequence>
+          </s:extension>
+        </s:complexContent>
+      </s:complexType>
+      <s:complexType name="EP.Services.EIT.AuthoritySearchResponse">
+        <s:sequence>
+          <s:element minOccurs="0" maxOccurs="1" name="Statistics" type="s1:ArrayOfStatistics" />
+          <s:element minOccurs="0" maxOccurs="1" name="SearchResults">
+            <s:complexType mixed="true">
+              <s:sequence>
+                <s:any />
+              </s:sequence>
+            </s:complexType>
+          </s:element>
+        </s:sequence>
+      </s:complexType>
+      <s:complexType name="EP.Services.EIT.ClusterResponse">
+        <s:complexContent mixed="false">
+          <s:extension base="s1:Response">
+            <s:sequence>
+              <s:element minOccurs="0" maxOccurs="unbounded" name="ClusterCategory" type="s1:ClusterCategory" />
+            </s:sequence>
+          </s:extension>
+        </s:complexContent>
+      </s:complexType>
+    </s:schema>
+  </wsdl:types>
+  <wsdl:message name="SearchSoapIn">
+    <wsdl:part name="parameters" element="tns:Search" />
+  </wsdl:message>
+  <wsdl:message name="SearchSoapOut">
+    <wsdl:part name="parameters" element="tns:SearchResponse" />
+  </wsdl:message>
+  <wsdl:message name="SearchAuthorizationHeader">
+    <wsdl:part name="AuthorizationHeader" element="tns:AuthorizationHeader" />
+  </wsdl:message>
+  <wsdl:message name="InfoSoapIn">
+    <wsdl:part name="parameters" element="tns:Info" />
+  </wsdl:message>
+  <wsdl:message name="InfoSoapOut">
+    <wsdl:part name="parameters" element="tns:InfoResponse" />
+  </wsdl:message>
+  <wsdl:message name="InfoAuthorizationHeader">
+    <wsdl:part name="AuthorizationHeader" element="tns:AuthorizationHeader" />
+  </wsdl:message>
+  <wsdl:message name="BrowseSoapIn">
+    <wsdl:part name="parameters" element="tns:Browse" />
+  </wsdl:message>
+  <wsdl:message name="BrowseSoapOut">
+    <wsdl:part name="parameters" element="tns:BrowseResponse" />
+  </wsdl:message>
+  <wsdl:message name="BrowseAuthorizationHeader">
+    <wsdl:part name="AuthorizationHeader" element="tns:AuthorizationHeader" />
+  </wsdl:message>
+  <wsdl:message name="AuthoritySearchSoapIn">
+    <wsdl:part name="parameters" element="tns:AuthoritySearch" />
+  </wsdl:message>
+  <wsdl:message name="AuthoritySearchSoapOut">
+    <wsdl:part name="parameters" element="tns:AuthoritySearchResponse" />
+  </wsdl:message>
+  <wsdl:message name="AuthoritySearchAuthorizationHeader">
+    <wsdl:part name="AuthorizationHeader" element="tns:AuthorizationHeader" />
+  </wsdl:message>
+  <wsdl:message name="GetClustersSoapIn">
+    <wsdl:part name="parameters" element="tns:GetClusters" />
+  </wsdl:message>
+  <wsdl:message name="GetClustersSoapOut">
+    <wsdl:part name="parameters" element="tns:GetClustersResponse" />
+  </wsdl:message>
+  <wsdl:message name="GetClustersAuthorizationHeader">
+    <wsdl:part name="AuthorizationHeader" element="tns:AuthorizationHeader" />
+  </wsdl:message>
+  <wsdl:portType name="SearchServiceSoap">
+    <wsdl:operation name="Search">
+      <wsdl:documentation xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/">The Search method is used to perform basic searches on EBSCOhost reference system.  Abstracts as well as the full text for documents and articles can be retrieved using this method.  When available, full text articles can also be downloaded in pdf format.</wsdl:documentation>
+      <wsdl:input message="tns:SearchSoapIn" />
+      <wsdl:output message="tns:SearchSoapOut" />
+    </wsdl:operation>
+    <wsdl:operation name="Info">
+      <wsdl:documentation xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/">The Info method allows the Data Partner to receive a list of databases available to the given profile as well as the attributes of those databases and any attached authorities and their supported format types.</wsdl:documentation>
+      <wsdl:input message="tns:InfoSoapIn" />
+      <wsdl:output message="tns:InfoSoapOut" />
+    </wsdl:operation>
+    <wsdl:operation name="Browse">
+      <wsdl:documentation xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/">The Browse method is used to view indexes such as Authors or Subject Terms on an EBSCOhost database.  Note that the index availability can be different per database.</wsdl:documentation>
+      <wsdl:input message="tns:BrowseSoapIn" />
+      <wsdl:output message="tns:BrowseSoapOut" />
+    </wsdl:operation>
+    <wsdl:operation name="AuthoritySearch">
+      <wsdl:documentation xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/">The AuthoritySearch method is used to perform authority searches on EBSCOhost reference system.</wsdl:documentation>
+      <wsdl:input message="tns:AuthoritySearchSoapIn" />
+      <wsdl:output message="tns:AuthoritySearchSoapOut" />
+    </wsdl:operation>
+    <wsdl:operation name="GetClusters">
+      <wsdl:documentation xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/">Finds and returns the set of clusters that would be returned by the given search.</wsdl:documentation>
+      <wsdl:input message="tns:GetClustersSoapIn" />
+      <wsdl:output message="tns:GetClustersSoapOut" />
+    </wsdl:operation>
+  </wsdl:portType>
+  <wsdl:portType name="SearchServiceHttpGet" />
+  <wsdl:portType name="SearchServiceHttpPost" />
+  <wsdl:binding name="SearchServiceSoap" type="tns:SearchServiceSoap">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" />
+    <wsdl:operation name="Search">
+      <soap:operation soapAction="http://epnet.com/webservices/SearchService/2007/07/Search" style="document" />
+      <wsdl:input>
+        <soap:body use="literal" />
+        <soap:header message="tns:SearchAuthorizationHeader" part="AuthorizationHeader" use="literal" />
+      </wsdl:input>
+      <wsdl:output>
+        <soap:body use="literal" />
+      </wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="Info">
+      <soap:operation soapAction="http://epnet.com/webservices/SearchService/2007/07/Info" style="document" />
+      <wsdl:input>
+        <soap:body use="literal" />
+        <soap:header message="tns:InfoAuthorizationHeader" part="AuthorizationHeader" use="literal" />
+      </wsdl:input>
+      <wsdl:output>
+        <soap:body use="literal" />
+      </wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="Browse">
+      <soap:operation soapAction="http://epnet.com/webservices/SearchService/2007/07/Browse" style="document" />
+      <wsdl:input>
+        <soap:body use="literal" />
+        <soap:header message="tns:BrowseAuthorizationHeader" part="AuthorizationHeader" use="literal" />
+      </wsdl:input>
+      <wsdl:output>
+        <soap:body use="literal" />
+      </wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="AuthoritySearch">
+      <soap:operation soapAction="http://epnet.com/webservices/SearchService/2007/07/AuthoritySearch" style="document" />
+      <wsdl:input>
+        <soap:body use="literal" />
+        <soap:header message="tns:AuthoritySearchAuthorizationHeader" part="AuthorizationHeader" use="literal" />
+      </wsdl:input>
+      <wsdl:output>
+        <soap:body use="literal" />
+      </wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="GetClusters">
+      <soap:operation soapAction="http://epnet.com/webservices/SearchService/2007/07/GetClusters" style="document" />
+      <wsdl:input>
+        <soap:body use="literal" />
+        <soap:header message="tns:GetClustersAuthorizationHeader" part="AuthorizationHeader" use="literal" />
+      </wsdl:input>
+      <wsdl:output>
+        <soap:body use="literal" />
+      </wsdl:output>
+    </wsdl:operation>
+  </wsdl:binding>
+  <wsdl:binding name="SearchServiceSoap12" type="tns:SearchServiceSoap">
+    <soap12:binding transport="http://schemas.xmlsoap.org/soap/http" />
+    <wsdl:operation name="Search">
+      <soap12:operation soapAction="http://epnet.com/webservices/SearchService/2007/07/Search" style="document" />
+      <wsdl:input>
+        <soap12:body use="literal" />
+        <soap12:header message="tns:SearchAuthorizationHeader" part="AuthorizationHeader" use="literal" />
+      </wsdl:input>
+      <wsdl:output>
+        <soap12:body use="literal" />
+      </wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="Info">
+      <soap12:operation soapAction="http://epnet.com/webservices/SearchService/2007/07/Info" style="document" />
+      <wsdl:input>
+        <soap12:body use="literal" />
+        <soap12:header message="tns:InfoAuthorizationHeader" part="AuthorizationHeader" use="literal" />
+      </wsdl:input>
+      <wsdl:output>
+        <soap12:body use="literal" />
+      </wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="Browse">
+      <soap12:operation soapAction="http://epnet.com/webservices/SearchService/2007/07/Browse" style="document" />
+      <wsdl:input>
+        <soap12:body use="literal" />
+        <soap12:header message="tns:BrowseAuthorizationHeader" part="AuthorizationHeader" use="literal" />
+      </wsdl:input>
+      <wsdl:output>
+        <soap12:body use="literal" />
+      </wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="AuthoritySearch">
+      <soap12:operation soapAction="http://epnet.com/webservices/SearchService/2007/07/AuthoritySearch" style="document" />
+      <wsdl:input>
+        <soap12:body use="literal" />
+        <soap12:header message="tns:AuthoritySearchAuthorizationHeader" part="AuthorizationHeader" use="literal" />
+      </wsdl:input>
+      <wsdl:output>
+        <soap12:body use="literal" />
+      </wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="GetClusters">
+      <soap12:operation soapAction="http://epnet.com/webservices/SearchService/2007/07/GetClusters" style="document" />
+      <wsdl:input>
+        <soap12:body use="literal" />
+        <soap12:header message="tns:GetClustersAuthorizationHeader" part="AuthorizationHeader" use="literal" />
+      </wsdl:input>
+      <wsdl:output>
+        <soap12:body use="literal" />
+      </wsdl:output>
+    </wsdl:operation>
+  </wsdl:binding>
+  <wsdl:binding name="SearchServiceHttpGet" type="tns:SearchServiceHttpGet">
+    <http:binding verb="GET" />
+  </wsdl:binding>
+  <wsdl:binding name="SearchServiceHttpPost" type="tns:SearchServiceHttpPost">
+    <http:binding verb="POST" />
+  </wsdl:binding>
+  <wsdl:service name="SearchService">
+    <wsdl:documentation xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/">The Search Service provides access to EBSCOhost powerful reference system through a variety of proprietary web methods.  Using this service, you can search and browse full text databases and popular databases from leading information providers. The comprehensive databases range from general reference collections to specially designed, subject-specific databases for public, academic, medical, corporate and school libraries. </wsdl:documentation>
+    <wsdl:port name="SearchServiceSoap" binding="tns:SearchServiceSoap">
+      <soap:address location="http://eit.ebscohost.com/Services/SearchService.asmx" />
+    </wsdl:port>
+    <wsdl:port name="SearchServiceSoap12" binding="tns:SearchServiceSoap12">
+      <soap12:address location="http://eit.ebscohost.com/Services/SearchService.asmx" />
+    </wsdl:port>
+    <wsdl:port name="SearchServiceHttpGet" binding="tns:SearchServiceHttpGet">
+      <http:address location="http://eit.ebscohost.com/Services/SearchService.asmx" />
+    </wsdl:port>
+    <wsdl:port name="SearchServiceHttpPost" binding="tns:SearchServiceHttpPost">
+      <http:address location="http://eit.ebscohost.com/Services/SearchService.asmx" />
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>

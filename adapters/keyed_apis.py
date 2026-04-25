@@ -525,8 +525,10 @@ class EbscoApiAdapter(KeyedApiAdapter):
             "format":   "detailed",
             "startrec": "1",
         }
+        # EIT date limiting is done via query syntax — no standalone date param.
+        # Append DT1/DT2 limiters the same way EBSCOhost search UI does.
         if era_start and era_end:
-            params["date"] = f"{era_start}-{era_end}"
+            params["query"] = f"{query} AND DT1:{era_start}0101-{era_end}1231"
 
         url = f"{self._EIT_URL}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(url, headers={"Accept": "application/xml"}, method="GET")

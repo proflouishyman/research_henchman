@@ -221,8 +221,10 @@ def _extract_text(path: Path) -> Tuple[str, Dict[str, Any]]:
 def _extract_docx(path: Path) -> str:
     with zipfile.ZipFile(path) as archive:
         xml = archive.read("word/document.xml").decode("utf-8", errors="ignore")
-    xml = re.sub(r"</w:p>", "\n", xml)
-    xml = re.sub(r"</w:tr>", "\n", xml)
+    # Use double newline so each Word paragraph becomes a blank-line-separated block,
+    # which is what _annotate_paragraphs and _split_paragraphs expect.
+    xml = re.sub(r"</w:p>", "\n\n", xml)
+    xml = re.sub(r"</w:tr>", "\n\n", xml)
     xml = re.sub(r"<[^>]+>", " ", xml)
     return html_unescape(xml)
 
@@ -527,8 +529,8 @@ def _parse_para_rows(response: str, chapter: str) -> List[Dict[str, Any]]:
 
 
 # Maximum paragraphs to send through LLM (after heuristic ranking).
-# 40 × 4-per-batch = 10 batched calls + 1 thesis call ≈ 11 total LLM calls.
-_MAX_LLM_PARAGRAPHS = 40
+# 60 × 4-per-batch = 15 batched calls + 1 thesis call ≈ 16 total LLM calls.
+_MAX_LLM_PARAGRAPHS = 60
 
 
 def _analyze_with_ollama(

@@ -380,44 +380,454 @@ class StatistaPlaywrightAdapter(PlaywrightAdapter):
 
 
 class JstorPlaywrightAdapter(PlaywrightAdapter):
-    """JSTOR browser adapter placeholder implementation."""
+    """JSTOR browser adapter: scrapes search results via an authenticated CDP session."""
 
     source_id = "jstor"
 
+    @staticmethod
+    def _build_search_url(query: str, era_start: Any, era_end: Any) -> str:
+        import urllib.parse as _up
+        encoded = _up.quote_plus(query)
+        url = f"https://www.jstor.org/action/doBasicSearch?Query={encoded}&acc=on&wc=on&so=rel"
+        if era_start and era_end:
+            url += f"&dateRangeFirst={era_start}&dateRangeLast={era_end}"
+        return url
+
+    @staticmethod
+    def _extract_records(page: Any) -> list:
+        try:
+            return page.evaluate("""() => {
+                const results = [];
+                const containers = document.querySelectorAll(
+                    '.result-item, .media-card-outer, article.result, [class*="result-item"], li[class*="result"]'
+                );
+                containers.forEach((el, idx) => {
+                    if (idx >= 10) return;
+                    const getText = sel => {
+                        const node = el.querySelector(sel);
+                        return node ? node.innerText.trim() : '';
+                    };
+                    const getAttr = (sel, attr) => {
+                        const node = el.querySelector(sel);
+                        return node ? (node.getAttribute(attr) || '').trim() : '';
+                    };
+
+                    const title =
+                        getText('.result-item__title a') ||
+                        getText('[class*="media-card"] .title a') ||
+                        getText('h3 a') || getText('h2 a') || '';
+
+                    const authors =
+                        getText('.result-item__contrib') ||
+                        getText('[class*="contrib"]') ||
+                        getText('[class*="author"]') || '';
+
+                    const journal =
+                        getText('.result-item__source') ||
+                        getText('[class*="source"]') ||
+                        getText('[class*="journal"]') || '';
+
+                    const date =
+                        getText('.result-item__pub-date') ||
+                        getText('[class*="pub-date"]') ||
+                        getText('[class*="year"]') || '';
+
+                    const abstract =
+                        getText('[class*="abstract"]') ||
+                        getText('.teaser') || '';
+
+                    const pdfHref =
+                        getAttr('a[href*="/stable/pdf/"]', 'href') ||
+                        getAttr('a.pdf, a[class*="pdf"]', 'href') || '';
+
+                    const detailHref =
+                        getAttr('.result-item__title a', 'href') ||
+                        getAttr('[class*="media-card"] .title a', 'href') ||
+                        getAttr('h3 a, h2 a', 'href') || '';
+
+                    if (title) {
+                        results.push({
+                            title, authors, journal, date, abstract,
+                            pdf_url:    pdfHref  ? 'https://www.jstor.org' + (pdfHref.startsWith('/') ? pdfHref : '/' + pdfHref) : '',
+                            detail_url: detailHref ? 'https://www.jstor.org' + (detailHref.startsWith('/') ? detailHref : '/' + detailHref) : '',
+                        });
+                    }
+                });
+                return results;
+            }""")
+        except Exception:
+            return []
+
+    def _scrape(self, cdp_url: str, query: str, gap_id: str, era_start: Any, era_end: Any, timeout_seconds: int) -> list:
+        from playwright.sync_api import sync_playwright  # type: ignore
+        from .cdp_utils import effective_cdp_url
+
+        effective = effective_cdp_url(cdp_url)
+        search_url = self._build_search_url(query, era_start, era_end)
+        ms = timeout_seconds * 1000
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(effective)
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.new_page()
+            try:
+                page.goto(search_url, timeout=ms, wait_until="domcontentloaded")
+                page.wait_for_load_state("networkidle", timeout=min(ms, 20000))
+                # JSTOR login wall check
+                if "jstor.org/login" in page.url or "Sign In" in (page.title() or ""):
+                    return []
+                return self._extract_records(page)
+            finally:
+                page.close()
+
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._link_seed_result(
-            gap,
-            query,
-            run_dir,
-            note="JSTOR Playwright retrieval pending source-specific workflow; seeded click-through links provided.",
+        import os as _os
+        era_start, era_end = era_years_from_gap(gap)
+        configured_cdp = _os.environ.get("ORCH_PLAYWRIGHT_CDP_URL", "http://localhost:9222")
+        cdp_url = EbscohostPlaywrightAdapter._try_cdp_urls(configured_cdp)
+
+        if not cdp_url:
+            return self._link_seed_result(gap, query, run_dir,
+                note="JSTOR: no CDP session available. Start Chrome with --remote-debugging-port=9222 and log in.")
+
+        try:
+            scraped = self._scrape(cdp_url, query, gap.gap_id, era_start, era_end, timeout_seconds)
+        except Exception as exc:
+            return self._link_seed_result(gap, query, run_dir,
+                note=f"JSTOR scrape failed ({exc!s:.100}); seed links provided.")
+
+        if not scraped:
+            return self._link_seed_result(gap, query, run_dir,
+                note="JSTOR: CDP available but no results extracted (login wall or empty results).")
+
+        rows = []
+        for rec in scraped:
+            has_full = bool(rec.get("pdf_url") or rec.get("detail_url"))
+            has_abstract = bool(rec.get("abstract"))
+            quality_label = "high" if has_full else ("medium" if has_abstract else "seed")
+            rows.append({
+                "title":         rec.get("title", ""),
+                "authors":       rec.get("authors", ""),
+                "journal":       rec.get("journal", ""),
+                "pub_date":      rec.get("date", ""),
+                "abstract":      rec.get("abstract", "")[:2000],
+                "pdf_url":       rec.get("pdf_url", ""),
+                "url":           rec.get("detail_url", "") or rec.get("pdf_url", ""),
+                "query":         query,
+                "gap_id":        gap.gap_id,
+                "quality_label": quality_label,
+                "quality_rank":  90 if quality_label == "high" else (60 if quality_label == "medium" else 20),
+                "source":        "jstor_playwright",
+                "link_type":     "full_text" if has_full else ("abstract" if has_abstract else "record"),
+            })
+
+        root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
+        pulled_docs = sum(1 for r in rows if r["quality_label"] in {"high", "medium"})
+        return SourceResult(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            query=query,
+            gap_id=gap.gap_id,
+            document_count=len(rows),
+            run_dir=root,
+            artifact_type="json_records",
+            status="completed" if pulled_docs > 0 else ("partial" if rows else "failed"),
+            stats={"records": len(rows), "pulled_docs": pulled_docs,
+                   "seed_only": pulled_docs <= 0, "link_mode": "jstor_playwright_cdp"},
         )
 
 
 class ProjectMusePlaywrightAdapter(PlaywrightAdapter):
-    """Project MUSE browser adapter placeholder implementation."""
+    """Project MUSE browser adapter: scrapes search results via an authenticated CDP session."""
 
     source_id = "project_muse"
 
+    @staticmethod
+    def _build_search_url(query: str, era_start: Any, era_end: Any) -> str:
+        import urllib.parse as _up
+        encoded = _up.quote_plus(query)
+        url = f"https://muse.jhu.edu/search?q={encoded}&type=general"
+        if era_start and era_end:
+            url += f"&min_year={era_start}&max_year={era_end}"
+        return url
+
+    @staticmethod
+    def _extract_records(page: Any) -> list:
+        try:
+            return page.evaluate("""() => {
+                const results = [];
+                const containers = document.querySelectorAll(
+                    '.search-result-item, [class*="result-item"], article.result, .result'
+                );
+                containers.forEach((el, idx) => {
+                    if (idx >= 10) return;
+                    const getText = sel => {
+                        const node = el.querySelector(sel);
+                        return node ? node.innerText.trim() : '';
+                    };
+                    const getAttr = (sel, attr) => {
+                        const node = el.querySelector(sel);
+                        return node ? (node.getAttribute(attr) || '').trim() : '';
+                    };
+
+                    const title =
+                        getText('.result-title a') ||
+                        getText('h3 a') || getText('h2 a') ||
+                        getText('[class*="title"] a') || '';
+
+                    const authors =
+                        getText('.result-authors') ||
+                        getText('[class*="author"]') ||
+                        getText('.contrib') || '';
+
+                    const journal =
+                        getText('.result-source') ||
+                        getText('[class*="journal"]') ||
+                        getText('[class*="source"]') || '';
+
+                    const date =
+                        getText('.result-date') ||
+                        getText('[class*="date"]') ||
+                        getText('[class*="year"]') || '';
+
+                    const abstract =
+                        getText('.result-abstract') ||
+                        getText('[class*="abstract"]') || '';
+
+                    const detailHref =
+                        getAttr('.result-title a', 'href') ||
+                        getAttr('h3 a', 'href') || getAttr('h2 a', 'href') ||
+                        getAttr('[class*="title"] a', 'href') || '';
+
+                    const pdfHref = getAttr('a[href*="/pdf/"], a.pdf-link', 'href') || '';
+
+                    if (title) {
+                        const base = 'https://muse.jhu.edu';
+                        results.push({
+                            title, authors, journal, date, abstract,
+                            pdf_url:    pdfHref    ? (pdfHref.startsWith('http') ? pdfHref : base + pdfHref) : '',
+                            detail_url: detailHref ? (detailHref.startsWith('http') ? detailHref : base + detailHref) : '',
+                        });
+                    }
+                });
+                return results;
+            }""")
+        except Exception:
+            return []
+
+    def _scrape(self, cdp_url: str, query: str, gap_id: str, era_start: Any, era_end: Any, timeout_seconds: int) -> list:
+        from playwright.sync_api import sync_playwright  # type: ignore
+        from .cdp_utils import effective_cdp_url
+
+        effective = effective_cdp_url(cdp_url)
+        search_url = self._build_search_url(query, era_start, era_end)
+        ms = timeout_seconds * 1000
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(effective)
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.new_page()
+            try:
+                page.goto(search_url, timeout=ms, wait_until="domcontentloaded")
+                page.wait_for_load_state("networkidle", timeout=min(ms, 20000))
+                # Login wall check
+                if "login" in page.url.lower() or "sign in" in (page.title() or "").lower():
+                    return []
+                return self._extract_records(page)
+            finally:
+                page.close()
+
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._link_seed_result(
-            gap,
-            query,
-            run_dir,
-            note="Project MUSE Playwright retrieval pending source-specific workflow; seeded click-through links provided.",
+        import os as _os
+        era_start, era_end = era_years_from_gap(gap)
+        configured_cdp = _os.environ.get("ORCH_PLAYWRIGHT_CDP_URL", "http://localhost:9222")
+        cdp_url = EbscohostPlaywrightAdapter._try_cdp_urls(configured_cdp)
+
+        if not cdp_url:
+            return self._link_seed_result(gap, query, run_dir,
+                note="Project MUSE: no CDP session available. Start Chrome with --remote-debugging-port=9222 and log in.")
+
+        try:
+            scraped = self._scrape(cdp_url, query, gap.gap_id, era_start, era_end, timeout_seconds)
+        except Exception as exc:
+            return self._link_seed_result(gap, query, run_dir,
+                note=f"Project MUSE scrape failed ({exc!s:.100}); seed links provided.")
+
+        if not scraped:
+            return self._link_seed_result(gap, query, run_dir,
+                note="Project MUSE: CDP available but no results extracted (login wall or empty results).")
+
+        rows = []
+        for rec in scraped:
+            has_full = bool(rec.get("pdf_url") or rec.get("detail_url"))
+            has_abstract = bool(rec.get("abstract"))
+            quality_label = "high" if has_full else ("medium" if has_abstract else "seed")
+            rows.append({
+                "title":         rec.get("title", ""),
+                "authors":       rec.get("authors", ""),
+                "journal":       rec.get("journal", ""),
+                "pub_date":      rec.get("date", ""),
+                "abstract":      rec.get("abstract", "")[:2000],
+                "pdf_url":       rec.get("pdf_url", ""),
+                "url":           rec.get("detail_url", "") or rec.get("pdf_url", ""),
+                "query":         query,
+                "gap_id":        gap.gap_id,
+                "quality_label": quality_label,
+                "quality_rank":  90 if quality_label == "high" else (60 if quality_label == "medium" else 20),
+                "source":        "project_muse_playwright",
+                "link_type":     "full_text" if has_full else ("abstract" if has_abstract else "record"),
+            })
+
+        root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
+        pulled_docs = sum(1 for r in rows if r["quality_label"] in {"high", "medium"})
+        return SourceResult(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            query=query,
+            gap_id=gap.gap_id,
+            document_count=len(rows),
+            run_dir=root,
+            artifact_type="json_records",
+            status="completed" if pulled_docs > 0 else ("partial" if rows else "failed"),
+            stats={"records": len(rows), "pulled_docs": pulled_docs,
+                   "seed_only": pulled_docs <= 0, "link_mode": "project_muse_playwright_cdp"},
         )
 
 
 class ProquestHistoricalNewsPlaywrightAdapter(PlaywrightAdapter):
-    """ProQuest Historical Newspapers browser adapter placeholder implementation."""
+    """ProQuest Historical Newspapers browser adapter: scrapes via authenticated CDP session."""
 
     source_id = "proquest_historical_newspapers"
 
+    @staticmethod
+    def _build_search_url(query: str, era_start: Any, era_end: Any) -> str:
+        import urllib.parse as _up
+        encoded = _up.quote_plus(query)
+        url = f"https://www.proquest.com/hnpnewyorktimes/results/1?q={encoded}&t:ac=subject/NEWSPAPER"
+        if era_start and era_end:
+            url += f"&daterange=custom&startdate={era_start}0101&enddate={era_end}1231"
+        return url
+
+    @staticmethod
+    def _extract_records(page: Any) -> list:
+        try:
+            return page.evaluate("""() => {
+                const results = [];
+                const containers = document.querySelectorAll(
+                    '.resultItem, [data-testid="result-item"], .record, article.result'
+                );
+                containers.forEach((el, idx) => {
+                    if (idx >= 10) return;
+                    const getText = sel => {
+                        const node = el.querySelector(sel);
+                        return node ? node.innerText.trim() : '';
+                    };
+                    const getAttr = (sel, attr) => {
+                        const node = el.querySelector(sel);
+                        return node ? (node.getAttribute(attr) || '').trim() : '';
+                    };
+
+                    const title =
+                        getText('.title a') || getText('h3 a') || getText('h2 a') ||
+                        getText('[class*="title"] a') || '';
+
+                    const authors = getText('[class*="author"]') || getText('.byline') || '';
+                    const source = getText('[class*="pub"]') || getText('.source') || '';
+                    const date = getText('[class*="date"]') || getText('.pubdate') || '';
+                    const abstract = getText('[class*="abstract"]') || getText('.snippet') || '';
+
+                    const detailHref = getAttr('.title a', 'href') || getAttr('h3 a', 'href') || '';
+                    const pdfHref = getAttr('a[href*="pdf"]', 'href') || '';
+
+                    if (title) {
+                        const base = 'https://www.proquest.com';
+                        results.push({
+                            title, authors, journal: source, date, abstract,
+                            pdf_url:    pdfHref    ? (pdfHref.startsWith('http') ? pdfHref : base + pdfHref) : '',
+                            detail_url: detailHref ? (detailHref.startsWith('http') ? detailHref : base + detailHref) : '',
+                        });
+                    }
+                });
+                return results;
+            }""")
+        except Exception:
+            return []
+
+    def _scrape(self, cdp_url: str, query: str, gap_id: str, era_start: Any, era_end: Any, timeout_seconds: int) -> list:
+        from playwright.sync_api import sync_playwright  # type: ignore
+        from .cdp_utils import effective_cdp_url
+
+        effective = effective_cdp_url(cdp_url)
+        search_url = self._build_search_url(query, era_start, era_end)
+        ms = timeout_seconds * 1000
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(effective)
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.new_page()
+            try:
+                page.goto(search_url, timeout=ms, wait_until="domcontentloaded")
+                page.wait_for_load_state("networkidle", timeout=min(ms, 20000))
+                if "login" in page.url.lower() or "sign in" in (page.title() or "").lower():
+                    return []
+                return self._extract_records(page)
+            finally:
+                page.close()
+
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._link_seed_result(
-            gap,
-            query,
-            run_dir,
-            note="ProQuest Historical Newspapers retrieval pending source-specific workflow; seeded click-through links provided.",
+        import os as _os
+        era_start, era_end = era_years_from_gap(gap)
+        configured_cdp = _os.environ.get("ORCH_PLAYWRIGHT_CDP_URL", "http://localhost:9222")
+        cdp_url = EbscohostPlaywrightAdapter._try_cdp_urls(configured_cdp)
+
+        if not cdp_url:
+            return self._link_seed_result(gap, query, run_dir,
+                note="ProQuest Historical Newspapers: no CDP session. Start Chrome with --remote-debugging-port=9222 and log in.")
+
+        try:
+            scraped = self._scrape(cdp_url, query, gap.gap_id, era_start, era_end, timeout_seconds)
+        except Exception as exc:
+            return self._link_seed_result(gap, query, run_dir,
+                note=f"ProQuest Historical Newspapers scrape failed ({exc!s:.100}); seed links provided.")
+
+        if not scraped:
+            return self._link_seed_result(gap, query, run_dir,
+                note="ProQuest Historical Newspapers: CDP available but no results extracted.")
+
+        rows = []
+        for rec in scraped:
+            has_full = bool(rec.get("pdf_url") or rec.get("detail_url"))
+            has_abstract = bool(rec.get("abstract"))
+            quality_label = "high" if has_full else ("medium" if has_abstract else "seed")
+            rows.append({
+                "title":         rec.get("title", ""),
+                "authors":       rec.get("authors", ""),
+                "journal":       rec.get("journal", ""),
+                "pub_date":      rec.get("date", ""),
+                "abstract":      rec.get("abstract", "")[:2000],
+                "pdf_url":       rec.get("pdf_url", ""),
+                "url":           rec.get("detail_url", "") or rec.get("pdf_url", ""),
+                "query":         query,
+                "gap_id":        gap.gap_id,
+                "quality_label": quality_label,
+                "quality_rank":  90 if quality_label == "high" else (60 if quality_label == "medium" else 20),
+                "source":        "proquest_historical_newspapers_playwright",
+                "link_type":     "full_text" if has_full else ("abstract" if has_abstract else "record"),
+            })
+
+        root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
+        pulled_docs = sum(1 for r in rows if r["quality_label"] in {"high", "medium"})
+        return SourceResult(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            query=query,
+            gap_id=gap.gap_id,
+            document_count=len(rows),
+            run_dir=root,
+            artifact_type="json_records",
+            status="completed" if pulled_docs > 0 else ("partial" if rows else "failed"),
+            stats={"records": len(rows), "pulled_docs": pulled_docs,
+                   "seed_only": pulled_docs <= 0, "link_mode": "proquest_historical_cdp"},
         )
 
 
@@ -436,16 +846,137 @@ class AmericasHistoricalNewsPlaywrightAdapter(PlaywrightAdapter):
 
 
 class GalePrimarySourcesPlaywrightAdapter(PlaywrightAdapter):
-    """Gale Primary Sources browser adapter placeholder implementation."""
+    """Gale Primary Sources browser adapter: scrapes via authenticated CDP session."""
 
     source_id = "gale_primary_sources"
 
+    @staticmethod
+    def _build_search_url(query: str, era_start: Any, era_end: Any) -> str:
+        import urllib.parse as _up
+        encoded = _up.quote_plus(query)
+        url = f"https://link.gale.com/apps/resultslist?q={encoded}&source=MOML"
+        if era_start and era_end:
+            url += f"&startDate={era_start}&endDate={era_end}"
+        return url
+
+    @staticmethod
+    def _extract_records(page: Any) -> list:
+        try:
+            return page.evaluate("""() => {
+                const results = [];
+                const containers = document.querySelectorAll(
+                    '.result-item, [class*="resultslist"] li, article.result, .hit'
+                );
+                containers.forEach((el, idx) => {
+                    if (idx >= 10) return;
+                    const getText = sel => {
+                        const node = el.querySelector(sel);
+                        return node ? node.innerText.trim() : '';
+                    };
+                    const getAttr = (sel, attr) => {
+                        const node = el.querySelector(sel);
+                        return node ? (node.getAttribute(attr) || '').trim() : '';
+                    };
+
+                    const title =
+                        getText('[class*="title"] a') ||
+                        getText('h3 a') || getText('h2 a') || '';
+
+                    const authors = getText('[class*="author"]') || getText('.byline') || '';
+                    const journal = getText('[class*="source"]') || getText('[class*="pub"]') || '';
+                    const date = getText('[class*="date"]') || getText('[class*="year"]') || '';
+                    const abstract = getText('[class*="abstract"]') || getText('[class*="snippet"]') || '';
+                    const detailHref = getAttr('[class*="title"] a', 'href') || getAttr('h3 a', 'href') || '';
+                    const pdfHref = getAttr('a[href*="pdf"]', 'href') || '';
+
+                    if (title) {
+                        results.push({
+                            title, authors, journal, date, abstract,
+                            pdf_url:    pdfHref    || '',
+                            detail_url: detailHref || '',
+                        });
+                    }
+                });
+                return results;
+            }""")
+        except Exception:
+            return []
+
+    def _scrape(self, cdp_url: str, query: str, gap_id: str, era_start: Any, era_end: Any, timeout_seconds: int) -> list:
+        from playwright.sync_api import sync_playwright  # type: ignore
+        from .cdp_utils import effective_cdp_url
+
+        effective = effective_cdp_url(cdp_url)
+        search_url = self._build_search_url(query, era_start, era_end)
+        ms = timeout_seconds * 1000
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(effective)
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.new_page()
+            try:
+                page.goto(search_url, timeout=ms, wait_until="domcontentloaded")
+                page.wait_for_load_state("networkidle", timeout=min(ms, 20000))
+                if "login" in page.url.lower() or "sign in" in (page.title() or "").lower():
+                    return []
+                return self._extract_records(page)
+            finally:
+                page.close()
+
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 120) -> SourceResult:
-        return self._link_seed_result(
-            gap,
-            query,
-            run_dir,
-            note="Gale Primary Sources retrieval pending source-specific workflow; seeded click-through links provided.",
+        import os as _os
+        era_start, era_end = era_years_from_gap(gap)
+        configured_cdp = _os.environ.get("ORCH_PLAYWRIGHT_CDP_URL", "http://localhost:9222")
+        cdp_url = EbscohostPlaywrightAdapter._try_cdp_urls(configured_cdp)
+
+        if not cdp_url:
+            return self._link_seed_result(gap, query, run_dir,
+                note="Gale Primary Sources: no CDP session. Start Chrome with --remote-debugging-port=9222 and log in.")
+
+        try:
+            scraped = self._scrape(cdp_url, query, gap.gap_id, era_start, era_end, timeout_seconds)
+        except Exception as exc:
+            return self._link_seed_result(gap, query, run_dir,
+                note=f"Gale Primary Sources scrape failed ({exc!s:.100}); seed links provided.")
+
+        if not scraped:
+            return self._link_seed_result(gap, query, run_dir,
+                note="Gale Primary Sources: CDP available but no results extracted.")
+
+        rows = []
+        for rec in scraped:
+            has_full = bool(rec.get("pdf_url") or rec.get("detail_url"))
+            has_abstract = bool(rec.get("abstract"))
+            quality_label = "high" if has_full else ("medium" if has_abstract else "seed")
+            rows.append({
+                "title":         rec.get("title", ""),
+                "authors":       rec.get("authors", ""),
+                "journal":       rec.get("journal", ""),
+                "pub_date":      rec.get("date", ""),
+                "abstract":      rec.get("abstract", "")[:2000],
+                "pdf_url":       rec.get("pdf_url", ""),
+                "url":           rec.get("detail_url", "") or rec.get("pdf_url", ""),
+                "query":         query,
+                "gap_id":        gap.gap_id,
+                "quality_label": quality_label,
+                "quality_rank":  90 if quality_label == "high" else (60 if quality_label == "medium" else 20),
+                "source":        "gale_primary_sources_playwright",
+                "link_type":     "full_text" if has_full else ("abstract" if has_abstract else "record"),
+            })
+
+        root = write_json_records(rows, run_dir, gap.gap_id, self.source_id, query)
+        pulled_docs = sum(1 for r in rows if r["quality_label"] in {"high", "medium"})
+        return SourceResult(
+            source_id=self.source_id,
+            source_type=self.source_type,
+            query=query,
+            gap_id=gap.gap_id,
+            document_count=len(rows),
+            run_dir=root,
+            artifact_type="json_records",
+            status="completed" if pulled_docs > 0 else ("partial" if rows else "failed"),
+            stats={"records": len(rows), "pulled_docs": pulled_docs,
+                   "seed_only": pulled_docs <= 0, "link_mode": "gale_primary_sources_cdp"},
         )
 
 

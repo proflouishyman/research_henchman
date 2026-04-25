@@ -464,34 +464,53 @@ def _build_paragraph_prompt(
     chapter_role: str,
     prev_para: str,
 ) -> str:
-    """Focused prompt for a single paragraph with full argument context."""
+    """Paragraph-level gap prompt. Context is descriptive only — never an excuse
+    for skipping a citation. Forces claim enumeration before judgment."""
     ctx_parts: List[str] = []
     if thesis:
-        ctx_parts.append(f"MANUSCRIPT THESIS: {thesis[:200]}")
+        ctx_parts.append(f"Manuscript thesis: {thesis[:200]}")
     if chapter_role:
-        ctx_parts.append(f"THIS CHAPTER'S ROLE: {chapter_role[:200]}")
+        ctx_parts.append(f"This chapter's role: {chapter_role[:200]}")
     if prev_para:
-        ctx_parts.append(f"PRECEDING PARAGRAPH (context): {prev_para[:300]}")
+        ctx_parts.append(f"Preceding paragraph (context only): {prev_para[:300]}")
     context_block = "\n".join(ctx_parts)
 
-    return f"""{context_block}
+    return f"""You are a rigorous academic fact-checker auditing a manuscript for missing citations. \
+Your job is to flag every factual claim that lacks an inline citation. You are NOT evaluating \
+whether claims are true or reasonable — only whether they are sourced.
 
-PARAGRAPH TO ANALYZE (from chapter "{chapter}"):
+BACKGROUND (for understanding what the claim is about — NOT for judging whether it needs a citation):
+{context_block}
+
+PARAGRAPH TO AUDIT (from chapter "{chapter}"):
 {para}
 
-Does this paragraph make any claims that lack adequate supporting evidence?
-Consider its position in the argument above when judging whether a claim needs citation.
+STEP 1 — Enumerate every factual assertion. A factual assertion is ANY of:
+  - A statistic, number, percentage, dollar amount, date, or quantity
+  - A historical event, action, or decision attributed to a person, company, or institution
+  - A causal claim ("X led to Y", "because of X", "X enabled Y")
+  - A comparative claim ("the largest", "the first", "more than", "unprecedented")
+  - A claim about what someone said, believed, decided, or intended
+  - A description of market conditions, consumer behavior, technology adoption, or industry trends
+  - A specific named anecdote presented as fact
 
-If yes, return a JSON array of gap objects. If no gaps, return [].
-Each gap must have:
+STEP 2 — Citation test: a claim is a GAP if the paragraph does NOT contain an inline citation \
+for it. Inline citations are: footnote markers, parenthetical author-date (Smith 2003), or \
+explicit attribution to a named locatable source. These do NOT count: "scholars argue", \
+"studies show", "many believe", author narrative authority, hedging language ("perhaps", \
+"arguably"), or plausibility.
+
+STEP 3 — Do NOT excuse claims because they sound reasonable, fit the thesis, or seem like \
+common knowledge. Every uncited factual assertion is a gap. Default to flagging. \
+Return [] ONLY when the paragraph contains zero factual assertions of the types above.
+
+Return ONLY a JSON array (no preamble, no fences). Each object:
   chapter           — "{chapter}"
-  claim_text        — the specific unsupported claim (1-2 sentences)
-  gap_type          — "explicit" or "implicit"
-  priority          — "high", "medium", or "low"
-  suggested_queries — 2-3 search strings that would find relevant evidence
-  excerpt           — verbatim text from the paragraph (max 200 chars)
-
-Return ONLY a JSON array. No preamble, no fences.
+  claim_text        — the specific uncited claim (1-2 sentences)
+  gap_type          — "explicit" (stated fact/number/event) or "implicit" (causal/comparative claim)
+  priority          — "high" (statistic, named event, central causal claim), "medium" (comparative/descriptive), "low" (background framing)
+  suggested_queries — 2-3 search strings to locate supporting evidence
+  excerpt           — verbatim text containing the claim (max 200 chars)
 """
 
 

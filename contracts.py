@@ -73,6 +73,7 @@ class RunStatus(str, Enum):
     PULLING = "pulling"
     INGESTING = "ingesting"
     FITTING = "fitting"
+    RENDERING = "rendering"
     COMPLETE = "complete"
     FAILED = "failed"
     PARTIAL = "partial"
@@ -236,6 +237,22 @@ class FitResult:
     error: str = ""
 
 
+# Layer 6 output
+
+
+@dataclass
+class RenderResult:
+    """Chart rendering result scoped to one gap."""
+
+    gap_id: str = ""
+    run_id: str = ""
+    charts_generated: int = 0
+    chart_paths: List[str] = field(default_factory=list)
+    skipped: bool = False
+    skip_reason: str = ""
+    error: str = ""
+
+
 @dataclass
 class RunRecord:
     """Persisted run state. Owns manuscript->plan->execution lifecycle."""
@@ -249,6 +266,7 @@ class RunRecord:
     pull_results: List[GapPullResult] = field(default_factory=list)
     ingest_results: List[IngestResult] = field(default_factory=list)
     fit_results: List[FitResult] = field(default_factory=list)
+    render_results: List[RenderResult] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
     error: str = ""

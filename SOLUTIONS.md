@@ -1,3 +1,26 @@
+[2026-04-25] - Layer 6: Chart Generation from Data Pull Artifacts
+
+Problem
+Raw pull outputs were JSON files only. No visual representation of data; user had no way to quickly understand what BLS, FRED, World Bank, or EBSCO pulls actually returned.
+
+Root Cause
+Pipeline had no rendering stage. All data artifacts stayed as machine-readable JSON in pull_outputs/.
+
+Solution
+Added Layer 6 render stage: `layers/render.py`, `RenderResult` contract, `RunStatus.RENDERING`, `ORCH_AUTO_RENDER_CHARTS` setting. Pipeline runs render after fit, before export. Charts are written as PNG into the same source directory as JSON artifacts so artifact_export.py picks them up automatically.
+
+Chart types per source:
+- bls: line chart of time-series CPI/economic data points (year+period → value)
+- fred: horizontal timeline bar chart showing observation span per series, colored by popularity
+- ebsco_api/ebscohost: stacked bar chart of publication year distribution by quality label (high/medium/seed)
+- world_bank: horizontal bar chart of indicator count by topic
+- bea/census/ilostat/oecd: skipped (return metadata only, no plottable values)
+
+Gap _README.md files now embed chart images via markdown `![caption](documents/<source>/chart_*.png)` via new `_chart_section()` in artifact_export.py.
+
+Notes
+12 new tests in tests/test_render.py cover all source types, empty data, unresolvable gaps, and skipped sources. matplotlib Agg backend used for headless rendering (no display required).
+
 [2026-04-25] - Gap Analysis: Batched Paragraph-Level LLM Analysis Replaces Single Manuscript Call
 
 Problem

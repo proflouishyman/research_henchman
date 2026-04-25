@@ -14,6 +14,7 @@ from layers.fit import fit_gap
 from layers.ingest import ingest_gap_result
 from layers.pull import build_source_availability, pull_for_plan
 from layers.reflection import reflect_on_gaps
+from layers.render import render_gap_result
 from store import OrchestratorStore, now_utc
 
 
@@ -234,6 +235,24 @@ def run_orchestration(
             emit("fitting", "completed", "Fit scoring complete", {"links_scored": links_scored})
         except Exception as exc:  # noqa: BLE001 - fit failure does not fail run.
             emit("fitting", "failed", str(exc)[:200], {"traceback": traceback.format_exc()[-1200:]})
+
+    render_results = []
+    if settings.auto_render_charts:
+        try:
+            save(RunStatus.RENDERING, "Generating data charts")
+            emit("rendering", "started", f"Rendering charts for {len(pull_results)} gaps")
+
+            for idx, pull_result in enumerate(pull_results, start=1):
+                detail = f"Rendering gap {idx}/{len(pull_results)}: {pull_result.gap_id}"
+                save(RunStatus.RENDERING, detail)
+                emit("rendering", "progress", detail, {"gap_id": pull_result.gap_id, "position": f"{idx}/{len(pull_results)}"})
+                render_results.append(render_gap_result(pull_result, settings, run_id))
+
+            rec.render_results = render_results
+            charts_total = sum(r.charts_generated for r in render_results)
+            emit("rendering", "completed", f"Generated {charts_total} charts", {"charts_total": charts_total})
+        except Exception as exc:  # noqa: BLE001 - render failure does not fail run.
+            emit("rendering", "failed", str(exc)[:200], {"traceback": traceback.format_exc()[-1200:]})
 
     had_unresolvable = any(row.status == "unresolvable" for row in pull_results)
     final_status = RunStatus.PARTIAL if had_unresolvable else RunStatus.COMPLETE

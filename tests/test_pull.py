@@ -115,7 +115,9 @@ def test_build_source_availability_marks_missing_keys(settings_factory, monkeypa
     availability = pull.build_source_availability(settings)
 
     assert "world_bank" in availability.free_apis
-    assert "bls" in availability.missing_keys
+    # BLS API v2 works without a key — it is always available, never missing
+    assert "bls" in availability.keyed_apis
+    assert "bls" not in availability.missing_keys
     assert availability.playwright_unavailable_reason
 
 

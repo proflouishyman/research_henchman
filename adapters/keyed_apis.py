@@ -71,11 +71,19 @@ class KeyedApiAdapter(PullAdapter):
 
 
 class BlsAdapter(KeyedApiAdapter):
-    """BLS public data API v2."""
+    """BLS public data API v2.
+
+    Registration key is optional — unauthenticated requests work at 25/day.
+    Key improves rate limit to 500/day but is never required.
+    """
 
     source_id = "bls"
     env_key = "BLS_API_KEY"
     env_aliases = ["BLS_REGISTRATION_KEY"]
+
+    def has_credentials(self) -> bool:
+        # BLS API v2 works without a key; treat as always available.
+        return True
 
     def pull(self, gap: PlannedGap, query: str, run_dir: str, timeout_seconds: int = 60) -> SourceResult:
         try:
@@ -83,12 +91,14 @@ class BlsAdapter(KeyedApiAdapter):
             # Fall back to a recent 5-year window when era bounds are unavailable.
             bls_start = str(era_start) if era_start is not None else "2019"
             bls_end = str(era_end) if era_end is not None else "2024"
-            payload = {
+            payload: Dict[str, Any] = {
                 "seriesid": ["CUUR0000SA0"],
                 "startyear": bls_start,
                 "endyear": bls_end,
-                "registrationkey": self.api_key,
             }
+            # Registration key raises rate limit from 25 to 500/day.
+            if self.api_key:
+                payload["registrationkey"] = self.api_key
             req = urllib.request.Request(
                 "https://api.bls.gov/publicAPI/v2/timeseries/data/",
                 data=json.dumps(payload).encode("utf-8"),

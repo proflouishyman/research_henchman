@@ -25,6 +25,80 @@ EXPLICIT_PATTERNS = [
     re.compile(r"\[(CHECK THIS|FIND STAT|ADD SOURCE)\]", re.IGNORECASE),
 ]
 
+# ── Paragraph suspicion heuristics ───────────────────────────────────────────
+
+_RE_CAUSAL    = re.compile(r"\b(because|led to|resulted in|caused|due to|therefore|consequently|thus|hence)\b", re.IGNORECASE)
+_RE_QUANT     = re.compile(r"\b\d{1,3}(?:,\d{3})*(?:\.\d+)?%|\$\s?\d[\d,]*|\b\d{4}\b|\b\d+(?:\.\d+)?\s*(billion|million|thousand|percent)\b", re.IGNORECASE)
+_RE_SUPERLAT  = re.compile(r"\b(most|largest|fastest|highest|lowest|best|worst|first|only|unprecedented|dramatic|significant|substantial)\b", re.IGNORECASE)
+_RE_HEDGE     = re.compile(r"\b(perhaps|maybe|likely|appears|seems|suggests|could|might|possibly|probably|arguably)\b", re.IGNORECASE)
+_RE_CITATION  = re.compile(r"\(\w[^)]{1,40}\d{4}\)|\[\d+\]|doi:|https?://|cf\.\s|ibid\.|op\.cit\.|et al\.", re.IGNORECASE)
+_RE_EXPLICIT  = re.compile(r"TODO|FIXME|INSERT|\[citation needed\]|\[CHECK|FIND STAT|ADD SOURCE|PLACEHOLDER", re.IGNORECASE)
+
+
+def _score_paragraph(text: str) -> int:
+    """Heuristic suspicion score 0-100. Higher = more likely to contain evidence gaps."""
+    if len(text.split()) < 8:
+        return 0
+    causal   = len(_RE_CAUSAL.findall(text))
+    quant    = len(_RE_QUANT.findall(text))
+    superlat = len(_RE_SUPERLAT.findall(text))
+    hedge    = len(_RE_HEDGE.findall(text))
+    cited    = len(_RE_CITATION.findall(text))
+    explicit = len(_RE_EXPLICIT.findall(text))
+
+    score = explicit * 35  # explicit markers are certain gaps
+    if cited == 0:
+        score += causal * 18 + quant * 15 + superlat * 10 + hedge * 8
+    else:
+        # citations mitigate but don't eliminate concern
+        score += causal * 6 + quant * 5 + superlat * 3 + hedge * 3
+    return min(score, 100)
+
+
+def _split_paragraphs(text: str, min_words: int = 8) -> List[str]:
+    """Split raw text on blank lines; discard very short fragments."""
+    blocks = re.split(r"\n\s*\n", text)
+    result = []
+    for block in blocks:
+        clean = re.sub(r"\s+", " ", block).strip()
+        if len(clean.split()) >= min_words:
+            result.append(clean)
+    return result
+
+
+def _annotate_paragraphs(text: str) -> List[Dict[str, Any]]:
+    """Return list of {chapter, text} dicts preserving blank-line paragraph breaks.
+
+    Uses heading detection from _split_sections logic but operates on raw text
+    so blank-line paragraph boundaries are preserved.
+    """
+    chapter = "Manuscript Body"
+    annotated: List[Dict[str, Any]] = []
+    for block in re.split(r"\n\s*\n", text):
+        clean = re.sub(r"\s+", " ", block).strip()
+        if not clean:
+            continue
+        # Reuse heading detection
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        first = lines[0] if lines else ""
+        low = first.lower()
+        is_heading = (
+            re.match(r"^chapter\s+[a-z0-9ivx]+", low)
+            or low.startswith("introduction")
+            or low.startswith("conclusion")
+            or re.match(r"^(part|section)\s+[ivx0-9]+", low)
+            or (first.isupper() and 2 <= len(first.split()) <= 12 and len(first) < 100)
+        )
+        if is_heading:
+            chapter = first
+            body = " ".join(lines[1:]).strip()
+            if len(body.split()) >= 8:
+                annotated.append({"chapter": chapter, "text": body})
+        else:
+            if len(clean.split()) >= 8:
+                annotated.append({"chapter": chapter, "text": clean})
+    return annotated
+
 
 def analyze_manuscript(
     manuscript_path: str,
@@ -358,28 +432,66 @@ def _analyze_heuristic(
     )
 
 
-def _build_section_prompt(chapter: str, section_text: str, max_chars: int = 6000) -> str:
-    truncated = section_text[:max_chars]
-    return f"""You are a research editor. Find EVERY evidentiary gap in the section below.
-Be exhaustive — do not stop early, do not self-limit. Include ALL gaps you find.
+def _summarize_manuscript_thesis(text: str, client: Any) -> str:
+    """One-sentence overall argument of the manuscript (cheap single call).
+    Raises on LLM failure so callers can record the error."""
+    sample = text[:6000]
+    prompt = (
+        "Read the opening of this manuscript and state its central argument or thesis "
+        "in ONE sentence. Return only that sentence, nothing else.\n\nMANUSCRIPT OPENING:\n" + sample
+    )
+    return client.complete(prompt=prompt).strip()
 
-A gap is a place where the text makes a claim that lacks adequate supporting evidence:
-  EXPLICIT: author flagged it (TODO, [citation needed], INSERT, PLACEHOLDER, [FIND STAT]).
-  IMPLICIT: evidence is absent (hedged language with no citations, quantitative claims
-            without data sources, causal claims without references).
 
-For each gap return a JSON object with:
-  chapter         — \"{chapter}\"
-  claim_text      — the specific claim needing evidence (1-2 sentences)
-  gap_type        — \"explicit\" or \"implicit\"
-  priority        — \"high\", \"medium\", or \"low\"
-  suggested_queries — 2-3 search strings to find evidence (array)
-  excerpt         — verbatim text revealing the gap (max 200 chars)
+def _summarize_chapter_role(chapter: str, body: str, thesis: str, client: Any) -> str:
+    """One-sentence role of this chapter in advancing the overall argument.
+    Returns empty string on failure — chapter context is nice-to-have, not required."""
+    context = f"Manuscript thesis: {thesis}\n\n" if thesis else ""
+    prompt = (
+        f"{context}What role does the chapter \"{chapter}\" play in advancing "
+        "the manuscript's argument? Answer in ONE sentence.\n\nCHAPTER OPENING:\n" + body[:2000]
+    )
+    try:
+        return client.complete(prompt=prompt).strip()
+    except Exception:
+        return ""
 
-Return ONLY a JSON array (no preamble, no fences). If there are no gaps return [].
 
-SECTION — {chapter}:
-{truncated}
+def _build_paragraph_prompt(
+    para: str,
+    chapter: str,
+    thesis: str,
+    chapter_role: str,
+    prev_para: str,
+) -> str:
+    """Focused prompt for a single paragraph with full argument context."""
+    ctx_parts: List[str] = []
+    if thesis:
+        ctx_parts.append(f"MANUSCRIPT THESIS: {thesis[:200]}")
+    if chapter_role:
+        ctx_parts.append(f"THIS CHAPTER'S ROLE: {chapter_role[:200]}")
+    if prev_para:
+        ctx_parts.append(f"PRECEDING PARAGRAPH (context): {prev_para[:300]}")
+    context_block = "\n".join(ctx_parts)
+
+    return f"""{context_block}
+
+PARAGRAPH TO ANALYZE (from chapter "{chapter}"):
+{para}
+
+Does this paragraph make any claims that lack adequate supporting evidence?
+Consider its position in the argument above when judging whether a claim needs citation.
+
+If yes, return a JSON array of gap objects. If no gaps, return [].
+Each gap must have:
+  chapter           — "{chapter}"
+  claim_text        — the specific unsupported claim (1-2 sentences)
+  gap_type          — "explicit" or "implicit"
+  priority          — "high", "medium", or "low"
+  suggested_queries — 2-3 search strings that would find relevant evidence
+  excerpt           — verbatim text from the paragraph (max 200 chars)
+
+Return ONLY a JSON array. No preamble, no fences.
 """
 
 
@@ -400,17 +512,20 @@ def _parse_gap_json(response: str) -> List[Dict[str, Any]]:
     return [row for row in payload if isinstance(row, dict)]
 
 
-def _parse_section_rows(response: str, chapter: str) -> List[Dict[str, Any]]:
-    """Parse LLM response for one section; fall back to empty list on error."""
+def _parse_para_rows(response: str, chapter: str) -> List[Dict[str, Any]]:
+    """Parse LLM response for one paragraph; return empty list on any error."""
     try:
         rows = _parse_gap_json(response)
-        # Back-fill chapter if LLM omitted it
         for row in rows:
             if not str(row.get("chapter", "")).strip():
                 row["chapter"] = chapter
         return rows
     except Exception:
         return []
+
+
+# Maximum paragraphs to send through LLM (after heuristic ranking).
+_MAX_LLM_PARAGRAPHS = 80
 
 
 def _analyze_with_ollama(
@@ -421,10 +536,6 @@ def _analyze_with_ollama(
     settings: OrchestratorSettings,
     emit_event: Optional[Any] = None,
 ) -> GapMap:
-    sections = _split_sections(text)
-    # Section char budget: leave room for prompt overhead
-    section_char_cap = min(settings.gap_analysis_max_chars, 6000)
-
     client = make_llm_client(
         settings,
         model=settings.gap_analysis_model,
@@ -432,26 +543,85 @@ def _analyze_with_ollama(
         temperature=0.1,
     )
 
-    all_rows: List[Dict[str, Any]] = []
+    # ── Stage 1: build argument context (2 + N cheap calls) ──────────────────
+    if emit_event:
+        emit_event(stage="analyzing", status="progress",
+                   message="Building manuscript argument context…", meta={})
+
     first_error: Optional[str] = None
-    for sec_idx, section in enumerate(sections, start=1):
-        chapter = str(section.get("heading", "Manuscript Body")).strip() or "Manuscript Body"
-        body = " ".join(section.get("lines", []))
-        if not body.strip():
-            continue
+    try:
+        thesis = _summarize_manuscript_thesis(text, client)
+    except Exception as exc:
+        first_error = str(exc)[:200]
+        thesis = ""
+
+    annotated = _annotate_paragraphs(text)  # [{chapter, text}, …]
+
+    # Summarize each chapter once (deduplicated)
+    chapter_roles: Dict[str, str] = {}
+    seen_chapters = list(dict.fromkeys(p["chapter"] for p in annotated))
+    for ch_idx, chapter in enumerate(seen_chapters, start=1):
+        if emit_event:
+            emit_event(
+                stage="analyzing", status="progress",
+                message=f"Mapping chapter {ch_idx}/{len(seen_chapters)}: {chapter[:60]}",
+                meta={"chapter": chapter, "chapter_idx": ch_idx, "total_chapters": len(seen_chapters)},
+            )
+        # Collect this chapter's paragraphs as its body text
+        chapter_body = " ".join(p["text"] for p in annotated if p["chapter"] == chapter)
+        chapter_roles[chapter] = _summarize_chapter_role(chapter, chapter_body, thesis, client)
+
+    # ── Stage 2: heuristic scoring + ranking ─────────────────────────────────
+    for para in annotated:
+        para["score"] = _score_paragraph(para["text"])
+
+    # Sort descending by suspicion; keep document order within ties via stable sort
+    ranked = sorted(annotated, key=lambda p: p["score"], reverse=True)
+    # Discard paragraphs with score 0 (unambiguously non-suspect)
+    ranked = [p for p in ranked if p["score"] > 0]
+    top = ranked[:_MAX_LLM_PARAGRAPHS]
+
+    # Restore original document order for sliding-window prev_para to make sense
+    original_indices = {id(p): i for i, p in enumerate(annotated)}
+    top_sorted = sorted(top, key=lambda p: original_indices.get(id(p), 0))
+
+    if emit_event:
+        emit_event(
+            stage="analyzing", status="progress",
+            message=f"Selected {len(top_sorted)} paragraphs for deep analysis (of {len(annotated)} total)",
+            meta={"total_paragraphs": len(annotated), "selected": len(top_sorted)},
+        )
+
+    # ── Stage 3: per-paragraph LLM analysis with sliding context ─────────────
+    all_rows: List[Dict[str, Any]] = []
+
+    # Build a fast lookup: paragraph text → index in annotated for prev_para
+    annotated_texts = [p["text"] for p in annotated]
+
+    for para_idx, para in enumerate(top_sorted, start=1):
+        chapter = para["chapter"]
+        para_text = para["text"]
+        chapter_role = chapter_roles.get(chapter, "")
+
+        # Sliding window: previous paragraph from the same sequence in annotated
+        try:
+            pos = annotated_texts.index(para_text)
+            prev_para = annotated[pos - 1]["text"] if pos > 0 else ""
+        except (ValueError, IndexError):
+            prev_para = ""
 
         if emit_event:
             emit_event(
-                stage="analyzing",
-                status="progress",
-                message=f"Analyzing section {sec_idx}/{len(sections)}: {chapter[:60]}",
-                meta={"section": sec_idx, "total_sections": len(sections), "chapter": chapter},
+                stage="analyzing", status="progress",
+                message=f"Analyzing paragraph {para_idx}/{len(top_sorted)} in '{chapter[:50]}'",
+                meta={"para_idx": para_idx, "total": len(top_sorted),
+                      "chapter": chapter, "score": para["score"]},
             )
 
-        prompt = _build_section_prompt(chapter, body, section_char_cap)
+        prompt = _build_paragraph_prompt(para_text, chapter, thesis, chapter_role, prev_para)
         try:
             response = client.complete(prompt=prompt)
-            rows = _parse_section_rows(response, chapter)
+            rows = _parse_para_rows(response, chapter)
             all_rows.extend(rows)
         except Exception as exc:
             if first_error is None:

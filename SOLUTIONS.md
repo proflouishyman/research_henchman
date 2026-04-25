@@ -1,3 +1,29 @@
+[2026-04-25] - Gap Analysis: Batched Paragraph-Level LLM Analysis Replaces Single Manuscript Call
+
+Problem
+Gap analysis found only 10 gaps max on a 15-chapter manuscript. The per-section LLM call hit context limits and returned a thin sample.
+
+Root Cause
+Analysis made one LLM call per manuscript section, each containing many paragraphs. Context limits (~8K tokens) caused the model to truncate or skip most content. The model also received vague "Consider its position in the argument" framing that allowed rationalizing away gaps.
+
+Solution (per Opus architecture review)
+1. `_annotate_paragraphs()`: Splits full manuscript on blank lines, annotates each block with its current chapter heading. Preserves paragraph boundaries and chapter attribution.
+2. `_score_paragraph()`: Heuristic 0-100 suspicion score using regex signals — causal language, statistics, superlatives, hedges, and explicit markers. Citations reduce but don't eliminate score.
+3. `_MAX_LLM_PARAGRAPHS = 40`: Heuristic pre-filter selects top 40 most suspicious paragraphs, reducing LLM call count.
+4. `_build_batch_prompt()`: Batches 4 paragraphs per LLM call. Context = thesis sentence + chapter title + preceding paragraph only. Adversarial fact-checker framing: enumerate ALL assertions, mechanical citation test, anti-rationalization default. Requires `paragraph_index` field (1-4) in each output row.
+5. `_analyze_with_ollama()` Stage 3 rewrite: Groups top_sorted paragraphs by chapter → chunks into batches of 4 → prev_para lookup uses `{id(p): i}` position map (not `text.index()` which breaks on duplicate text) → routes response rows back to source paragraph via `paragraph_index`.
+6. Dropped per-chapter role summarization (15 extra LLM calls that hurt recall by providing narrative framing excuses).
+7. Expected: ~11 total LLM calls × 30s = 330s for a 15-chapter manuscript.
+
+Notes
+`original_indices = {id(p): i for i, p in enumerate(annotated)}` built in Stage 2 and reused in Stage 3 for prev_para and top_sorted document-order restoration. Text-match lookup via `annotated_texts.index()` was replaced because duplicate paragraph text would return the wrong position.
+
+Opus architecture review recommendations (documented):
+- Keep qwen2.5:7b — gap detection is lexical/structural, not reasoning-heavy; 32B too slow for pipeline budget
+- Drop chapter role summaries — small models use chapter framing as excuse to skip claims
+- Batch 4 paragraphs per call — reduces 80 calls to 10, fits 40 paragraphs in one context window pass
+- Adversarial fact-checker prompt — forces enumeration, mechanical citation test, anti-rationalization
+
 [2026-04-24] - Test False Positive: Empty Per-Source Pull Directory Treated as Failure
 Problem
 `scripts/test_run.py` reported FAIL with "NO FILES in .../oecd" and "NO FILES in .../ilostat" even though the pipeline ran correctly. OECD and ILOSTAT legitimately return no results for e-commerce history queries — they are the wrong domain for that manuscript.

@@ -443,73 +443,56 @@ def _summarize_manuscript_thesis(text: str, client: Any) -> str:
     return client.complete(prompt=prompt).strip()
 
 
-def _summarize_chapter_role(chapter: str, body: str, thesis: str, client: Any) -> str:
-    """One-sentence role of this chapter in advancing the overall argument.
-    Returns empty string on failure — chapter context is nice-to-have, not required."""
-    context = f"Manuscript thesis: {thesis}\n\n" if thesis else ""
-    prompt = (
-        f"{context}What role does the chapter \"{chapter}\" play in advancing "
-        "the manuscript's argument? Answer in ONE sentence.\n\nCHAPTER OPENING:\n" + body[:2000]
-    )
-    try:
-        return client.complete(prompt=prompt).strip()
-    except Exception:
-        return ""
-
-
-def _build_paragraph_prompt(
-    para: str,
+def _build_batch_prompt(
+    batch: List[Dict[str, Any]],
     chapter: str,
     thesis: str,
-    chapter_role: str,
     prev_para: str,
 ) -> str:
-    """Paragraph-level gap prompt. Context is descriptive only — never an excuse
-    for skipping a citation. Forces claim enumeration before judgment."""
+    """Prompt for a batch of up to 4 paragraphs from the same chapter.
+
+    Chapter role summarization is intentionally omitted — per Opus architecture
+    review, per-chapter summaries add latency (15 extra LLM calls) and reduce
+    recall on small models by suggesting narrative framing excuses.
+    Context = thesis + chapter title + preceding paragraph only.
+    """
     ctx_parts: List[str] = []
     if thesis:
-        ctx_parts.append(f"Manuscript thesis: {thesis[:200]}")
-    if chapter_role:
-        ctx_parts.append(f"This chapter's role: {chapter_role[:200]}")
+        ctx_parts.append(f"MANUSCRIPT THESIS: {thesis[:200]}")
+    ctx_parts.append(f"CHAPTER: {chapter}")
     if prev_para:
-        ctx_parts.append(f"Preceding paragraph (context only): {prev_para[:300]}")
+        ctx_parts.append(f"PRECEDING PARAGRAPH (context only, do NOT audit): {prev_para[:300]}")
     context_block = "\n".join(ctx_parts)
 
-    return f"""You are a rigorous academic fact-checker auditing a manuscript for missing citations. \
-Your job is to flag every factual claim that lacks an inline citation. You are NOT evaluating \
-whether claims are true or reasonable — only whether they are sourced.
+    para_block = "\n\n".join(
+        f"[{i+1}] {p['text']}" for i, p in enumerate(batch)
+    )
 
-BACKGROUND (for understanding what the claim is about — NOT for judging whether it needs a citation):
+    return f"""You are a rigorous academic fact-checker. For EACH numbered paragraph below, \
+flag every factual assertion that lacks an inline citation.
+
 {context_block}
 
-PARAGRAPH TO AUDIT (from chapter "{chapter}"):
-{para}
+Factual assertion = ANY of: statistic, date, dollar amount, named historical event or decision, \
+attributed action/belief/intention, causal claim ("X led to Y"), comparative claim ("largest", \
+"first", "unprecedented"), description of market/consumer/industry behavior, specific named anecdote.
 
-STEP 1 — Enumerate every factual assertion. A factual assertion is ANY of:
-  - A statistic, number, percentage, dollar amount, date, or quantity
-  - A historical event, action, or decision attributed to a person, company, or institution
-  - A causal claim ("X led to Y", "because of X", "X enabled Y")
-  - A comparative claim ("the largest", "the first", "more than", "unprecedented")
-  - A claim about what someone said, believed, decided, or intended
-  - A description of market conditions, consumer behavior, technology adoption, or industry trends
-  - A specific named anecdote presented as fact
+Inline citation = footnote marker, (Author Year), or explicit named locatable source.
+NOT citations: "scholars argue", "studies show", hedges ("perhaps", "arguably"), narrative authority, plausibility.
 
-STEP 2 — Citation test: a claim is a GAP if the paragraph does NOT contain an inline citation \
-for it. Inline citations are: footnote markers, parenthetical author-date (Smith 2003), or \
-explicit attribution to a named locatable source. These do NOT count: "scholars argue", \
-"studies show", "many believe", author narrative authority, hedging language ("perhaps", \
-"arguably"), or plausibility.
+Default to FLAGGING. Do NOT excuse a claim because it sounds reasonable, fits the thesis, \
+or seems like common knowledge. Return [] for a paragraph ONLY if it has zero factual \
+assertions of the types above.
 
-STEP 3 — Do NOT excuse claims because they sound reasonable, fit the thesis, or seem like \
-common knowledge. Every uncited factual assertion is a gap. Default to flagging. \
-Return [] ONLY when the paragraph contains zero factual assertions of the types above.
+PARAGRAPHS:
+{para_block}
 
 Return ONLY a JSON array (no preamble, no fences). Each object:
-  chapter           — "{chapter}"
+  paragraph_index   — 1, 2, 3, or 4 (which paragraph above)
   claim_text        — the specific uncited claim (1-2 sentences)
   gap_type          — "explicit" (stated fact/number/event) or "implicit" (causal/comparative claim)
-  priority          — "high" (statistic, named event, central causal claim), "medium" (comparative/descriptive), "low" (background framing)
-  suggested_queries — 2-3 search strings to locate supporting evidence
+  priority          — "high" (statistic/named event/central causal claim), "medium" (comparative/descriptive), "low" (background framing)
+  suggested_queries — array of 2-3 search strings to locate supporting evidence
   excerpt           — verbatim text containing the claim (max 200 chars)
 """
 
@@ -544,7 +527,8 @@ def _parse_para_rows(response: str, chapter: str) -> List[Dict[str, Any]]:
 
 
 # Maximum paragraphs to send through LLM (after heuristic ranking).
-_MAX_LLM_PARAGRAPHS = 80
+# 40 × 4-per-batch = 10 batched calls + 1 thesis call ≈ 11 total LLM calls.
+_MAX_LLM_PARAGRAPHS = 40
 
 
 def _analyze_with_ollama(
@@ -576,20 +560,6 @@ def _analyze_with_ollama(
 
     annotated = _annotate_paragraphs(text)  # [{chapter, text}, …]
 
-    # Summarize each chapter once (deduplicated)
-    chapter_roles: Dict[str, str] = {}
-    seen_chapters = list(dict.fromkeys(p["chapter"] for p in annotated))
-    for ch_idx, chapter in enumerate(seen_chapters, start=1):
-        if emit_event:
-            emit_event(
-                stage="analyzing", status="progress",
-                message=f"Mapping chapter {ch_idx}/{len(seen_chapters)}: {chapter[:60]}",
-                meta={"chapter": chapter, "chapter_idx": ch_idx, "total_chapters": len(seen_chapters)},
-            )
-        # Collect this chapter's paragraphs as its body text
-        chapter_body = " ".join(p["text"] for p in annotated if p["chapter"] == chapter)
-        chapter_roles[chapter] = _summarize_chapter_role(chapter, chapter_body, thesis, client)
-
     # ── Stage 2: heuristic scoring + ranking ─────────────────────────────────
     for para in annotated:
         para["score"] = _score_paragraph(para["text"])
@@ -611,40 +581,52 @@ def _analyze_with_ollama(
             meta={"total_paragraphs": len(annotated), "selected": len(top_sorted)},
         )
 
-    # ── Stage 3: per-paragraph LLM analysis with sliding context ─────────────
+    # ── Stage 3: batched LLM analysis (4 paragraphs per call) ───────────────
     all_rows: List[Dict[str, Any]] = []
 
-    # Build a fast lookup: paragraph text → index in annotated for prev_para
-    annotated_texts = [p["text"] for p in annotated]
+    # Group top_sorted by chapter (top_sorted is already in doc order)
+    chapter_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for para in top_sorted:
+        ch = para["chapter"]
+        if ch not in chapter_groups:
+            chapter_groups[ch] = []
+        chapter_groups[ch].append(para)
 
-    for para_idx, para in enumerate(top_sorted, start=1):
-        chapter = para["chapter"]
-        para_text = para["text"]
-        chapter_role = chapter_roles.get(chapter, "")
+    total_batches = sum((len(paras) + 3) // 4 for paras in chapter_groups.values())
+    batch_num = 0
 
-        # Sliding window: previous paragraph from the same sequence in annotated
-        try:
-            pos = annotated_texts.index(para_text)
-            prev_para = annotated[pos - 1]["text"] if pos > 0 else ""
-        except (ValueError, IndexError):
-            prev_para = ""
+    for chapter, paras in chapter_groups.items():
+        for batch_start in range(0, len(paras), 4):
+            batch = paras[batch_start : batch_start + 4]
+            batch_num += 1
 
-        if emit_event:
-            emit_event(
-                stage="analyzing", status="progress",
-                message=f"Analyzing paragraph {para_idx}/{len(top_sorted)} in '{chapter[:50]}'",
-                meta={"para_idx": para_idx, "total": len(top_sorted),
-                      "chapter": chapter, "score": para["score"]},
-            )
+            # prev_para: paragraph immediately before the first paragraph in this batch
+            first_pos = original_indices.get(id(batch[0]), 0)
+            prev_para = annotated[first_pos - 1]["text"] if first_pos > 0 else ""
 
-        prompt = _build_paragraph_prompt(para_text, chapter, thesis, chapter_role, prev_para)
-        try:
-            response = client.complete(prompt=prompt)
-            rows = _parse_para_rows(response, chapter)
-            all_rows.extend(rows)
-        except Exception as exc:
-            if first_error is None:
-                first_error = str(exc)[:200]
+            if emit_event:
+                emit_event(
+                    stage="analyzing", status="progress",
+                    message=f"Analyzing batch {batch_num}/{total_batches} in '{chapter[:50]}' ({len(batch)} paragraphs)",
+                    meta={"batch": batch_num, "total_batches": total_batches,
+                          "chapter": chapter, "para_count": len(batch)},
+                )
+
+            prompt = _build_batch_prompt(batch, chapter, thesis, prev_para)
+            try:
+                response = client.complete(prompt=prompt)
+                rows = _parse_para_rows(response, chapter)
+                # Route each row back to its source paragraph via paragraph_index
+                for row in rows:
+                    try:
+                        idx = max(1, min(int(row.get("paragraph_index", 1)), len(batch)))
+                    except (ValueError, TypeError):
+                        idx = 1
+                    row["chapter"] = batch[idx - 1]["chapter"]
+                all_rows.extend(rows)
+            except Exception as exc:
+                if first_error is None:
+                    first_error = str(exc)[:200]
 
     gaps: List[Gap] = []
     seen_claims: set = set()

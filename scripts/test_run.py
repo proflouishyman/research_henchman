@@ -132,9 +132,15 @@ def check_query_quality(gaps: list) -> tuple[int, int, list[str]]:
     return good, total, warnings
 
 
-def check_pull_artifacts(run: dict, settings_workspace: str) -> tuple[int, list[str]]:
-    """Count artifact files; warn if none found."""
-    warnings = []
+def check_pull_artifacts(run: dict, settings_workspace: str) -> tuple[int, list[str], list[str]]:
+    """Count artifact files; return (total, hard_failures, soft_notes).
+
+    An empty directory for a single source is a soft note — that source may
+    legitimately have no matching content. A hard failure only fires when the
+    entire pull produced zero files across all sources.
+    """
+    hard_failures = []
+    soft_notes = []
     pull_results = run.get("pull_results", []) or []
     total_files = 0
     for pr in pull_results:
@@ -146,11 +152,11 @@ def check_pull_artifacts(run: dict, settings_workspace: str) -> tuple[int, list[
             files = list(p.glob("**/*")) if p.exists() else []
             actual = [f for f in files if f.is_file()]
             if not actual:
-                warnings.append(f"  NO FILES in {run_dir}")
+                soft_notes.append(f"  no files in {run_dir}")
             total_files += len(actual)
     if total_files == 0:
-        warnings.append("  No pull artifacts found on disk")
-    return total_files, warnings
+        hard_failures.append("  No pull artifacts found on disk across any source")
+    return total_files, hard_failures, soft_notes
 
 
 def check_export_bundle(run: dict, base: str) -> list[str]:
@@ -288,9 +294,11 @@ def main():
 
     # 7. Pull artifacts
     print("\n[7] Checking pull artifacts on disk...")
-    total_files, warn_p = check_pull_artifacts(run, ".")
+    total_files, hard_p, soft_p = check_pull_artifacts(run, ".")
     print(f"    Artifact files on disk: {total_files}")
-    for w in warn_p:
+    for w in soft_p:
+        print(f"    (note) {w.strip()}")  # per-source empty is informational only
+    for w in hard_p:
         print(w)
         failures.append(w.strip())
 

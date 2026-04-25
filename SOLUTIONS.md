@@ -1,3 +1,25 @@
+[2026-04-24] - Test False Positive: Empty Per-Source Pull Directory Treated as Failure
+Problem
+`scripts/test_run.py` reported FAIL with "NO FILES in .../oecd" and "NO FILES in .../ilostat" even though the pipeline ran correctly. OECD and ILOSTAT legitimately return no results for e-commerce history queries — they are the wrong domain for that manuscript.
+Root Cause
+`check_pull_artifacts` added a warning for every source run-directory that contained zero files, and the caller added all warnings to the failures list. A per-source empty result is not a system failure — it means the source had no relevant content.
+Solution
+Separated the return value of `check_pull_artifacts` into `hard_failures` (total zero artifacts across all sources — a real system failure) and `soft_notes` (per-source empty directories — informational only). Main function now only adds hard failures to the test failures list; soft notes are printed with "(note)" prefix.
+Notes
+A full-zero artifact run is still a hard failure. Per-source empty is expected and fine.
+
+[2026-04-24] - EBSCO EIT REST API and Playwright CDP Adapter Implemented
+Problem
+EBSCO pulls only returned seed click-through links. Two new retrieval paths (EIT REST API and Playwright CDP) were needed to fetch real article records.
+Root Cause
+EIT API requires a 3-part profile string `<account_id>.<group>.<profile_id>` — the library only provided `eitws2` (the profile ID). EDS API credentials are web-UI logins, not provisioned EDS API profiles. Both require separate provisioning from JHU library IT.
+Solution
+1. Added `_eit_search()` / `_parse_eit_xml()` to `EbscoApiAdapter` in `adapters/keyed_apis.py`. EIT REST endpoint: `http://eit.ebscohost.com/Services/SearchService.asmx/Search`. Profile built from `EBSCO_ACCOUNT_ID.EBSCO_GROUP_ID.EBSCO_PROFILE_ID`. `pull()` now tries EIT → EDS → seed fallback.
+2. Implemented `EbscohostPlaywrightAdapter` in `adapters/playwright_adapters.py` with CDP connect (`http://localhost:9222`), JS DOM extraction via `page.evaluate()`, multi-selector fallbacks for EBSCOhost HTML, detail-page abstract fetching, and era-date URL params (`DT1`/`DT2`).
+3. Saved EIT WSDL to `docs/ebsco_eit_wsdl.xml` and credentials/endpoint documentation to `docs/ebsco_eit_api.md`.
+Notes
+EIT is blocked until JHU library IT provides the account ID prefix (e.g. `s8875689`) so full profile `s8875689.main.eitws2` resolves. Playwright CDP activates once Chrome is launched with `--remote-debugging-port=9222` and user is logged into EBSCOhost.
+
 [2026-04-24] - EbscoApiAdapter Was Not Calling the EDS API
 Problem
 Every EBSCO pull produced only seed links (search.ebscohost.com click-through URLs). No article titles, abstracts, or full text were ever retrieved.

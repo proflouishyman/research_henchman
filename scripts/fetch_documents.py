@@ -263,7 +263,8 @@ def main() -> None:
                 input("Press Enter once you are logged in to all databases... ")
 
     # ── 5. Run the full fetch via library ─────────────────────────────────
-    stats = run_fetch(items, browser_client, emit=_make_emit())
+    on_blocked = None if args.no_prompt else _make_on_blocked()
+    stats = run_fetch(items, browser_client, emit=_make_emit(), on_blocked=on_blocked)
 
     # ── 6. Summary ────────────────────────────────────────────────────────
     print(f"\n{'─'*60}")
@@ -292,6 +293,68 @@ def _make_emit():
         print(f"[{stage}/{status}] {message}")
 
     return _emit
+
+
+def _make_on_blocked():
+    """Return an on_blocked callable that pauses the fetch for manual unblock.
+
+    document_fetch.fetch_seed_page calls on_blocked(item, page_result) when a
+    page is gated by CAPTCHA / login / access-denied. Returning True signals
+    the library to retry the URL once. The user solves the challenge in the
+    live CDP browser session, then presses Enter to continue.
+
+    A best-effort Telegram ping (per AGENTS.md §15) is sent so the user knows
+    to come back and click — failures are silently ignored to keep the pause
+    flow working even without Telegram credentials configured.
+    """
+    def _on_blocked(item, page_result) -> bool:
+        reason = page_result.blocked_reason or "blocked"
+        action = page_result.action_required or "Solve challenge in browser"
+        msg = (
+            f"\n┌─ PAUSED — page blocked ({reason}) ────────────────────────┐\n"
+            f"│ Gap:    {item.gap_id}\n"
+            f"│ Source: {item.source_id}\n"
+            f"│ URL:    {item.url[:90]}\n"
+            f"│ Hint:   {action}\n"
+            f"│ ACTION: solve the challenge in the Chrome window, then press Enter.\n"
+            f"└────────────────────────────────────────────────────────────┘"
+        )
+        print(msg, flush=True)
+        _try_telegram(
+            f"[fetch_documents] PAUSED ({reason}) for {item.gap_id}/{item.source_id}. "
+            f"Solve in browser, then press Enter in terminal."
+        )
+        try:
+            input("Press Enter once unblocked (or Ctrl-C to abort)... ")
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return True
+
+    return _on_blocked
+
+
+def _try_telegram(text: str) -> None:
+    """Best-effort Telegram notification — silent on any failure."""
+    try:
+        settings_path = Path.home() / ".claude" / "settings.json"
+        if not settings_path.exists():
+            return
+        cfg = json.loads(settings_path.read_text())
+        env = cfg.get("env", {})
+        token = env.get("TELEGRAM_BOT_TOKEN")
+        chat = env.get("TELEGRAM_CHAT_ID")
+        if not token or not chat:
+            return
+        body = urllib.parse.urlencode({"chat_id": str(chat), "text": text}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=body,
+            ),
+            timeout=5,
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

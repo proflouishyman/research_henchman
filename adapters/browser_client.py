@@ -377,7 +377,17 @@ class BrowserClient:
 
 _BLOCK_SIGNALS = [
     (re.compile(r"access\s+denied", re.IGNORECASE), "access_denied", "Request access through your institution"),
+    # CAPTCHA family — reCAPTCHA, hCaptcha, "I'm not a robot" widget text,
+    # generic human-verification phrasing, and Cloudflare interstitials.
     (re.compile(r"captcha", re.IGNORECASE), "captcha", "Complete CAPTCHA in browser"),
+    (re.compile(r"i'?m\s+not\s+a\s+robot|i\s+am\s+not\s+a\s+robot", re.IGNORECASE), "captcha", "Solve 'I'm not a robot' challenge in browser"),
+    (re.compile(r"verify\s+(you\s+are\s+(human|a\s+person)|your\s+humanity)", re.IGNORECASE), "captcha", "Complete human-verification challenge in browser"),
+    (re.compile(r"checking\s+your\s+browser|just\s+a\s+moment", re.IGNORECASE), "captcha", "Wait for / solve the Cloudflare challenge in browser"),
+    # Rate-limit / quota — EBSCO Entitlement API and similar return 429 with
+    # phrases like "Rate limit quota violation. Quota limit exceeded."
+    (re.compile(r"too\s+many\s+requests|rate\s+limit|quota\s+(limit\s+)?exceeded|quota\s+violation", re.IGNORECASE), "rate_limit", "Rate-limited — wait or back off and retry"),
+    # Generic explicit-block language (Cloudflare, ezproxy, etc.)
+    (re.compile(r"(you\s+have\s+been|your\s+access\s+has\s+been)\s+blocked", re.IGNORECASE), "access_denied", "Access blocked — contact provider or wait before retry"),
     (re.compile(r"please\s+(log|sign)\s*in", re.IGNORECASE), "login", "Sign in at provider"),
     (re.compile(r"authentication\s+required", re.IGNORECASE), "login", "Sign in at provider"),
     (re.compile(r"your\s+session\s+has\s+expired", re.IGNORECASE), "login", "Re-authenticate at provider"),

@@ -279,6 +279,97 @@ def test_fetch_seed_page_blocked_emits_event_returns_zero(tmp_path: Path) -> Non
     assert any("blocked" in str(e) for e in events)
 
 
+def test_fetch_seed_page_on_blocked_retries_when_handler_returns_true(tmp_path: Path) -> None:
+    """If on_blocked returns True, fetch_seed_page re-fetches the URL once."""
+    from adapters.browser_client import PageResult
+
+    blocked_page = PageResult(
+        url="https://search.ebscohost.com/login.aspx",
+        status_code=200,
+        content=b"<html><body>I'm not a robot</body></html>",
+        content_type="text/html",
+        blocked=True,
+        blocked_reason="captcha",
+        action_required="Solve CAPTCHA in browser",
+    )
+    unblocked_page = PageResult(
+        url="https://search.ebscohost.com/login.aspx",
+        status_code=200,
+        content=b"<html><body>search results</body></html>",
+        content_type="text/html",
+    )
+    eval_after_unblock = [{
+        "title": "Recovered Article", "authors": "A", "source": "J",
+        "date": "", "abstract": "Ab.", "pdf_url": "",
+    }]
+    browser = MagicMock()
+    browser.fetch_with_eval.side_effect = [
+        (blocked_page, None),          # first attempt blocked
+        (unblocked_page, eval_after_unblock),  # retry succeeds
+    ]
+    item = FetchItem(gap_id="G1", source_id="ebsco_api", out_dir=str(tmp_path),
+                     title="EBSCO search", url="https://search.ebscohost.com/x", fetch_type="seed")
+    handler_calls = []
+    count = fetch_seed_page(
+        item, browser,
+        on_blocked=lambda i, p: handler_calls.append((i.gap_id, p.blocked_reason)) or True,
+    )
+    assert browser.fetch_with_eval.call_count == 2
+    assert handler_calls == [("G1", "captcha")]
+    assert count >= 1
+    assert any((tmp_path / FETCH_SUBDIR).glob("*.md"))
+
+
+def test_fetch_seed_page_on_blocked_skips_when_handler_returns_false(tmp_path: Path) -> None:
+    """If on_blocked returns False (e.g. user aborts), fetch_seed_page does not retry."""
+    browser = _make_mock_browser(blocked=True)
+    item = FetchItem(gap_id="G1", source_id="jstor", out_dir=str(tmp_path),
+                     title="JSTOR search", url="https://www.jstor.org/x", fetch_type="seed")
+    count = fetch_seed_page(item, browser, on_blocked=lambda i, p: False)
+    assert count == 0
+    assert browser.fetch_with_eval.call_count == 1
+
+
+def test_detect_blocked_recognises_captcha_phrasing() -> None:
+    """Block detection covers reCAPTCHA, 'I'm not a robot', and Cloudflare wording."""
+    from adapters.browser_client import _detect_blocked
+
+    cases = [
+        b"<html>Please complete the reCAPTCHA</html>",
+        b"<html>I'm not a robot</html>",
+        b"<html>I am not a robot</html>",
+        b"<html>verify you are human before continuing</html>",
+        b"<html>Checking your browser before accessing</html>",
+        b"<html>Just a moment, we're checking your browser</html>",
+    ]
+    for body in cases:
+        blocked, reason, _ = _detect_blocked(body, "https://example.com")
+        assert blocked, f"failed to detect block in: {body!r}"
+        assert reason == "captcha", f"wrong reason {reason!r} for body: {body!r}"
+
+
+def test_detect_blocked_recognises_rate_limit_and_explicit_block() -> None:
+    """Block detection covers rate-limit / quota messages and explicit 'blocked' notices."""
+    from adapters.browser_client import _detect_blocked
+
+    rate_cases = [
+        b"<html>Too Many Requests</html>",
+        b"<html>Rate limit quota violation. Quota limit exceeded.</html>",
+        b"<html>You have been rate limited.</html>",
+    ]
+    for body in rate_cases:
+        blocked, reason, _ = _detect_blocked(body, "https://example.com")
+        assert blocked and reason == "rate_limit", f"unexpected ({blocked},{reason}) for: {body!r}"
+
+    block_cases = [
+        b"<html>You have been blocked from accessing this site.</html>",
+        b"<html>Your access has been blocked due to suspicious activity.</html>",
+    ]
+    for body in block_cases:
+        blocked, reason, _ = _detect_blocked(body, "https://example.com")
+        assert blocked and reason == "access_denied", f"unexpected ({blocked},{reason}) for: {body!r}"
+
+
 def test_fetch_seed_page_generic_saves_html(tmp_path: Path) -> None:
     browser = _make_mock_browser()
     item = FetchItem(gap_id="G1", source_id="gale_primary_sources", out_dir=str(tmp_path),

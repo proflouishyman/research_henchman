@@ -268,13 +268,16 @@ def main() -> None:
 
     # ── 6. Summary ────────────────────────────────────────────────────────
     print(f"\n{'─'*60}")
-    print(f"  Abstracts saved:   {stats.abstracts_saved}")
-    print(f"  Seed pages fetched:{stats.seeds_ok} / {stats.seeds_attempted}  "
+    print(f"  Abstracts saved:    {stats.abstracts_saved}")
+    print(f"  Seed pages fetched: {stats.seeds_ok} / {stats.seeds_attempted}  "
           f"({stats.seeds_failed} failed)")
-    print(f"  PDFs downloaded:   {stats.pdfs_ok} / {stats.pdfs_attempted}  "
+    print(f"  PDFs downloaded:    {stats.pdfs_ok} / {stats.pdfs_attempted}  "
           f"({stats.pdfs_failed} failed)")
-    print(f"  Articles extracted:{stats.articles_extracted}")
-    print(f"  Total OK:          {stats.total_ok}")
+    print(f"  Articles extracted: {stats.articles_extracted}")
+    if stats.inline_pdfs_attempted:
+        print(f"  Article PDFs saved: {stats.inline_pdfs_ok} / {stats.inline_pdfs_attempted}  "
+              f"({stats.inline_pdfs_unavailable} no PDF, {stats.inline_pdfs_failed} failed)")
+    print(f"  Total OK:           {stats.total_ok}")
     print(f"{'─'*60}\n")
     print(f"Done.  Files written under {pull_root}\n")
 

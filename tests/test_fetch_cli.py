@@ -204,3 +204,127 @@ def test_port_from_url_default_fallback() -> None:
     cli = _import_cli()
     # No port in URL should default to 9222
     assert cli._port_from_url("http://localhost") == 9222
+
+
+# ---------------------------------------------------------------------------
+# Test: --no-launch does NOT spawn Chrome when CDP is unreachable
+# ---------------------------------------------------------------------------
+
+def test_no_launch_does_not_spawn_chrome(tmp_path: Path, monkeypatch) -> None:
+    """--no-launch should preserve legacy behavior: print help and wait, never call Popen."""
+    run_dir = _make_pull_dir(tmp_path)
+
+    mock_settings = SimpleNamespace(
+        data_root=tmp_path,
+        playwright_cdp_url="http://127.0.0.1:9222",
+        browser_provider="playwright_cdp",
+        pull_timeout_seconds=30,
+    )
+
+    cli = _import_cli()
+
+    monkeypatch.setattr(cli, "OrchestratorSettings", SimpleNamespace(
+        from_env=lambda: mock_settings,
+    ))
+    monkeypatch.setattr(cli, "_resolve_run", lambda rid, settings: ("run_test", run_dir))
+
+    # Browser is NOT available (CDP unreachable)
+    mock_browser = MagicMock()
+    mock_browser.is_available.return_value = False
+    monkeypatch.setattr(cli, "make_browser_client", lambda s: mock_browser)
+
+    # Track whether Popen was ever called
+    popen_calls = []
+
+    def _fake_popen(*args, **kwargs):
+        popen_calls.append((args, kwargs))
+        raise AssertionError("subprocess.Popen must NOT be called with --no-launch")
+
+    monkeypatch.setattr(cli.subprocess, "Popen", _fake_popen)
+
+    # With --no-launch + --no-prompt, the CLI should print the help box and then
+    # attempt to rebuild the client; if it's still unavailable, it exits with
+    # sys.exit(1).  We catch that exit rather than letting it propagate.
+    monkeypatch.setattr(sys, "argv", [
+        "fetch_documents.py", "--no-launch", "--no-prompt", "--run-id", "run_test",
+    ])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    # The key assertion: Popen was never reached
+    assert not popen_calls, "Popen was called despite --no-launch"
+
+
+# ---------------------------------------------------------------------------
+# Test: default auto-launch calls Popen with --remote-debugging-port and
+#       --user-data-dir, polls CDP, and proceeds normally
+# ---------------------------------------------------------------------------
+
+def test_auto_launch_calls_popen_with_cdp_flags(tmp_path: Path, monkeypatch) -> None:
+    """Default mode: Popen should be called with the right Chrome flags when CDP is unreachable."""
+    run_dir = _make_pull_dir(tmp_path)
+
+    mock_settings = SimpleNamespace(
+        data_root=tmp_path,
+        playwright_cdp_url="http://127.0.0.1:9222",
+        browser_provider="playwright_cdp",
+        pull_timeout_seconds=30,
+    )
+
+    cli = _import_cli()
+
+    monkeypatch.setattr(cli, "OrchestratorSettings", SimpleNamespace(
+        from_env=lambda: mock_settings,
+    ))
+    monkeypatch.setattr(cli, "_resolve_run", lambda rid, settings: ("run_test", run_dir))
+
+    # Browser reports unavailable on first call, then available (after launch).
+    call_count = {"n": 0}
+    mock_browser = MagicMock()
+
+    def _is_available_side_effect():
+        call_count["n"] += 1
+        # First call (before launch) → False; subsequent calls → True
+        return call_count["n"] > 1
+
+    mock_browser.is_available.side_effect = _is_available_side_effect
+    # open_tabs is a no-op for this test; run_fetch returns minimal stats.
+    from adapters.document_fetch import FetchDocumentsStats
+    monkeypatch.setattr(cli, "make_browser_client", lambda s: mock_browser)
+    monkeypatch.setattr(cli, "run_fetch",
+                        lambda items, browser, emit=None: FetchDocumentsStats(items_found=len(items)))
+
+    # Capture Popen arguments without actually spawning Chrome.
+    popen_calls = []
+
+    class _FakeProc:
+        pid = 99999
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr(cli.subprocess, "Popen", _fake_popen)
+
+    # Stub out the CDP poll so the test does not wait 15 s.
+    monkeypatch.setattr(cli, "_cdp_poll_until_ready", lambda url, **kw: True)
+
+    monkeypatch.setattr(sys, "argv", [
+        "fetch_documents.py", "--no-prompt", "--run-id", "run_test",
+    ])
+
+    cli.main()
+
+    # Popen must have been called exactly once.
+    assert len(popen_calls) == 1, f"Expected 1 Popen call, got {len(popen_calls)}"
+    launched_cmd = popen_calls[0]
+
+    # The command must contain --remote-debugging-port= and --user-data-dir=
+    cmd_str = " ".join(launched_cmd)
+    assert "--remote-debugging-port=" in cmd_str, (
+        f"--remote-debugging-port not in Popen cmd: {launched_cmd}"
+    )
+    assert "--user-data-dir=" in cmd_str, (
+        f"--user-data-dir not in Popen cmd: {launched_cmd}"
+    )

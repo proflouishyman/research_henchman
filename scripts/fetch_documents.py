@@ -8,10 +8,11 @@ prompts, and human-readable output.
 
 For each gap the pipeline analyzed, this tool:
   1. Checks which sources returned seed-only results (search URLs, no full text)
-  2. (Optionally) prompts you to log in to library databases via the CDP browser
-  3. Navigates each search URL and extracts article records
-  4. Downloads available PDFs; saves abstracts and HTML where PDFs aren't accessible
-  5. Writes everything to the existing pull-output folder so the export bundle picks it up
+  2. Auto-launches Chrome with CDP if not already reachable (use --no-launch to disable)
+  3. (Optionally) prompts you to log in to library databases via the CDP browser
+  4. Navigates each search URL and extracts article records
+  5. Downloads available PDFs; saves abstracts and HTML where PDFs aren't accessible
+  6. Writes everything to the existing pull-output folder so the export bundle picks it up
 
 Usage:
     python scripts/fetch_documents.py
@@ -20,9 +21,15 @@ Usage:
     python scripts/fetch_documents.py --limit 20 --dry-run
     python scripts/fetch_documents.py --cdp-url http://localhost:9222
     python scripts/fetch_documents.py --no-prompt   # non-interactive / scripted use
+    python scripts/fetch_documents.py --no-launch   # print help and wait instead of auto-launching
 
-Requirements:
-  - Chrome launched with --remote-debugging-port=9222 (or whatever --cdp-url points to)
+Auto-launch behavior:
+  - When Chrome is not reachable, the script spawns Chrome automatically using a
+    dedicated profile at ~/.research_henchman_chrome (so it does not close your
+    normal Chrome tabs or collide with your existing Chrome profile).
+  - The dedicated profile persists library logins across runs — sign in once and
+    subsequent fetches will find the session already live.
+  - Use --no-launch to opt out and get the old "print help and wait" behavior.
   - playwright installed  (pip install playwright && playwright install chromium)
 """
 
@@ -31,7 +38,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -88,6 +98,79 @@ _CHROME_HELP = """\
 
 
 # ---------------------------------------------------------------------------
+# Chrome auto-launch helpers
+# ---------------------------------------------------------------------------
+
+def _launch_chrome(port: int) -> Optional[int]:
+    """Spawn Chrome with CDP enabled on *port* and return its PID.
+
+    Uses a dedicated ``~/.research_henchman_chrome`` user-data-dir so the
+    process runs alongside the user's normal Chrome without touching their
+    profile or closing their existing tabs.  The profile also persists library
+    logins across CLI runs.
+
+    Candidate executables (first found wins):
+      macOS  — /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+      Linux  — google-chrome, then chromium
+
+    Returns the spawned PID on success, or None when no Chrome executable is
+    found (caller should print an error and exit).
+    """
+    user_data_dir = Path.home() / ".research_henchman_chrome"
+
+    # Resolve the executable: try macOS path first, then Linux PATH names.
+    mac_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if Path(mac_path).exists():
+        executable = mac_path
+    else:
+        # Try linux names via PATH
+        for candidate in ("google-chrome", "chromium"):
+            found = shutil.which(candidate)
+            if found:
+                executable = found
+                break
+        else:
+            return None  # no Chrome found
+
+    cmd = [
+        executable,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={user_data_dir}",
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,  # detach so Chrome survives script exit
+    )
+    return proc.pid
+
+
+def _cdp_poll_until_ready(cdp_url: str, timeout_seconds: float = 15.0) -> bool:
+    """Poll ``<cdp_url>/json/version`` every 0.5 s until reachable or timeout.
+
+    Uses the same urllib + Host-header pattern as BrowserClient._playwright_cdp_ping().
+    Returns True when the endpoint responds 200, False if timeout expires.
+    """
+    parsed = urllib.parse.urlparse(cdp_url)
+    host_header = parsed.netloc or "localhost"
+    version_url = f"{cdp_url.rstrip('/')}/json/version"
+    deadline = time.monotonic() + timeout_seconds
+
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(version_url, headers={"Host": host_header})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -137,14 +220,33 @@ def main() -> None:
     if seeds or pdfs:
         if not browser_client.is_available():
             port = _port_from_url(settings.playwright_cdp_url)
-            print(_CHROME_HELP.format(port=port))
-            if not args.no_prompt:
-                input("\nPress Enter once Chrome is running... ")
-            # Rebuild client after Chrome may have started
-            browser_client = make_browser_client(settings)
-            if not browser_client.is_available():
-                print("Still can't reach Chrome. Exiting.")
-                sys.exit(1)
+            if args.no_launch:
+                # Legacy behavior: print help and wait for user to start Chrome.
+                print(_CHROME_HELP.format(port=port))
+                if not args.no_prompt:
+                    input("\nPress Enter once Chrome is running... ")
+                # Rebuild client after Chrome may have started
+                browser_client = make_browser_client(settings)
+                if not browser_client.is_available():
+                    print("Still can't reach Chrome. Exiting.")
+                    sys.exit(1)
+            else:
+                # Auto-launch Chrome with a dedicated CDP profile.
+                print(f"Chrome not reachable on port {port} — launching automatically…")
+                pid = _launch_chrome(port)
+                if pid is None:
+                    print(
+                        "ERROR: No Chrome executable found. Install Google Chrome or use "
+                        "--no-launch and start it manually."
+                    )
+                    sys.exit(1)
+                print(f"  Chrome spawned (PID {pid}). Waiting for CDP…")
+                if not _cdp_poll_until_ready(settings.playwright_cdp_url):
+                    print("  Chrome did not become reachable within 15 s. Exiting.")
+                    sys.exit(1)
+                print("  CDP ready.")
+                # Rebuild client now that Chrome is up.
+                browser_client = make_browser_client(settings)
 
         # Open sign-in tabs for sources that need login (seed sources)
         needed_sources = {i.source_id for i in seeds}
@@ -264,6 +366,8 @@ def _parse_args() -> argparse.Namespace:
                    help="Print what would be fetched; write nothing")
     p.add_argument("--no-prompt", action="store_true",
                    help="Skip all interactive input() prompts (non-interactive / scripted use)")
+    p.add_argument("--no-launch", action="store_true",
+                   help="Do not auto-launch Chrome; print help and wait instead (legacy behavior)")
     return p.parse_args()
 
 

@@ -1,3 +1,17 @@
+[2026-04-29] - EBSCO selectors stale after research.ebsco.com SPA migration
+
+Problem
+scripts/fetch_documents.py reported "Seed pages fetched: N / N (0 failed)" for every EBSCO query, yet "Articles extracted: 0" — silently producing no document records. Validation against run_27f86e44394442 (650 EBSCO seed URLs across 169 gaps) yielded zero markdown files even with a fully authenticated CDP browser session.
+
+Root Cause
+EBSCOhost migrated its post-login UI from search.ebscohost.com (legacy DOM with .result-list-item, [data-auto="record"], etc.) to a Next.js SPA at research.ebsco.com that uses CSS-module class names and a renamed data-auto-* attribute scheme (article[data-auto="search-result-item"], [data-auto="result-item-title__link"], [data-auto="result-item-metadata-content--contributors"], [data-auto="abstract-content"], [data-auto="result-item-metadata-content--published"], [data-auto="result-item-metadata-content--database"]). The _EBSCO_JS extractor in adapters/document_fetch.py still queried the legacy selectors only, so it walked an empty NodeList on every page. Page navigation and HTML save still succeeded, masking the failure.
+
+Solution
+Updated _EBSCO_JS in adapters/document_fetch.py: container query now matches the new article[data-auto="search-result-item"] first (legacy selectors retained as fallbacks for older skins). Per-field selectors prepend the new data-auto-* attributes ahead of legacy selectors. Added a new "database" field (Academic Search Ultimate, etc.) and an absolute "url" field built from the title link's href via new URL(href, location.origin) so downstream consumers get clickable links instead of relative SPA paths. Updated _write_ebsco_records to emit the new Database and URL lines in the saved markdown when present. Validated end-to-end: --limit 5 → 40 articles extracted (8/page); --limit 20 → 136 articles extracted (~85% rate). All 158 existing tests still pass.
+
+Notes
+About 15% of pages in the --limit 20 run returned 0 articles for back-to-back queries against the same source — appears to be a transient SPA render race, not a wait-time issue (a fresh manual probe of the same query returned 20 articles within 1500 ms). Re-running the script picks up the gaps because empty extractions don't write a slug.md, only search_results.html (which is skipped on subsequent runs by _save_html). A future enhancement could add a one-shot retry inside fetch_seed_page when eval_result is empty and not blocked. JSTOR and Project MUSE selectors in the same file have not been verified against their current live DOM and may need a similar pass.
+
 [2026-04-29] - CLI auto-launches Chrome with CDP
 
 Problem

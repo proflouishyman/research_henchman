@@ -353,6 +353,99 @@ def test_detect_blocked_recognises_captcha_phrasing() -> None:
         assert reason == "captcha", f"wrong reason {reason!r} for body: {body!r}"
 
 
+def test_download_article_pdf_returns_none_for_non_cdp_session(tmp_path: Path) -> None:
+    """A session without a ._page attribute (HTTP / claude_cu provider) cannot
+    click into an article detail page; download_article_pdf returns None."""
+    from adapters.document_fetch import download_article_pdf
+
+    record = {"title": "Some Article", "url": "/c/abc/search/details/xyz"}
+    # Plain object with no _page attribute
+    class _NotASession:
+        pass
+    assert download_article_pdf(record, _NotASession(), tmp_path) is None
+
+
+def test_download_article_pdf_skips_when_no_viewer_link(tmp_path: Path) -> None:
+    """When the detail page has no <a href*="/viewer/pdf/"> element, the
+    article has no PDF available — return None without attempting capture."""
+    from adapters.document_fetch import download_article_pdf
+
+    page = MagicMock()
+    page.evaluate.return_value = None  # no viewer link found
+    session = MagicMock()
+    session._page = page
+
+    record = {"title": "Article With No PDF", "url": "/c/abc/search/details/xyz"}
+    result = download_article_pdf(record, session, tmp_path)
+    assert result is None
+    # Detail page was navigated, but no second navigation to a viewer URL
+    assert page.goto.call_count == 1
+
+
+def test_download_article_pdf_returns_existing_file_without_refetch(tmp_path: Path) -> None:
+    """If <slug>.pdf already exists in out_dir, return it without navigating."""
+    from adapters.document_fetch import download_article_pdf, _slugify
+
+    title = "Pre-existing Article"
+    slug = _slugify(title)[:60]
+    pdf_path = tmp_path / f"{slug}.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 prior content")
+
+    page = MagicMock()
+    session = MagicMock()
+    session._page = page
+
+    record = {"title": title, "url": "/c/abc/search/details/xyz"}
+    result = download_article_pdf(record, session, tmp_path)
+    assert result == pdf_path
+    page.goto.assert_not_called()
+
+
+def test_try_pdf_fetch_per_article_emits_unavailable_for_each_missing(tmp_path: Path) -> None:
+    """When session can't access pages (e.g. mock without _page), every
+    record should emit pdf_inline_unavailable so run_fetch tallies them."""
+    from adapters.document_fetch import _try_pdf_fetch_per_article
+
+    records = [
+        {"title": "First Article",  "url": "/c/x/search/details/a"},
+        {"title": "Second Article", "url": "/c/x/search/details/b"},
+        {"title": "",               "url": "/c/x/search/details/c"},  # filtered out
+    ]
+    events = []
+    _try_pdf_fetch_per_article(
+        records, session=object(), out_dir=tmp_path,
+        gap_id="G1", source_id="ebsco_api",
+        emit=lambda *a, **kw: events.append(a),
+    )
+    statuses = [e[1] for e in events]
+    # Two valid records → two unavailable events; the empty-title record is skipped.
+    assert statuses.count("pdf_inline_unavailable") == 2
+
+
+def test_run_fetch_tallies_inline_pdf_events(tmp_path: Path) -> None:
+    """Verify run_fetch's emit wrapper tallies pdf_inline_* statuses into stats."""
+    from adapters.document_fetch import run_fetch, FetchItem
+    # Construct one EBSCO seed item; fetch_seed_page will be reached but the
+    # mocked browser's eval_result is empty, so no records → no pdf events
+    # from fetch_seed_page itself. We instead emit pdf_inline_* directly via
+    # a custom emit-injecting browser wrapper to verify the wrapper logic.
+    items = [FetchItem(gap_id="G1", source_id="ebsco_api", out_dir=str(tmp_path),
+                       title="seed", url="https://search.ebscohost.com/x", fetch_type="seed")]
+
+    # Use a mock browser whose fetch_with_eval returns records, exercising
+    # the real _try_pdf_fetch_per_article path which emits inline events.
+    browser = _make_mock_browser(eval_result=[
+        {"title": "Article A", "url": "/c/x/details/a"},
+        {"title": "Article B", "url": "/c/x/details/b"},
+    ])
+    # Browser has no _page, so each article emits "unavailable".
+    stats = run_fetch(items, browser)
+    assert stats.inline_pdfs_attempted == 2
+    assert stats.inline_pdfs_unavailable == 2
+    assert stats.inline_pdfs_ok == 0
+    assert stats.inline_pdfs_failed == 0
+
+
 def test_detect_iframe_block_recognises_captcha_iframes() -> None:
     """Iframe-shape detection catches reCAPTCHA / hCaptcha / Turnstile widgets
     that text regex misses (the visible "I'm not a robot" lives in a Google

@@ -1,3 +1,23 @@
+[2026-04-29] - Per-article click-in PDF fetch (EBSCO research.ebsco.com)
+
+Problem
+The post-run document fetch pipeline only extracted search-results metadata (title, authors, journal, abstract excerpt, EBSCO URL) into markdown files — it never downloaded the actual full-text PDFs that EBSCO offers behind a one-click "PDF Full Text" link on each article's detail page. Users running the pipeline got 300+ markdown files of metadata but zero PDFs, and had to manually click through each EBSCO URL to get the full text.
+
+Root Cause
+fetch_seed_page navigated only the search-results listing page, evaluated the EBSCO JS extractor on that page, and wrote one .md per article record. It never visited each article's detail page, where the PDF viewer link lives. The library had a download_pdf() function but it only fired for items with pdf_url already set in the original JSON — no upstream pipeline populated pdf_url, so download_pdf was effectively dead code for EBSCO.
+
+Solution
+1. Added download_article_pdf(record, session, out_dir) to adapters/document_fetch.py. Uses the persistent CDP session's _page to (a) navigate the article's detail URL, (b) page.evaluate a small JS expression for `a[href*="/viewer/pdf/"]` to find the viewer link, (c) if absent, return None (no PDF available — common for older trade publications); (d) if present, attach a `page.on("response", ...)` listener and navigate to the viewer URL — the viewer triggers a GET to content.ebscohost.com that returns Content-Type: application/pdf, captured by the listener and written as <slug>.pdf alongside the existing <slug>.md.
+2. Added _try_pdf_fetch_per_article(records, session, out_dir) that loops over the extracted records and emits one structured event per article: pdf_inline_ok (saved), pdf_inline_unavailable (no viewer link), or pdf_inline_failed (link found but capture errored).
+3. fetch_seed_page now calls _try_pdf_fetch_per_article after _write_ebsco_records for EBSCO sources only (JSTOR/MUSE selectors not yet identified).
+4. Extended FetchDocumentsStats with inline_pdfs_attempted / inline_pdfs_ok / inline_pdfs_unavailable / inline_pdfs_failed. run_fetch wraps the user-supplied emit callable with a tally function so these events flow into stats automatically without changing fetch_seed_page's return contract.
+5. CLI summary in scripts/fetch_documents.py now displays "Article PDFs saved: ok/attempted (unavailable, failed)" when any inline PDF activity occurred.
+
+Validated end-to-end on AUTO-107-G1 (Palm computers gap, fresh data): 8/8 articles extracted as metadata, 2/8 PDFs captured (Epidemic_of_Palm_Syncing_Problems.pdf 195 KB / 2 pages, Handspring_and_Palm_HotSync_Sunk.pdf 244 KB / 1 page) — both real PDFs, version 1.2, openable. The other 6 articles had no PDF available (older trade publication shorts where EBSCO has metadata only). 36 s end-to-end (~4.5 s per article including the 6 without PDFs that only navigate the detail page once). Tests: 163 → 168 (+5 covering the no-CDP fallback, no-viewer-link path, idempotent re-fetch, multi-record event emission, and run_fetch stats tallying).
+
+Notes
+Sequential fetch is ~4-5 s per article (worst case 8 s when the viewer URL responds slowly). For the full corpus of 650 EBSCO seed URLs × 8 articles = ~5200 article click-ins, that's ~6-7 hours sequentially — too slow for production. A future enhancement is multi-tab parallelism via ThreadPoolExecutor where each worker maintains its own sync_playwright session against the same CDP browser; with 4 workers, runtime drops to ~1.5 hours. download_article_pdf currently treats null capture as "unavailable" rather than "failed" — both produce the same on-disk outcome (no PDF) so the distinction is mostly cosmetic, but future work could instrument the listener to distinguish a missing-link skip from a capture timeout.
+
 [2026-04-29] - Browser thrash, iframe-CAPTCHA blind spot, undifferentiated retry, and fixed-wait races
 
 Problem

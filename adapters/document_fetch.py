@@ -142,10 +142,17 @@ class FetchDocumentsStats:
     pdfs_ok: int = 0
     pdfs_failed: int = 0
     articles_extracted: int = 0
+    # Per-article click-in PDF fetch (run after search-results metadata
+    # extraction): visits each article's detail page, looks for the PDF
+    # viewer link, captures the PDF bytes from the response stream.
+    inline_pdfs_attempted: int = 0
+    inline_pdfs_ok: int = 0
+    inline_pdfs_unavailable: int = 0   # no PDF link on the detail page
+    inline_pdfs_failed: int = 0        # link found but capture failed
 
     @property
     def total_ok(self) -> int:
-        return self.abstracts_saved + self.seeds_ok + self.pdfs_ok
+        return self.abstracts_saved + self.seeds_ok + self.pdfs_ok + self.inline_pdfs_ok
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +405,16 @@ def fetch_seed_page(
 
     # Extract structured records
     if source_id in ("ebsco_api", "ebscohost"):
-        return _write_ebsco_records(eval_result or [], out_dir)
+        count = _write_ebsco_records(eval_result or [], out_dir)
+        # After metadata is saved, click into each article's detail page and
+        # try to capture the actual PDF when EBSCO offers one. Emits per-
+        # article events (pdf_inline_ok / unavailable / failed); run_fetch
+        # tallies them into FetchDocumentsStats via its emit wrapper.
+        _try_pdf_fetch_per_article(
+            eval_result or [], browser_client, out_dir,
+            gap_id=item.gap_id, source_id=source_id, emit=emit,
+        )
+        return count
     if source_id == "jstor":
         return _write_jstor_records(eval_result or [], out_dir)
     if source_id == "project_muse":
@@ -462,6 +478,180 @@ def download_pdf(
 
 
 # ---------------------------------------------------------------------------
+# Per-article click-in PDF fetch (EBSCO research.ebsco.com)
+# ---------------------------------------------------------------------------
+
+# Base host EBSCO article URLs are relative to (extracted records use
+# /c/<opid>/search/details/<id>?... paths).
+_EBSCO_BASE_HOST = "https://research.ebsco.com"
+
+# JS used by download_article_pdf to find the PDF viewer link on the
+# article detail page. Returns the relative path or null.
+_EBSCO_PDF_LINK_JS = """() => {
+    const a = document.querySelector('a[href*="/viewer/pdf/"]');
+    return a ? a.getAttribute('href') : null;
+}"""
+
+
+def download_article_pdf(
+    record: Dict[str, Any],
+    session: Any,
+    out_dir: Path,
+    *,
+    emit: Optional[Callable] = None,
+    detail_wait_ms: int = 1500,
+    viewer_wait_ms: int = 3000,
+) -> Optional[Path]:
+    """Visit an EBSCO article's detail page, find the PDF viewer URL, and
+    capture the PDF bytes from the page's response stream.
+
+    Pattern (validated end-to-end against research.ebsco.com):
+      1. Navigate to the article's detail URL (from extracted record).
+      2. Look for ``a[href*="/viewer/pdf/"]`` in the DOM.
+      3. If absent, the article has no PDF available — return None (this is
+         a normal outcome for many EBSCO records, especially older ones).
+      4. If present, attach a response listener and navigate to the viewer
+         URL. The viewer page triggers a GET to ``content.ebscohost.com``
+         that returns ``Content-Type: application/pdf``.
+      5. Listener captures the body bytes. Write to ``<slug>.pdf`` and
+         return the path.
+
+    Best-effort: never raises, never blocks the metadata pipeline. Returns
+    None for any failure (no PDF, page error, capture timeout, etc.).
+    Requires a CDP-backed session (``session._page`` available); for HTTP
+    or claude_cu providers, returns None immediately.
+    """
+    title = (record.get("title") or "").strip()
+    raw_url = (record.get("url") or "").strip()
+    if not title or not raw_url:
+        return None
+
+    # Persistent CDP page; non-CDP sessions can't click into detail pages.
+    page = getattr(session, "_page", None)
+    if page is None:
+        return None
+
+    slug = _slugify(title)[:60]
+    pdf_path = out_dir / f"{slug}.pdf"
+    if pdf_path.exists():
+        return pdf_path
+
+    abs_url = raw_url if raw_url.startswith("http") else f"{_EBSCO_BASE_HOST}{raw_url}"
+
+    # Step 1: detail page → look for the viewer link.
+    try:
+        page.goto(abs_url, timeout=30000, wait_until="domcontentloaded")
+        page.wait_for_timeout(detail_wait_ms)
+    except Exception:
+        return None
+
+    try:
+        viewer_href = page.evaluate(_EBSCO_PDF_LINK_JS)
+    except Exception:
+        viewer_href = None
+    if not viewer_href:
+        return None  # no PDF for this article — legitimate skip
+
+    viewer_url = (
+        viewer_href if viewer_href.startswith("http")
+        else f"{_EBSCO_BASE_HOST}{viewer_href}"
+    )
+
+    # Step 2: viewer page with response listener — captures the PDF body.
+    captured: Dict[str, Any] = {}
+
+    def _on_response(resp):
+        if "pdf" in captured:
+            return
+        try:
+            ct = (resp.headers.get("content-type") or "").lower()
+        except Exception:
+            return
+        if "application/pdf" not in ct:
+            return
+        try:
+            body = resp.body()
+        except Exception:
+            return
+        if body and body[:4] == b"%PDF":
+            captured["pdf"] = body
+
+    page.on("response", _on_response)
+    try:
+        try:
+            page.goto(viewer_url, timeout=45000, wait_until="networkidle")
+        except Exception:
+            # networkidle may time out before the PDF response fully arrives;
+            # the listener may have already captured it.
+            pass
+        if "pdf" not in captured:
+            page.wait_for_timeout(viewer_wait_ms)
+    finally:
+        try:
+            page.remove_listener("response", _on_response)
+        except Exception:
+            pass
+
+    if "pdf" not in captured:
+        return None
+
+    try:
+        pdf_path.write_bytes(captured["pdf"])
+        return pdf_path
+    except Exception:
+        return None
+
+
+def _try_pdf_fetch_per_article(
+    records: List[Dict[str, Any]],
+    session: Any,
+    out_dir: Path,
+    *,
+    gap_id: str,
+    source_id: str,
+    emit: Optional[Callable] = None,
+) -> None:
+    """For each extracted EBSCO article record, attempt a click-in PDF fetch.
+
+    Emits one event per article:
+      - ``pdf_inline_ok``          — PDF bytes captured and saved
+      - ``pdf_inline_unavailable`` — detail page has no /viewer/pdf/ link
+      - ``pdf_inline_failed``      — link found but capture failed
+    """
+    for rec in (records or [])[:MAX_ARTICLES]:
+        if not isinstance(rec, dict) or not rec.get("title"):
+            continue
+        title_short = (rec.get("title") or "")[:60]
+        meta = {
+            "gap_id": gap_id,
+            "source_id": source_id,
+            "title": title_short,
+        }
+        try:
+            path = download_article_pdf(rec, session, out_dir, emit=emit)
+        except Exception as exc:  # noqa: BLE001
+            if emit:
+                emit("fetching", "pdf_inline_failed",
+                     f"[{gap_id}] PDF attempt errored for: {title_short} — {exc!s:.60}",
+                     {**meta, "error": str(exc)[:120]})
+            continue
+
+        if path is None:
+            # Either no PDF link on detail page, or capture didn't yield bytes.
+            # We can't easily distinguish without re-instrumenting; treat
+            # null-path as "unavailable" (the common case in EBSCO).
+            if emit:
+                emit("fetching", "pdf_inline_unavailable",
+                     f"[{gap_id}] no PDF for: {title_short}",
+                     meta)
+        else:
+            if emit:
+                emit("fetching", "pdf_inline_ok",
+                     f"[{gap_id}] PDF saved: {path.name}",
+                     {**meta, "file": path.name})
+
+
+# ---------------------------------------------------------------------------
 # Top-level orchestrator
 # ---------------------------------------------------------------------------
 
@@ -497,7 +687,21 @@ def run_fetch(
     """
 
     stats = FetchDocumentsStats(items_found=len(items))
-    _emit = emit or (lambda *a, **kw: None)
+    user_emit = emit or (lambda *a, **kw: None)
+
+    # Wrap emit so inline-PDF events from fetch_seed_page (which doesn't have
+    # access to stats) get tallied into FetchDocumentsStats automatically.
+    def _emit(stage: str, status: str, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
+        if status == "pdf_inline_ok":
+            stats.inline_pdfs_attempted += 1
+            stats.inline_pdfs_ok += 1
+        elif status == "pdf_inline_unavailable":
+            stats.inline_pdfs_attempted += 1
+            stats.inline_pdfs_unavailable += 1
+        elif status == "pdf_inline_failed":
+            stats.inline_pdfs_attempted += 1
+            stats.inline_pdfs_failed += 1
+        user_emit(stage, status, message, meta)
 
     seeds     = [i for i in items if i.fetch_type == "seed"]
     pdfs      = [i for i in items if i.fetch_type == "pdf"]

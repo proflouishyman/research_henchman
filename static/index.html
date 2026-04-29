@@ -804,6 +804,15 @@
           <div id="docs_list" class="doc-list"></div>
         </div>
 
+        <div id="fetch_box" class="event-box hidden">
+          <div><strong>Fetch Full Documents</strong></div>
+          <div id="fetch_status" class="status-line muted">Complete a run to enable document fetching.</div>
+          <button id="fetch_preview_btn" title="Check how many seed URLs, PDFs, and abstracts are available to fetch." disabled>Preview Fetchable Items</button>
+          <button id="fetch_signin_btn" title="Open sign-in pages in Chrome before fetching." disabled>Sign In to Databases</button>
+          <button id="fetch_start_btn" class="primary" title="Fetch full article content from seed search URLs via your signed-in browser." disabled>Fetch Documents</button>
+          <div id="fetch_counts" class="muted"></div>
+        </div>
+
         <div class="event-box">
           <div><strong>Pipeline Stages</strong></div>
           <div class="stage-list" id="stage_list"></div>
@@ -1566,6 +1575,10 @@
         detail = ` [${meta.action || status} rung=${meta.rung} syn=${meta.synonym_idx ?? "?"} docs=${meta.doc_count ?? "?"}]`;
       } else if (status === "accept" && meta.rung) {
         detail = ` [accepted rung=${meta.rung} docs=${meta.doc_count ?? "?"}]`;
+      } else if (stage === "fetching" && (meta.index != null || meta.count != null)) {
+        const idx   = meta.index != null ? `${meta.index}/${meta.total ?? "?"}` : "";
+        const count = meta.count != null ? ` → ${meta.count} articles` : "";
+        detail = idx ? ` [${idx}${count}]` : count;
       }
       return `[${ts}] ${stage}/${status}${detail}: ${msg}`;
     }
@@ -1789,6 +1802,107 @@
       state.docsRunId = runId;
     }
 
+    // ── Fetch Documents panel ─────────────────────────────────────────────
+
+    function showFetchPanel(runId) {
+      const box = q("fetch_box");
+      if (!box || !runId) return;
+      box.classList.remove("hidden");
+      setText("fetch_status", "Run complete. Preview items then sign in to fetch full documents.");
+      setButtonBusy("fetch_preview_btn", false, "", "");
+      q("fetch_preview_btn").disabled = false;
+      q("fetch_preview_btn").onclick = () => previewFetchItems(runId);
+      q("fetch_signin_btn").onclick = () => openFetchSignInPages(runId);
+      q("fetch_start_btn").onclick = () => startFetch(runId);
+    }
+
+    async function previewFetchItems(runId) {
+      setButtonBusy("fetch_preview_btn", true, "Checking...", "Preview Fetchable Items");
+      try {
+        const out = await api(`/api/orchestrator/runs/${runId}/fetch_items`);
+        const c = out.counts || {};
+        const cdp = out.cdp_available;
+        const fetchStatus = out.fetch_status || "";
+        const countLine = `${c.total || 0} items: ${c.seed || 0} seed pages · ${c.pdf || 0} PDFs · ${c.abstract || 0} abstracts`;
+        const cdpLine = cdp ? "✓ Chrome CDP reachable" : "✗ Chrome not reachable — start Chrome with --remote-debugging-port=9222";
+        setText("fetch_counts", `${countLine}\n${cdpLine}`);
+        if (fetchStatus === "complete") {
+          setText("fetch_status", "Fetch already completed for this run. Re-run to fetch newly added items.");
+        } else if (c.total === 0) {
+          setText("fetch_status", "No new items to fetch — all seed URLs and PDFs already processed.");
+          q("fetch_start_btn").disabled = true;
+          q("fetch_signin_btn").disabled = true;
+        } else {
+          setText("fetch_status", `Found ${c.total} items ready to fetch.`);
+          q("fetch_signin_btn").disabled = !cdp;
+          q("fetch_start_btn").disabled = !cdp;
+        }
+      } catch (e) {
+        setText("fetch_status", `Preview failed: ${e.message || e}`);
+      } finally {
+        setButtonBusy("fetch_preview_btn", false, "", "Preview Fetchable Items");
+      }
+    }
+
+    async function openFetchSignInPages(runId) {
+      // Reuse the existing sign-in open endpoint — open source login pages in CDP browser.
+      // Pull the source IDs from the run's planned sources.
+      setButtonBusy("fetch_signin_btn", true, "Opening...", "Sign In to Databases");
+      try {
+        const runRow = await api(`/api/orchestrator/runs/${runId}`);
+        const plan = runRow?.research_plan;
+        const sourceIds = plan?.gaps
+          ? [...new Set(plan.gaps.flatMap(g => (g.source_routes || []).map(r => r.source_id)))]
+          : [];
+        const out = await api("/api/orchestrator/signin/open", "POST", { source_ids: sourceIds, urls: [] });
+        const openedCount = out.opened_count ?? out.opened ?? 0;
+        setText("fetch_status", `Opened ${openedCount} sign-in page(s) in Chrome. Log in, then click Fetch Documents.`);
+        q("fetch_start_btn").disabled = false;
+      } catch (e) {
+        setText("fetch_status", `Could not open sign-in tabs: ${e.message || e}`);
+      } finally {
+        setButtonBusy("fetch_signin_btn", false, "", "Sign In to Databases");
+      }
+    }
+
+    async function startFetch(runId) {
+      setButtonBusy("fetch_start_btn", true, "Fetching...", "Fetch Documents");
+      q("fetch_signin_btn").disabled = true;
+      q("fetch_preview_btn").disabled = true;
+      setText("fetch_status", "Document fetch started — watch the Live Log for progress...");
+      try {
+        await api(`/api/orchestrator/runs/${runId}/fetch_documents`, "POST", {});
+        // Fetch runs as a background task; events appear in the live log automatically.
+        // Poll for completion status.
+        let polls = 0;
+        const poll = async () => {
+          polls++;
+          if (polls > 120) return; // give up after ~4 min
+          const row = await api(`/api/orchestrator/runs/${runId}`);
+          const fs = row?.fetch_status || "";
+          if (fs === "complete") {
+            const fr = row.fetch_result || {};
+            setText("fetch_status",
+              `Fetch complete — ${fr.articles_extracted || 0} articles, ` +
+              `${fr.abstracts_saved || 0} abstracts, ${fr.pdfs_ok || 0} PDFs saved.`);
+            setButtonBusy("fetch_start_btn", false, "", "Fetch Documents");
+            q("fetch_start_btn").disabled = true;
+          } else if (fs === "failed") {
+            setText("fetch_status", "Fetch failed — see Live Log for details.");
+            setButtonBusy("fetch_start_btn", false, "", "Fetch Documents");
+          } else {
+            setTimeout(poll, 2000);
+          }
+        };
+        setTimeout(poll, 2000);
+      } catch (e) {
+        setText("fetch_status", `Fetch error: ${e.message || e}`);
+        setButtonBusy("fetch_start_btn", false, "", "Fetch Documents");
+        q("fetch_signin_btn").disabled = false;
+        q("fetch_preview_btn").disabled = false;
+      }
+    }
+
     function saveLastManuscript(path) {
       if (!path) return;
       localStorage.setItem(STORAGE_LAST_MANUSCRIPT, path);
@@ -1925,6 +2039,10 @@
         } catch (err) {
           setText("docs_status", `Could not load documents: ${err.message}`);
           q("docs_box")?.classList.remove("hidden");
+        }
+        // Show the fetch panel so the user can pull full article content
+        if (run.status === "complete" || run.status === "partial") {
+          showFetchPanel(run.run_id);
         }
         setLaunchState("completed", `Run finished with status: ${run.status}`);
       }

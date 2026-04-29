@@ -1,3 +1,23 @@
+[2026-04-29] - Post-Run Document Fetch: Full Article Retrieval via API and CDP Browser
+
+Problem
+Pipeline runs produced seed-only results for browser-backed sources (JSTOR, EBSCO, ProQuest, Gale). Users could see search-URL placeholders but had no in-app way to fetch the actual article content. The standalone CLI script (fetch_documents.py) used input() prompts which required a real terminal and could not be triggered from the web UI, creating a permissions/access blockage.
+
+Root Cause
+Document fetching required interactive terminal prompts (input() calls) for the Chrome CDP sign-in gate and the "press enter when done" confirmation. BrowserClient had no method to run JS expressions on a navigated page (needed for EBSCO/JSTOR DOM extraction). The sign-in infrastructure already existed in the web UI but was not wired to a post-run fetch action.
+
+Solution
+1. Added fetch_with_eval(url, js_expr, wait_ms) to BrowserClient — connects via CDP, navigates, waits for JS rendering, runs page.evaluate(js_expr), returns (PageResult, eval_result). Enables EBSCO, JSTOR, and Project MUSE DOM extraction through the existing authenticated browser session.
+2. New adapters/document_fetch.py library — no input() calls, uses BrowserClient. Provides: collect_fetch_items(), preview_counts(), save_abstract(), fetch_seed_page() with per-provider JS extractors (EBSCO, JSTOR, Muse, generic HTML fallback), download_pdf() with direct HTTP then CDP fallback, run_fetch() orchestrator with structured emit events.
+3. FetchDocumentsResult dataclass added to contracts.py; fetch_status and fetch_result fields added to RunRecord (backward-compatible defaults).
+4. GET /api/orchestrator/runs/{run_id}/fetch_items — returns seed/pdf/abstract counts and CDP availability for UI preview.
+5. POST /api/orchestrator/runs/{run_id}/fetch_documents — triggers background fetch task, emits progress events to the run's existing event stream, persists fetch_status/fetch_result on run record.
+6. "Fetch Documents" panel added to static/index.html — appears after run completion (complete/partial), with Preview Items, Sign In to Databases (reuses existing /signin/open endpoint), and Fetch Documents buttons. Progress shown via existing live log. Polls fetch_status for completion summary.
+7. 23 new regression tests in tests/test_document_fetch.py; full suite: 150 passed.
+
+Notes
+Blocked pages (CAPTCHA/login walls) are detected, emitted as fetching/blocked events with action hints, and saved as _blocked.html for manual inspection. Existing fetch_documents.py CLI script preserved for headless/scripted use. fetch_with_eval() falls back gracefully on HTTP provider (returns None eval result).
+
 [2026-04-25] - Layer 6: Chart Generation from Data Pull Artifacts
 
 Problem

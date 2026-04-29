@@ -255,6 +255,11 @@ def _make_mock_browser(eval_result: Any = None, blocked: bool = False) -> MagicM
     browser = MagicMock()
     browser.fetch_with_eval.return_value = (page_result, eval_result)
     browser.fetch.return_value = page_result
+    # run_fetch wraps the seed/PDF loop in `with browser_client.session() as bc:`
+    # for single-tab reuse. Make the mock's session() yield the same mock so
+    # configured return values flow through.
+    browser.session.return_value.__enter__.return_value = browser
+    browser.session.return_value.__exit__.return_value = False
     return browser
 
 
@@ -346,6 +351,39 @@ def test_detect_blocked_recognises_captcha_phrasing() -> None:
         blocked, reason, _ = _detect_blocked(body, "https://example.com")
         assert blocked, f"failed to detect block in: {body!r}"
         assert reason == "captcha", f"wrong reason {reason!r} for body: {body!r}"
+
+
+def test_detect_iframe_block_recognises_captcha_iframes() -> None:
+    """Iframe-shape detection catches reCAPTCHA / hCaptcha / Turnstile widgets
+    that text regex misses (the visible "I'm not a robot" lives in a Google
+    iframe, never in the parent page HTML)."""
+    from adapters.browser_client import _detect_iframe_block
+
+    cases = [
+        ("recaptcha", "Solve reCAPTCHA challenge in browser"),
+        ("hcaptcha", "Solve hCaptcha challenge in browser"),
+        ("turnstile", "Wait for / solve Cloudflare Turnstile in browser"),
+        ("captcha", "Solve CAPTCHA challenge in browser"),
+    ]
+    for kind, expected_action in cases:
+        fake_page = MagicMock()
+        fake_page.evaluate.return_value = kind
+        blocked, reason, action = _detect_iframe_block(fake_page)
+        assert blocked is True
+        assert reason == "captcha"
+        assert action == expected_action
+
+    # Empty result → not blocked
+    fake_page = MagicMock()
+    fake_page.evaluate.return_value = ""
+    blocked, _, _ = _detect_iframe_block(fake_page)
+    assert blocked is False
+
+    # Evaluate raises → safe fallback (not blocked)
+    fake_page = MagicMock()
+    fake_page.evaluate.side_effect = Exception("page closed")
+    blocked, _, _ = _detect_iframe_block(fake_page)
+    assert blocked is False
 
 
 def test_detect_blocked_recognises_rate_limit_and_explicit_block() -> None:

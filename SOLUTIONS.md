@@ -1,3 +1,25 @@
+[2026-04-29] - Persistent worker pool for PDF fetch (eliminates per-task setup overhead)
+
+Problem
+The first parallelism implementation used ThreadPoolExecutor where each task spawned its own sync_playwright session. Per-task setup (sync_playwright + connect_over_cdp + new_page + close + exit) cost ~1-2 s, comparable to the article work itself (~3-4 s). With 4 workers handling 8 articles per page sequentially in pairs, the measured speedup was only 2× over sequential — not the 4× the worker count suggested.
+
+Root Cause
+Playwright's sync_playwright is a per-thread context manager: each entry spawns a Node.js subprocess to host the browser-control bridge. With per-task sessions, every article paid that startup cost. The work-to-overhead ratio at 8 articles per worker over many search-results pages is dominated by setup if sessions don't persist.
+
+Solution
+Added _PdfWorkerPool: N persistent worker threads, each entering its own sync_playwright once at startup, opening one persistent page in the shared CDP context, then consuming (record, out_dir) tasks from a shared queue for the lifetime of the pool. Pages stay alive across many articles — the per-task overhead reduces to a queue.put + queue.get, single-digit microseconds. Workers push results to a result queue; the caller drains in arrival order. Errors during worker init (Playwright import, CDP connect failure) are propagated by draining outstanding tasks with a typed error string so the caller never hangs. A make_pdf_worker_pool(cdp_url, workers) context manager handles construction; returns None when CDP isn't available or workers <=1 so callers branch cleanly.
+
+Plumbing: fetch_seed_page accepts an optional pdf_pool arg (default None for backward compat). _try_pdf_fetch_per_article checks for the pool first — if present, submits all article tasks and drains; else falls back to the per-task ThreadPoolExecutor (preserved for direct library callers, e.g. the FastAPI endpoint), or to sequential single-page (mocks, non-CDP sessions). run_fetch creates one pool at start when CDP is available, scoped to the seeds loop, exits the pool before the bulk-PDF loop (which doesn't need it).
+
+Validated end-to-end
+- AUTO-109-G1 (8 articles, 0 PDFs available, all just detail-page checks): 13 s. Down from 36 s sequential / 18 s per-task threading.
+- AUTO-11-G1 (8 articles, 2 PDFs captured: 4.9 MB and 220 KB, real v1.6/v1.7 PDFs): 17 s. Down from 36 s sequential.
+
+Full-corpus projection: ~2.7 hours (650 search-results pages × ~15 s avg) vs 6.5 hr sequential or 3.25 hr per-task. Tests: 168 → 170 (+2 covering pool helper return semantics and the pool-vs-fallback dispatch in _try_pdf_fetch_per_article).
+
+Notes
+The per-task ThreadPoolExecutor path is preserved as a fallback because the FastAPI endpoint and direct library users may not manage a pool. Workers still don't honor on_blocked — a CAPTCHA on a worker's detail page returns null from the viewer-link probe and the article gets reported as unavailable. A future enhancement: have workers detect iframe-CAPTCHAs and surface a pdf_inline_blocked event that the main thread can act on (e.g. drain remaining tasks, prompt user, retry queue). Pool teardown joins worker threads with a 15 s timeout — if a worker's sync_playwright fails to exit cleanly, the join is bounded so the run finishes.
+
 [2026-04-29] - Parallel PDF fetch (4-way concurrency via thread workers)
 
 Problem

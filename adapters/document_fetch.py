@@ -16,9 +16,12 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import queue
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -26,7 +29,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 # JS expression for extracting EBSCO search-results records from the live DOM.
 # Primary selectors target the modern research.ebsco.com SPA (data-auto-* attrs);
@@ -318,6 +321,7 @@ def fetch_seed_page(
     *,
     emit: Optional[Callable] = None,
     on_blocked: Optional[Callable] = None,
+    pdf_pool: Optional["_PdfWorkerPool"] = None,
 ) -> int:
     """Navigate a seed search URL, extract article records, save as markdown.
 
@@ -331,6 +335,12 @@ def fetch_seed_page(
         denied). If the handler returns True, the URL is re-fetched once — used
         by the CLI to pause for the user to solve a CAPTCHA in the live browser
         before continuing.
+    pdf_pool:
+        Optional persistent ``_PdfWorkerPool`` for parallel per-article PDF
+        fetch. When provided, each extracted record is submitted to the pool;
+        when ``None``, the per-article PDF fetch uses the legacy
+        ``ThreadPoolExecutor`` path (per-task setup overhead) or sequential
+        single-page (for non-CDP sessions).
     """
 
     source_id = item.source_id
@@ -415,6 +425,7 @@ def fetch_seed_page(
         _try_pdf_fetch_per_article(
             eval_result or [], browser_client, out_dir,
             gap_id=item.gap_id, source_id=source_id, emit=emit,
+            pdf_pool=pdf_pool,
         )
         return count
     if source_id == "jstor":
@@ -631,6 +642,155 @@ def download_article_pdf(
     )
 
 
+class _PdfWorkerPool:
+    """Persistent pool of N worker threads, each owning its own Playwright
+    session + page for the lifetime of the pool.
+
+    The previous ``ThreadPoolExecutor + _fetch_pdf_in_worker`` approach
+    paid ~1-2 s of ``sync_playwright`` setup per article — substantial
+    overhead because total work per article is only ~3-4 s. By keeping the
+    sessions and pages persistent across many articles, the pool eliminates
+    that overhead entirely after the initial startup cost.
+
+    Concurrency model
+    -----------------
+    - N worker threads, started in ``__enter__``, joined in ``__exit__``.
+    - Each worker enters its own ``sync_playwright`` block (Playwright sync
+      state is per-thread-not-shareable), connects to the same CDP browser
+      (so cookies / auth are shared), and opens one persistent page.
+    - Workers consume ``(record, out_dir)`` tasks from a shared queue and
+      push ``(record, path, error)`` to a results queue.
+    - Caller submits batches via ``submit()``; results stream via
+      ``drain(n)`` which yields up to ``n`` results in arrival order.
+    - ``None`` is the shutdown sentinel — one per worker on exit.
+
+    Errors during worker startup (Playwright import error, CDP connect
+    failure) are propagated by draining outstanding tasks with a fixed
+    error string so callers don't hang.
+    """
+
+    def __init__(self, cdp_url: str, workers: int) -> None:
+        self.cdp_url = cdp_url
+        self.workers = max(1, workers)
+        self._task_queue: "queue.Queue[Optional[Tuple[Dict[str, Any], Path]]]" = queue.Queue()
+        self._result_queue: "queue.Queue[Tuple[Dict[str, Any], Optional[Path], Optional[str]]]" = queue.Queue()
+        self._threads: List[threading.Thread] = []
+        self._submitted = 0
+
+    def __enter__(self) -> "_PdfWorkerPool":
+        for i in range(self.workers):
+            t = threading.Thread(
+                target=self._worker_loop,
+                name=f"pdf-worker-{i}",
+                daemon=True,
+            )
+            t.start()
+            self._threads.append(t)
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        # Send shutdown sentinels — one per worker.
+        for _w in range(self.workers):
+            self._task_queue.put(None)
+        for t in self._threads:
+            t.join(timeout=15)
+
+    def submit(self, record: Dict[str, Any], out_dir: Path) -> None:
+        """Queue one article for processing."""
+        self._task_queue.put((record, out_dir))
+        self._submitted += 1
+
+    def drain(self, n: int, timeout: float = 300.0) -> Iterator[Tuple[Dict[str, Any], Optional[Path], Optional[str]]]:
+        """Yield exactly ``n`` results in arrival order (not submission order).
+
+        Blocks until each result arrives or ``timeout`` seconds elapse per
+        result; on timeout, yields a synthetic error so the caller can move on.
+        """
+        for _ in range(n):
+            try:
+                yield self._result_queue.get(timeout=timeout)
+            except queue.Empty:
+                yield ({}, None, "worker_pool_timeout")
+
+    # -- internals -----------------------------------------------------
+
+    def _worker_loop(self) -> None:
+        """Run forever: consume tasks, process them on the persistent page."""
+        try:
+            from playwright.sync_api import sync_playwright  # type: ignore
+        except ImportError:
+            self._drain_with_error("playwright_not_installed")
+            return
+
+        try:
+            from adapters.cdp_utils import effective_cdp_url
+        except ImportError:
+            self._drain_with_error("cdp_utils_unavailable")
+            return
+
+        effective = effective_cdp_url(self.cdp_url)
+
+        try:
+            with sync_playwright() as pw:
+                try:
+                    browser = pw.chromium.connect_over_cdp(effective)
+                except Exception as exc:  # noqa: BLE001
+                    self._drain_with_error(f"cdp_connect_failed: {exc!s:.60}")
+                    return
+
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = ctx.new_page()
+                try:
+                    while True:
+                        task = self._task_queue.get()
+                        if task is None:
+                            return
+                        record, out_dir = task
+                        try:
+                            path = _download_pdf_with_page(page, record, out_dir)
+                            self._result_queue.put((record, path, None))
+                        except Exception as exc:  # noqa: BLE001
+                            self._result_queue.put((record, None, str(exc)[:120]))
+                finally:
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+        except Exception as exc:  # noqa: BLE001
+            self._drain_with_error(f"worker_init_failed: {exc!s:.60}")
+
+    def _drain_with_error(self, error: str) -> None:
+        """Empty the task queue, putting a synthetic error per task so callers
+        don't hang waiting for results."""
+        while True:
+            task = self._task_queue.get()
+            if task is None:
+                return
+            record, _ = task
+            self._result_queue.put((record, None, error))
+
+
+@contextlib.contextmanager
+def make_pdf_worker_pool(
+    cdp_url: Optional[str],
+    workers: int,
+) -> Iterator[Optional[_PdfWorkerPool]]:
+    """Yield an active worker pool when CDP is reachable; ``None`` otherwise.
+
+    Use as ``with make_pdf_worker_pool(url, n) as pool: ...``. Callers branch
+    on ``pool is None`` to fall back to non-pool behavior.
+    """
+    if not cdp_url or not isinstance(cdp_url, str) or workers <= 1:
+        yield None
+        return
+    pool = _PdfWorkerPool(cdp_url, workers)
+    pool.__enter__()
+    try:
+        yield pool
+    finally:
+        pool.__exit__(None, None, None)
+
+
 def _fetch_pdf_in_worker(
     record: Dict[str, Any],
     cdp_url: str,
@@ -709,6 +869,7 @@ def _try_pdf_fetch_per_article(
     gap_id: str,
     source_id: str,
     emit: Optional[Callable] = None,
+    pdf_pool: Optional["_PdfWorkerPool"] = None,
 ) -> None:
     """For each extracted EBSCO article record, attempt a click-in PDF fetch.
 
@@ -717,28 +878,43 @@ def _try_pdf_fetch_per_article(
       - ``pdf_inline_unavailable`` — detail page has no /viewer/pdf/ link
       - ``pdf_inline_failed``      — link found but capture failed
 
-    Concurrency model
-    -----------------
-    Reads ``ORCH_PDF_WORKERS`` (default ``4``) from the environment. When >1
-    AND we have a CDP-backed session AND its ``cdp_url`` is reachable, a
-    ``ThreadPoolExecutor`` runs N workers concurrently — each worker owns
-    its own ``sync_playwright`` session against the same CDP browser, so
-    auth cookies are shared but the workers run truly in parallel. When set
-    to 1, OR when running against a non-CDP session (HTTP / mock), falls
-    back to the original single-page sequential path.
+    Concurrency model (in priority order)
+    -------------------------------------
+    1. **Persistent worker pool** (preferred): when ``pdf_pool`` is provided,
+       articles are submitted to the pool's queue and results are drained as
+       workers complete them. Workers reuse persistent pages across the
+       whole run — no per-task playwright setup overhead.
+    2. **Per-task ``ThreadPoolExecutor``**: when no pool is given but the
+       session is CDP-backed and ``ORCH_PDF_WORKERS > 1``, each task spawns
+       its own ``sync_playwright`` session. Pays ~1-2 s setup overhead per
+       task; preserved for callers that don't manage a pool (e.g. direct
+       library use, the FastAPI endpoint).
+    3. **Sequential single-page**: when running against a non-CDP session
+       (HTTP, mock) or workers=1, processes articles one at a time using
+       ``session._page``.
     """
     valid = [r for r in (records or [])[:MAX_ARTICLES]
              if isinstance(r, dict) and r.get("title")]
     if not valid:
         return
 
+    # ── 1. Persistent pool path (preferred when available) ──────────────
+    if pdf_pool is not None:
+        for rec in valid:
+            pdf_pool.submit(rec, out_dir)
+        for record, path, error in pdf_pool.drain(len(valid)):
+            _emit_pdf_outcome(
+                record, path, error,
+                gap_id=gap_id, source_id=source_id, emit=emit,
+            )
+        return
+
+    # ── 2. Per-task ThreadPoolExecutor path ─────────────────────────────
     workers = max(1, int(os.environ.get("ORCH_PDF_WORKERS", "4")))
     cdp_url = None
     client = getattr(session, "_client", None)
     if client is not None:
         candidate = getattr(client, "cdp_url", None)
-        # Only accept a real CDP URL string — guards against mock objects in
-        # tests where attribute access auto-generates MagicMock values.
         if isinstance(candidate, str) and candidate.startswith("http"):
             cdp_url = candidate
 
@@ -749,7 +925,6 @@ def _try_pdf_fetch_per_article(
     )
 
     if can_parallelize:
-        # Parallel: each worker owns its own playwright session + page.
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futures = [
                 ex.submit(_fetch_pdf_in_worker, rec, cdp_url, out_dir)
@@ -766,7 +941,7 @@ def _try_pdf_fetch_per_article(
                 )
         return
 
-    # Sequential fallback (single-page, used for non-CDP sessions and tests).
+    # ── 3. Sequential fallback ──────────────────────────────────────────
     for rec in valid:
         try:
             path = download_article_pdf(rec, session, out_dir, emit=emit)
@@ -855,26 +1030,43 @@ def run_fetch(
     # browser_client itself; for non-CDP providers it's a passthrough.
     with browser_client.session() as bc:
 
-        # ── Seed pages: browser required ──────────────────────────────────
-        for i, item in enumerate(seeds, 1):
-            tag = f"[{i}/{len(seeds)}] {item.gap_id}/{item.source_id}"
-            _emit("fetching", "seed_start",
-                  f"{tag}: fetching {item.url[:70]}",
-                  {"gap_id": item.gap_id, "source_id": item.source_id,
-                   "url": item.url[:80], "index": i, "total": len(seeds)})
-            stats.seeds_attempted += 1
-            try:
-                count = fetch_seed_page(item, bc, emit=_emit, on_blocked=on_blocked)
-                stats.seeds_ok += 1
-                stats.articles_extracted += count
-                _emit("fetching", "seed_ok",
-                      f"{tag}: {count} article(s) saved",
-                      {"gap_id": item.gap_id, "source_id": item.source_id, "count": count})
-            except Exception as exc:
-                stats.seeds_failed += 1
-                _emit("fetching", "seed_failed",
-                      f"{tag}: {exc!s:.80}",
-                      {"gap_id": item.gap_id, "source_id": item.source_id, "error": str(exc)[:120]})
+        # Determine if we can run a persistent worker pool for parallel
+        # per-article PDF fetches. The pool reuses N persistent pages
+        # across the whole run, eliminating per-task playwright setup
+        # overhead. Only available when the session is CDP-backed.
+        _pool_cdp_url: Optional[str] = None
+        _client = getattr(bc, "_client", None)
+        if _client is not None:
+            _candidate = getattr(_client, "cdp_url", None)
+            if isinstance(_candidate, str) and _candidate.startswith("http"):
+                _pool_cdp_url = _candidate
+        _pool_workers = max(1, int(os.environ.get("ORCH_PDF_WORKERS", "4")))
+
+        with make_pdf_worker_pool(_pool_cdp_url, _pool_workers) as pdf_pool:
+
+            # ── Seed pages: browser required ──────────────────────────────
+            for i, item in enumerate(seeds, 1):
+                tag = f"[{i}/{len(seeds)}] {item.gap_id}/{item.source_id}"
+                _emit("fetching", "seed_start",
+                      f"{tag}: fetching {item.url[:70]}",
+                      {"gap_id": item.gap_id, "source_id": item.source_id,
+                       "url": item.url[:80], "index": i, "total": len(seeds)})
+                stats.seeds_attempted += 1
+                try:
+                    count = fetch_seed_page(
+                        item, bc,
+                        emit=_emit, on_blocked=on_blocked, pdf_pool=pdf_pool,
+                    )
+                    stats.seeds_ok += 1
+                    stats.articles_extracted += count
+                    _emit("fetching", "seed_ok",
+                          f"{tag}: {count} article(s) saved",
+                          {"gap_id": item.gap_id, "source_id": item.source_id, "count": count})
+                except Exception as exc:
+                    stats.seeds_failed += 1
+                    _emit("fetching", "seed_failed",
+                          f"{tag}: {exc!s:.80}",
+                          {"gap_id": item.gap_id, "source_id": item.source_id, "error": str(exc)[:120]})
 
         # ── PDFs ──────────────────────────────────────────────────────────
         for i, item in enumerate(pdfs, 1):

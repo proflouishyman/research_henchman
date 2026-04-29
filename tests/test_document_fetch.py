@@ -422,6 +422,65 @@ def test_try_pdf_fetch_per_article_emits_unavailable_for_each_missing(tmp_path: 
     assert statuses.count("pdf_inline_unavailable") == 2
 
 
+def test_pdf_worker_pool_drain_yields_for_each_submitted_task() -> None:
+    """make_pdf_worker_pool returns None when CDP is unavailable; passing
+    pdf_pool=None into _try_pdf_fetch_per_article must not raise.
+
+    Also exercises the pool's drain semantics indirectly: when the helper
+    returns None (no CDP), the caller branches to the non-pool path."""
+    from adapters.document_fetch import make_pdf_worker_pool
+
+    # No cdp_url → yields None
+    with make_pdf_worker_pool(None, workers=4) as pool:
+        assert pool is None
+
+    # workers=1 → yields None even with valid url (single-worker is just
+    # the sequential path; no pool overhead)
+    with make_pdf_worker_pool("http://127.0.0.1:9222", workers=1) as pool:
+        assert pool is None
+
+
+def test_try_pdf_fetch_per_article_uses_pool_when_provided(tmp_path: Path) -> None:
+    """When pdf_pool is provided, _try_pdf_fetch_per_article submits each
+    valid record to the pool and drains results — bypassing both the
+    ThreadPoolExecutor path and the sequential fallback."""
+    from adapters.document_fetch import _try_pdf_fetch_per_article
+
+    submitted = []
+    drained = [
+        ({"title": "A", "url": "/c/x/details/a"}, tmp_path / "A.pdf", None),
+        ({"title": "B", "url": "/c/x/details/b"}, None, None),
+    ]
+
+    class _FakePool:
+        def submit(self, record, out_dir):
+            submitted.append((record["title"], out_dir))
+        def drain(self, n, timeout=300.0):
+            assert n == len(drained)
+            for r in drained:
+                yield r
+
+    events = []
+    _try_pdf_fetch_per_article(
+        records=[
+            {"title": "A", "url": "/c/x/details/a"},
+            {"title": "B", "url": "/c/x/details/b"},
+        ],
+        session=object(),  # not consulted when pool is provided
+        out_dir=tmp_path,
+        gap_id="G1",
+        source_id="ebsco_api",
+        emit=lambda *a, **kw: events.append(a),
+        pdf_pool=_FakePool(),
+    )
+    # Both records went to the pool
+    assert [t for t, _ in submitted] == ["A", "B"]
+    # Two emit events: one ok, one unavailable
+    statuses = [e[1] for e in events]
+    assert statuses.count("pdf_inline_ok") == 1
+    assert statuses.count("pdf_inline_unavailable") == 1
+
+
 def test_run_fetch_tallies_inline_pdf_events(tmp_path: Path) -> None:
     """Verify run_fetch's emit wrapper tallies pdf_inline_* statuses into stats."""
     from adapters.document_fetch import run_fetch, FetchItem

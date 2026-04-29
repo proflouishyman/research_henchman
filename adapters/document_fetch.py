@@ -17,11 +17,13 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -493,42 +495,24 @@ _EBSCO_PDF_LINK_JS = """() => {
 }"""
 
 
-def download_article_pdf(
+def _download_pdf_with_page(
+    page: Any,
     record: Dict[str, Any],
-    session: Any,
     out_dir: Path,
     *,
-    emit: Optional[Callable] = None,
     detail_wait_ms: int = 1500,
     viewer_wait_ms: int = 3000,
 ) -> Optional[Path]:
-    """Visit an EBSCO article's detail page, find the PDF viewer URL, and
-    capture the PDF bytes from the page's response stream.
+    """Core PDF-fetch logic: takes a Playwright page directly.
 
-    Pattern (validated end-to-end against research.ebsco.com):
-      1. Navigate to the article's detail URL (from extracted record).
-      2. Look for ``a[href*="/viewer/pdf/"]`` in the DOM.
-      3. If absent, the article has no PDF available — return None (this is
-         a normal outcome for many EBSCO records, especially older ones).
-      4. If present, attach a response listener and navigate to the viewer
-         URL. The viewer page triggers a GET to ``content.ebscohost.com``
-         that returns ``Content-Type: application/pdf``.
-      5. Listener captures the body bytes. Write to ``<slug>.pdf`` and
-         return the path.
-
-    Best-effort: never raises, never blocks the metadata pipeline. Returns
-    None for any failure (no PDF, page error, capture timeout, etc.).
-    Requires a CDP-backed session (``session._page`` available); for HTTP
-    or claude_cu providers, returns None immediately.
+    Shared between the sequential session-based path and parallel worker
+    threads (each of which manages its own page). Best-effort: never raises;
+    returns the saved Path on success, None for any failure mode (no PDF
+    available, navigation error, capture timeout, write error).
     """
     title = (record.get("title") or "").strip()
     raw_url = (record.get("url") or "").strip()
     if not title or not raw_url:
-        return None
-
-    # Persistent CDP page; non-CDP sessions can't click into detail pages.
-    page = getattr(session, "_page", None)
-    if page is None:
         return None
 
     slug = _slugify(title)[:60]
@@ -602,6 +586,121 @@ def download_article_pdf(
         return None
 
 
+def download_article_pdf(
+    record: Dict[str, Any],
+    session: Any,
+    out_dir: Path,
+    *,
+    emit: Optional[Callable] = None,
+    detail_wait_ms: int = 1500,
+    viewer_wait_ms: int = 3000,
+) -> Optional[Path]:
+    """Visit an EBSCO article's detail page, find the PDF viewer URL, and
+    capture the PDF bytes from the page's response stream.
+
+    Pattern (validated end-to-end against research.ebsco.com):
+      1. Navigate to the article's detail URL (from extracted record).
+      2. Look for ``a[href*="/viewer/pdf/"]`` in the DOM.
+      3. If absent, the article has no PDF available — return None (this is
+         a normal outcome for many EBSCO records, especially older ones).
+      4. If present, attach a response listener and navigate to the viewer
+         URL. The viewer page triggers a GET to ``content.ebscohost.com``
+         that returns ``Content-Type: application/pdf``.
+      5. Listener captures the body bytes. Write to ``<slug>.pdf`` and
+         return the path.
+
+    Best-effort: never raises, never blocks the metadata pipeline. Returns
+    None for any failure (no PDF, page error, capture timeout, etc.).
+    Requires a CDP-backed session (``session._page`` available); for HTTP
+    or claude_cu providers, returns None immediately.
+    """
+    title = (record.get("title") or "").strip()
+    raw_url = (record.get("url") or "").strip()
+    if not title or not raw_url:
+        return None
+
+    # Persistent CDP page; non-CDP sessions can't click into detail pages.
+    page = getattr(session, "_page", None)
+    if page is None:
+        return None
+
+    return _download_pdf_with_page(
+        page, record, out_dir,
+        detail_wait_ms=detail_wait_ms,
+        viewer_wait_ms=viewer_wait_ms,
+    )
+
+
+def _fetch_pdf_in_worker(
+    record: Dict[str, Any],
+    cdp_url: str,
+    out_dir: Path,
+) -> Tuple[Dict[str, Any], Optional[Path], Optional[str]]:
+    """Worker function for parallel PDF fetch.
+
+    Each call creates its own ``sync_playwright`` session (Playwright sync
+    state is per-thread-not-shareable), connects to the same CDP browser,
+    opens a transient page, runs ``_download_pdf_with_page``, and tears
+    down. Multiple workers run truly concurrently because each owns
+    independent Playwright state but shares the browser's cookie jar.
+
+    Returns ``(record, path_or_None, error_or_None)``.
+    """
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore
+    except ImportError:
+        return record, None, "playwright_not_installed"
+
+    from adapters.cdp_utils import effective_cdp_url  # local import
+    effective = effective_cdp_url(cdp_url)
+
+    try:
+        with sync_playwright() as pw:
+            try:
+                browser = pw.chromium.connect_over_cdp(effective)
+            except Exception as exc:  # noqa: BLE001
+                return record, None, f"cdp_connect_failed: {exc!s:.60}"
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.new_page()
+            try:
+                path = _download_pdf_with_page(page, record, out_dir)
+                return record, path, None
+            finally:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+    except Exception as exc:  # noqa: BLE001
+        return record, None, str(exc)[:120]
+
+
+def _emit_pdf_outcome(
+    record: Dict[str, Any],
+    path: Optional[Path],
+    error: Optional[str],
+    *,
+    gap_id: str,
+    source_id: str,
+    emit: Optional[Callable],
+) -> None:
+    """Translate a (path, error) result into the pipeline's emit vocabulary."""
+    if not emit:
+        return
+    title_short = (record.get("title") or "")[:60]
+    meta = {"gap_id": gap_id, "source_id": source_id, "title": title_short}
+    if error:
+        emit("fetching", "pdf_inline_failed",
+             f"[{gap_id}] PDF errored for: {title_short} — {error[:60]}",
+             {**meta, "error": error})
+    elif path is None:
+        emit("fetching", "pdf_inline_unavailable",
+             f"[{gap_id}] no PDF for: {title_short}", meta)
+    else:
+        emit("fetching", "pdf_inline_ok",
+             f"[{gap_id}] PDF saved: {path.name}",
+             {**meta, "file": path.name})
+
+
 def _try_pdf_fetch_per_article(
     records: List[Dict[str, Any]],
     session: Any,
@@ -617,38 +716,68 @@ def _try_pdf_fetch_per_article(
       - ``pdf_inline_ok``          — PDF bytes captured and saved
       - ``pdf_inline_unavailable`` — detail page has no /viewer/pdf/ link
       - ``pdf_inline_failed``      — link found but capture failed
+
+    Concurrency model
+    -----------------
+    Reads ``ORCH_PDF_WORKERS`` (default ``4``) from the environment. When >1
+    AND we have a CDP-backed session AND its ``cdp_url`` is reachable, a
+    ``ThreadPoolExecutor`` runs N workers concurrently — each worker owns
+    its own ``sync_playwright`` session against the same CDP browser, so
+    auth cookies are shared but the workers run truly in parallel. When set
+    to 1, OR when running against a non-CDP session (HTTP / mock), falls
+    back to the original single-page sequential path.
     """
-    for rec in (records or [])[:MAX_ARTICLES]:
-        if not isinstance(rec, dict) or not rec.get("title"):
-            continue
-        title_short = (rec.get("title") or "")[:60]
-        meta = {
-            "gap_id": gap_id,
-            "source_id": source_id,
-            "title": title_short,
-        }
+    valid = [r for r in (records or [])[:MAX_ARTICLES]
+             if isinstance(r, dict) and r.get("title")]
+    if not valid:
+        return
+
+    workers = max(1, int(os.environ.get("ORCH_PDF_WORKERS", "4")))
+    cdp_url = None
+    client = getattr(session, "_client", None)
+    if client is not None:
+        candidate = getattr(client, "cdp_url", None)
+        # Only accept a real CDP URL string — guards against mock objects in
+        # tests where attribute access auto-generates MagicMock values.
+        if isinstance(candidate, str) and candidate.startswith("http"):
+            cdp_url = candidate
+
+    can_parallelize = (
+        workers > 1
+        and cdp_url is not None
+        and getattr(session, "_page", None) is not None
+    )
+
+    if can_parallelize:
+        # Parallel: each worker owns its own playwright session + page.
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [
+                ex.submit(_fetch_pdf_in_worker, rec, cdp_url, out_dir)
+                for rec in valid
+            ]
+            for fut in as_completed(futures):
+                try:
+                    record, path, error = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    record, path, error = {}, None, str(exc)[:120]
+                _emit_pdf_outcome(
+                    record, path, error,
+                    gap_id=gap_id, source_id=source_id, emit=emit,
+                )
+        return
+
+    # Sequential fallback (single-page, used for non-CDP sessions and tests).
+    for rec in valid:
         try:
             path = download_article_pdf(rec, session, out_dir, emit=emit)
+            error = None
         except Exception as exc:  # noqa: BLE001
-            if emit:
-                emit("fetching", "pdf_inline_failed",
-                     f"[{gap_id}] PDF attempt errored for: {title_short} — {exc!s:.60}",
-                     {**meta, "error": str(exc)[:120]})
-            continue
-
-        if path is None:
-            # Either no PDF link on detail page, or capture didn't yield bytes.
-            # We can't easily distinguish without re-instrumenting; treat
-            # null-path as "unavailable" (the common case in EBSCO).
-            if emit:
-                emit("fetching", "pdf_inline_unavailable",
-                     f"[{gap_id}] no PDF for: {title_short}",
-                     meta)
-        else:
-            if emit:
-                emit("fetching", "pdf_inline_ok",
-                     f"[{gap_id}] PDF saved: {path.name}",
-                     {**meta, "file": path.name})
+            path = None
+            error = str(exc)[:120]
+        _emit_pdf_outcome(
+            rec, path, error,
+            gap_id=gap_id, source_id=source_id, emit=emit,
+        )
 
 
 # ---------------------------------------------------------------------------

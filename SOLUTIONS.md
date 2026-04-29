@@ -1,3 +1,17 @@
+[2026-04-29] - CLI Refactor: fetch_documents.py Rewritten as Thin Wrapper over document_fetch Library
+
+Problem
+scripts/fetch_documents.py duplicated virtually all logic already present in adapters/document_fetch.py: record classification, abstract saving, seed-page extraction (including the JS extractors for EBSCO/JSTOR/MUSE), PDF downloading, CDP ping, and tab-opening. This created two out-of-sync implementations where a bug fix or provider-DOM change would need to be applied in two places.
+
+Root Cause
+The CLI script was written before adapters/document_fetch.py existed as a standalone library. When the library was extracted for API use, the script was left intact rather than refactored to delegate, creating the duplication.
+
+Solution
+Rewrote scripts/fetch_documents.py as a thin CLI wrapper (~200 lines vs ~610 before). All fetch logic is now delegated to library functions: collect_fetch_items() for item collection, run_fetch() for the full fetch orchestration (seed extraction, PDF download, abstract saving), and make_browser_client(settings) for browser construction — exactly mirroring how main.py uses these functions. The script retains: run resolution (--run-id flag, API fallback, disk fallback), Chrome launch guidance, the interactive login-prompt gate (with new --no-prompt flag to skip all input() calls for scripted/non-interactive use), and a structured emit() callback that prints [stage/status] message lines. All existing flags (--run-id, --gap-id, --limit, --dry-run, --cdp-url) are preserved with identical semantics. Added 6 new tests in tests/test_fetch_cli.py covering --dry-run, --no-prompt, emit formatting, and port parsing.
+
+Notes
+The old script used plain dicts for fetch items; the library uses FetchItem dataclasses. The CLI now accesses fields as attributes (item.fetch_type, item.gap_id) rather than dict keys. No library files were changed.
+
 [2026-04-29] - Post-Run Document Fetch: Full Article Retrieval via API and CDP Browser
 
 Problem

@@ -254,6 +254,21 @@ class RenderResult:
 
 
 @dataclass
+class FetchDocumentsResult:
+    """Summary of a post-run document fetch pass."""
+
+    items_found: int = 0
+    abstracts_saved: int = 0
+    seeds_attempted: int = 0
+    seeds_ok: int = 0
+    seeds_failed: int = 0
+    pdfs_attempted: int = 0
+    pdfs_ok: int = 0
+    pdfs_failed: int = 0
+    articles_extracted: int = 0
+
+
+@dataclass
 class RunRecord:
     """Persisted run state. Owns manuscript->plan->execution lifecycle."""
 
@@ -267,6 +282,9 @@ class RunRecord:
     ingest_results: List[IngestResult] = field(default_factory=list)
     fit_results: List[FitResult] = field(default_factory=list)
     render_results: List[RenderResult] = field(default_factory=list)
+    # Post-run document fetch state (independent of pipeline status)
+    fetch_status: str = ""                              # pending | running | complete | failed
+    fetch_result: Optional[FetchDocumentsResult] = None
     created_at: str = ""
     updated_at: str = ""
     error: str = ""

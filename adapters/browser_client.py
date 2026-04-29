@@ -236,6 +236,64 @@ class BrowserClient:
             finally:
                 page.close()
 
+    def fetch_with_eval(
+        self,
+        url: str,
+        js_expr: str,
+        *,
+        wait_ms: int = 2000,
+    ) -> tuple:
+        """Navigate to `url` via CDP, wait for JS rendering, run `js_expr`.
+
+        Returns ``(PageResult, eval_result)`` where ``eval_result`` is whatever
+        the JS expression returns (list / dict / scalar / None).  Only supported
+        under the ``playwright_cdp`` provider; HTTP and claude_cu providers return
+        the page result with ``eval_result = None``.
+
+        Used by document_fetch extractors (EBSCO, JSTOR) that need to query the
+        live DOM to extract article records from search-results pages.
+        """
+        if self.provider != BrowserProvider.PLAYWRIGHT_CDP:
+            page_result = self.fetch(url)
+            return page_result, None
+
+        try:
+            from playwright.sync_api import sync_playwright  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("playwright not installed") from exc
+
+        from adapters.cdp_utils import effective_cdp_url  # local import
+        effective = effective_cdp_url(self.cdp_url)
+
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(effective)
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.new_page()
+            try:
+                page.goto(url, timeout=self.timeout_seconds * 1000, wait_until="domcontentloaded")
+                if wait_ms > 0:
+                    page.wait_for_timeout(wait_ms)
+                try:
+                    eval_result = page.evaluate(js_expr)
+                except Exception as eval_exc:  # noqa: BLE001
+                    eval_result = None
+                    _ = eval_exc  # logged via PageResult error below
+
+                html_bytes = page.content().encode("utf-8", errors="ignore")
+                page_result = PageResult(
+                    url=url,
+                    status_code=200,
+                    content=html_bytes,
+                    content_type="text/html",
+                )
+                blocked, reason, action = _detect_blocked(html_bytes, url)
+                page_result.blocked = blocked
+                page_result.blocked_reason = reason
+                page_result.action_required = action
+                return page_result, eval_result
+            finally:
+                page.close()
+
     def _playwright_open_tabs(self, urls: List[str]) -> Dict[str, Any]:
         """Open URLs as visible tabs in the CDP browser."""
         try:

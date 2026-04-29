@@ -11,7 +11,7 @@ import hashlib
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import asyncio
 
@@ -26,6 +26,7 @@ from adapters.seed_url_fetch import probe_sign_in_access
 from config import OrchestratorSettings, load_runtime_env, read_env_values, write_env_updates
 from contracts import (
     ConnectionSaveInput,
+    FetchDocumentsResult,
     RetryInput,
     RunCreateInput,
     RunRecord,
@@ -37,6 +38,8 @@ from contracts import (
     run_record_from_dict,
     run_record_to_dict,
 )
+from adapters.browser_client import make_browser_client
+from adapters.document_fetch import collect_fetch_items, preview_counts, run_fetch
 from library_profiles import get_active_library_profile, get_active_university_databases, load_library_profiles
 from layers import analyze_manuscript, reflect_on_gaps
 from layers.pull import SOURCE_REGISTRY, build_source_availability, source_capability_catalog
@@ -1326,6 +1329,143 @@ def api_retry_run(run_id: str, inp: RetryInput) -> Dict[str, Any]:
     _emit_event(run_id, "queued", "queued", "Retry queued", {"from_stage": inp.from_stage, "force": inp.force})
     _start_background_run(run_id)
     return store.get_run(run_id) or {}
+
+
+@app.get("/api/orchestrator/runs/{run_id}/fetch_items")
+def api_fetch_items_preview(run_id: str) -> Dict[str, Any]:
+    """Return a preview count of fetchable items for a completed run.
+
+    Used by the UI to show seed/pdf/abstract counts before the user commits
+    to starting a fetch pass.  Safe to call at any time; reads existing pull
+    artifacts only.
+    """
+
+    row = store.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    settings = _settings()
+    pull_root = settings.data_root / "pull_outputs" / run_id
+    counts = preview_counts(pull_root)
+    return {
+        "run_id": run_id,
+        "fetch_status": str(row.get("fetch_status", "")),
+        "counts": counts,
+        "cdp_available": make_browser_client(settings).is_available(),
+    }
+
+
+@app.post("/api/orchestrator/runs/{run_id}/fetch_documents")
+def api_fetch_documents(run_id: str) -> Dict[str, Any]:
+    """Trigger a background document fetch pass for a completed run.
+
+    Navigates seed search URLs via the attached CDP browser and downloads
+    available PDFs.  Progress events are written to the run's event stream
+    (same ``/runs/{run_id}/events`` endpoint the UI already polls).
+
+    The user must already be signed into library databases in the CDP
+    browser before calling this — use the existing sign-in check endpoints
+    (``/signin/preflight``, ``/signin/test``, ``/signin/open``) to gate the
+    call from the UI.
+
+    Returns immediately; poll ``/runs/{run_id}`` for ``fetch_status`` and
+    ``fetch_result`` to track completion.
+    """
+
+    row = store.get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    # Prevent duplicate fetch passes
+    current_fetch = str(row.get("fetch_status", "")).strip()
+    if current_fetch == "running":
+        raise HTTPException(status_code=409, detail="fetch already running")
+
+    # Mark as pending and launch background thread
+    rec = run_record_from_dict(row)
+    rec.fetch_status = "pending"
+    rec.fetch_result = None
+    rec.updated_at = now_utc()
+    store.upsert_run(run_record_to_dict(rec))
+
+    _emit_event(run_id, "fetching", "queued", "Document fetch queued", {"run_id": run_id})
+    threading.Thread(target=_run_fetch_background, args=(run_id,), daemon=True).start()
+    return {"run_id": run_id, "fetch_status": "pending"}
+
+
+def _run_fetch_background(run_id: str) -> None:
+    """Background thread: fetch documents and update run record when done."""
+
+    settings = _settings()
+    pull_root = settings.data_root / "pull_outputs" / run_id
+
+    def emit(stage: str, status: str, message: str, meta: Optional[Dict] = None) -> None:
+        _emit_event(run_id, stage, status, message, meta or {})
+
+    # Mark as running
+    row = store.get_run(run_id) or {}
+    rec = run_record_from_dict(row)
+    rec.fetch_status = "running"
+    rec.updated_at = now_utc()
+    store.upsert_run(run_record_to_dict(rec))
+    emit("fetching", "started", "Document fetch started", {"run_id": run_id})
+
+    try:
+        browser_client = make_browser_client(settings)
+        if not browser_client.is_available():
+            raise RuntimeError(
+                "CDP browser unavailable — start Chrome with --remote-debugging-port=9222"
+            )
+
+        items = collect_fetch_items(pull_root, skip_already_fetched=True)
+        emit("fetching", "items_collected",
+             f"Found {len(items)} items to fetch",
+             {"total": len(items),
+              "seed": sum(1 for i in items if i.fetch_type == "seed"),
+              "pdf": sum(1 for i in items if i.fetch_type == "pdf"),
+              "abstract": sum(1 for i in items if i.fetch_type == "abstract")})
+
+        fetch_stats = run_fetch(items, browser_client, emit=emit)
+
+        # Persist result
+        row = store.get_run(run_id) or {}
+        rec = run_record_from_dict(row)
+        rec.fetch_status = "complete"
+        rec.fetch_result = FetchDocumentsResult(
+            items_found=fetch_stats.items_found,
+            abstracts_saved=fetch_stats.abstracts_saved,
+            seeds_attempted=fetch_stats.seeds_attempted,
+            seeds_ok=fetch_stats.seeds_ok,
+            seeds_failed=fetch_stats.seeds_failed,
+            pdfs_attempted=fetch_stats.pdfs_attempted,
+            pdfs_ok=fetch_stats.pdfs_ok,
+            pdfs_failed=fetch_stats.pdfs_failed,
+            articles_extracted=fetch_stats.articles_extracted,
+        )
+        rec.updated_at = now_utc()
+        store.upsert_run(run_record_to_dict(rec))
+        emit("fetching", "complete",
+             f"Fetch complete — {fetch_stats.total_ok} items saved "
+             f"({fetch_stats.articles_extracted} articles, "
+             f"{fetch_stats.abstracts_saved} abstracts, "
+             f"{fetch_stats.pdfs_ok} PDFs)",
+             {
+                 "items_found": fetch_stats.items_found,
+                 "abstracts_saved": fetch_stats.abstracts_saved,
+                 "seeds_ok": fetch_stats.seeds_ok,
+                 "seeds_failed": fetch_stats.seeds_failed,
+                 "pdfs_ok": fetch_stats.pdfs_ok,
+                 "pdfs_failed": fetch_stats.pdfs_failed,
+                 "articles_extracted": fetch_stats.articles_extracted,
+             })
+
+    except Exception as exc:
+        row = store.get_run(run_id) or {}
+        rec = run_record_from_dict(row)
+        rec.fetch_status = "failed"
+        rec.updated_at = now_utc()
+        store.upsert_run(run_record_to_dict(rec))
+        emit("fetching", "failed", f"Fetch failed: {exc!s:.200}", {"error": str(exc)[:200]})
 
 
 @app.get("/api/orchestrator/connections/values")

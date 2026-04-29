@@ -1,3 +1,21 @@
+[2026-04-29] - Pipeline skipped CAPTCHA / login-wall pages instead of pausing for the user
+
+Problem
+During CLI fetch runs, when a provider page returned a CAPTCHA, "I'm not a robot" challenge, Cloudflare interstitial, login wall, or rate-limit notice, the pipeline emitted a "fetching/blocked" event but immediately moved on to the next URL. The user — sitting in front of the CDP Chrome window — had no chance to solve the challenge before the next navigation overwrote the page. Articles that could have been recovered with one human click were silently lost. This was observed in real runs: out of 160 expected articles at --limit 20, ~24 (15%) returned 0 extractions, some attributable to undetected CAPTCHA states.
+
+Root Cause
+Two issues:
+1. Detection coverage. _BLOCK_SIGNALS in adapters/browser_client.py only matched a handful of phrases (access denied, captcha, please log in, authentication required, session expired, institutional access, not authorized). It missed the visible widget text "I'm not a robot" / "I am not a robot", Cloudflare's "Just a moment / Checking your browser" interstitial, rate-limit messages ("Too many requests", "Quota limit exceeded"), and explicit "you have been blocked" notices.
+2. No retry path. fetch_seed_page detected blocked pages (when the regex matched) but only logged + saved _blocked.html and returned 0 — no callback, no pause, no retry. There was no way for the CLI to insert a human-in-the-loop step.
+
+Solution
+1. Expanded _BLOCK_SIGNALS in adapters/browser_client.py to include reCAPTCHA widget phrasing ("I'm not a robot", "I am not a robot", "verify you are human", "verify your humanity"), Cloudflare interstitials ("checking your browser", "just a moment"), rate-limit / quota wording ("too many requests", "rate limit", "quota limit exceeded", "quota violation"), and explicit-block notices ("you have been blocked", "your access has been blocked"). Each maps to a typed reason ("captcha" / "rate_limit" / "access_denied") with a useful action_required string.
+2. Added an on_blocked: Optional[Callable] = None parameter to both fetch_seed_page() and run_fetch() in adapters/document_fetch.py. When a page is blocked, fetch_seed_page now calls on_blocked(item, page_result); if the handler returns True, the URL is re-fetched once. On retry success it emits a "fetching/unblocked" event. If still blocked (or no handler given), behavior is unchanged: save _blocked.html, return 0.
+3. Wired up _make_on_blocked() in scripts/fetch_documents.py: when running with prompts enabled, it prints a clear "PAUSED — page blocked" banner with gap_id, source_id, URL, and action hint; sends a best-effort Telegram ping (per AGENTS.md §15, silent on failure if credentials absent); calls input("Press Enter once unblocked..."); then returns True so the library retries. With --no-prompt the on_blocked handler is None (preserves the existing skip-and-continue behavior for scripted use). Added 4 new tests in tests/test_document_fetch.py covering retry-on-True, skip-on-False, the new CAPTCHA phrases, and rate-limit detection. Total tests: 158 → 162, all passing.
+
+Notes
+The pause is per-blocked-page (one input() per blocked URL) — if many pages are blocked, the user sees one prompt per page rather than a global "everything stopped" prompt. The library still retries the URL only ONCE after unblock; if the page remains blocked after the user's intervention, the pipeline saves _blocked.html and moves on (avoids infinite loops). Telegram delivery is intentionally silent on failure so missing credentials never break the pause flow itself.
+
 [2026-04-29] - EBSCO selectors stale after research.ebsco.com SPA migration
 
 Problem

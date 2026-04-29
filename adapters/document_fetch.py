@@ -291,10 +291,20 @@ def fetch_seed_page(
     browser_client: Any,
     *,
     emit: Optional[Callable] = None,
+    on_blocked: Optional[Callable] = None,
 ) -> int:
     """Navigate a seed search URL, extract article records, save as markdown.
 
     Returns the number of article files written.
+
+    Parameters
+    ----------
+    on_blocked:
+        Optional ``on_blocked(item, page_result) -> bool`` handler. Invoked when
+        the first fetch returns a blocked page (CAPTCHA / login wall / access
+        denied). If the handler returns True, the URL is re-fetched once — used
+        by the CLI to pause for the user to solve a CAPTCHA in the live browser
+        before continuing.
     """
 
     source_id = item.source_id
@@ -311,13 +321,12 @@ def fetch_seed_page(
     else:
         js_expr = None  # generic: save HTML only
 
-    if js_expr:
-        page_result, eval_result = browser_client.fetch_with_eval(
-            item.url, js_expr, wait_ms=2500
-        )
-    else:
-        page_result = browser_client.fetch(item.url)
-        eval_result = None
+    def _attempt():
+        if js_expr:
+            return browser_client.fetch_with_eval(item.url, js_expr, wait_ms=2500)
+        return browser_client.fetch(item.url), None
+
+    page_result, eval_result = _attempt()
 
     # Surface blocked pages to the emit function so users can act
     if page_result.blocked:
@@ -334,9 +343,30 @@ def fetch_seed_page(
                     "url": item.url[:80],
                 },
             )
-        # Still save the HTML so users can inspect and retry manually
-        _save_html(page_result.content, out_dir, suffix="_blocked")
-        return 0
+
+        # Give the caller a chance to unblock (e.g., user solves CAPTCHA in
+        # the live browser) and retry once.
+        retry = False
+        if on_blocked is not None:
+            try:
+                retry = bool(on_blocked(item, page_result))
+            except Exception:
+                retry = False
+        if retry:
+            page_result, eval_result = _attempt()
+            if not page_result.blocked and emit:
+                emit(
+                    "fetching",
+                    "unblocked",
+                    f"[{item.gap_id}] {source_id}: retry succeeded after manual unblock",
+                    {"gap_id": item.gap_id, "source_id": source_id},
+                )
+
+        if page_result.blocked:
+            # Still blocked after retry (or no retry attempted) — save HTML
+            # for manual inspection and skip extraction.
+            _save_html(page_result.content, out_dir, suffix="_blocked")
+            return 0
 
     # Save raw HTML for all providers (manual review backup)
     _save_html(page_result.content, out_dir)
@@ -416,6 +446,7 @@ def run_fetch(
     browser_client: Any,
     *,
     emit: Optional[Callable] = None,
+    on_blocked: Optional[Callable] = None,
 ) -> FetchDocumentsStats:
     """Execute the full fetch pass for a list of FetchItems.
 
@@ -429,6 +460,11 @@ def run_fetch(
     emit:
         Optional ``emit(stage, status, message, meta)`` callable used to send
         structured events to the run's event stream.
+    on_blocked:
+        Optional ``on_blocked(item, page_result) -> bool`` handler invoked when
+        a seed page is blocked. Forwarded to ``fetch_seed_page``; if the
+        handler returns True, the page is re-fetched once after the user has a
+        chance to solve a CAPTCHA / sign-in in the live browser session.
 
     Returns
     -------
@@ -464,7 +500,7 @@ def run_fetch(
                "url": item.url[:80], "index": i, "total": len(seeds)})
         stats.seeds_attempted += 1
         try:
-            count = fetch_seed_page(item, browser_client, emit=_emit)
+            count = fetch_seed_page(item, browser_client, emit=_emit, on_blocked=on_blocked)
             stats.seeds_ok += 1
             stats.articles_extracted += count
             _emit("fetching", "seed_ok",

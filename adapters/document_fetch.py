@@ -27,22 +27,29 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # JS expression for extracting EBSCO search-results records from the live DOM.
+# Primary selectors target the modern research.ebsco.com SPA (data-auto-* attrs);
+# legacy selectors are kept as fallbacks for older EBSCOhost skins.
 _EBSCO_JS = """() => {
     const results = [];
     const containers = document.querySelectorAll(
-        '.result-list-item, article.record, [data-auto="record"], li.results-list-item'
+        'article[data-auto="search-result-item"], '
+      + '.result-list-item, article.record, [data-auto="record"], li.results-list-item'
     );
     containers.forEach((el, idx) => {
         if (idx >= 8) return;
         const getText = sel => { const n = el.querySelector(sel); return n ? n.innerText.trim() : ''; };
         const getAttr = (sel, attr) => { const n = el.querySelector(sel); return n ? (n.getAttribute(attr)||'').trim() : ''; };
-        const title    = getText('.title-link') || getText('[data-auto="result-item-title"]') || getText('h3.title') || getText('a.record__title') || '';
-        const authors  = getText('.authors-list') || getText('[data-auto="result-item-authors"]') || '';
-        const source   = getText('.source-content') || getText('[data-auto="result-item-source"]') || '';
+        const title    = getText('[data-auto="result-item-title__link"]') || getText('[data-auto="result-item-title"]') || getText('.title-link') || getText('h3.title') || getText('a.record__title') || '';
+        const authors  = getText('[data-auto="result-item-metadata-content--contributors"]') || getText('.authors-list') || getText('[data-auto="result-item-authors"]') || '';
+        const source   = getText('[data-auto="result-item-metadata-content--published"]') || getText('.source-content') || getText('[data-auto="result-item-source"]') || '';
+        const database = getText('[data-auto="result-item-metadata-content--database"]') || '';
         const date     = getText('.date-content') || getText('[data-auto="result-item-date"]') || '';
-        const abstract = getText('.abstract-value') || getText('.record__abstract') || getText('.abstract-text') || '';
+        const abstract = getText('[data-auto="abstract-content"]') || getText('.abstract-value') || getText('.record__abstract') || getText('.abstract-text') || '';
+        const titleHrefRaw = getAttr('[data-auto="result-item-title__link"]', 'href');
+        let titleHref = titleHrefRaw;
+        try { if (titleHrefRaw) titleHref = new URL(titleHrefRaw, location.origin).href; } catch (e) {}
         const pdfLink  = getAttr('a[href*="pdfviewer"], a.pdf-link, [data-auto="pdf-link"]', 'href');
-        if (title) results.push({title, authors, source, date, abstract, pdf_url: pdfLink});
+        if (title) results.push({title, authors, source, database, date, abstract, url: titleHref, pdf_url: pdfLink});
     });
     return results;
 }"""
@@ -514,6 +521,10 @@ def _write_ebsco_records(records: Any, out_dir: Path) -> int:
             f"**Source:** {rec.get('source') or '—'}  ",
             f"**Date:** {rec.get('date') or '—'}  ",
         ]
+        if rec.get("database"):
+            lines.append(f"**Database:** {rec['database']}  ")
+        if rec.get("url"):
+            lines.append(f"**URL:** {rec['url']}  ")
         if rec.get("pdf_url"):
             lines.append(f"**PDF:** {rec['pdf_url']}  ")
         lines += ["", "## Abstract", "", rec.get("abstract") or "_(not available)_", ""]

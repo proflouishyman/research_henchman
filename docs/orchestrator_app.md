@@ -157,6 +157,15 @@ Environment controls all behavior (`config.py`):
 - `GET /api/orchestrator/sources/catalog` returns active-profile `university_databases` rows (`name`, `source_id`, `url`, `categories`, `claim_kinds`, `evidence_needs`) plus `library_system` metadata.
 - Runtime routing uses profile metadata to constrain Playwright availability by active university system, while API sources remain global/config-driven.
 
+## Post-run document fetch CLI (`scripts/fetch_documents.py`)
+
+The CLI auto-launches Chrome with CDP when it is not already reachable, using a
+dedicated `~/.research_henchman_chrome` profile so it does not disturb the user's
+normal Chrome tabs or profile.  Library logins are persisted in the profile across
+runs — sign in once and the session stays live on subsequent fetches.  Pass
+`--no-launch` to opt out of auto-launch and get the original "print help and wait"
+behavior (useful when Chrome is managed externally or in scripted CI environments).
+
 ## Local run
 ```bash
 uvicorn main:app --reload --port 8876

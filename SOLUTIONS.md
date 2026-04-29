@@ -1,3 +1,17 @@
+[2026-04-29] - CLI auto-launches Chrome with CDP
+
+Problem
+scripts/fetch_documents.py printed a _CHROME_HELP block and blocked on input("Press Enter once Chrome is running...") when CDP was unreachable. Users had to manually copy the launch command into another terminal, which was error-prone and prevented scripted/non-interactive use even with --no-prompt.
+
+Root Cause
+The script had no mechanism to spawn Chrome itself. It could only detect whether Chrome was already running and print guidance if not.
+
+Solution
+Added _launch_chrome(port) — a new function in scripts/fetch_documents.py (~40 lines) that resolves the Chrome executable (macOS app bundle path first, then google-chrome/chromium on PATH via shutil.which), spawns Chrome with subprocess.Popen(start_new_session=True) pointing at a dedicated ~/.research_henchman_chrome user-data-dir, and returns the PID. Added _cdp_poll_until_ready(cdp_url) that polls /json/version every 0.5 s for up to 15 s using the same urllib + Host-header pattern as BrowserClient._playwright_cdp_ping(). The main() sign-in gate now auto-launches and polls by default; passing --no-launch restores the previous print-help-and-wait behavior. Added 2 new tests in tests/test_fetch_cli.py: one asserts Popen is never called with --no-launch; the other asserts Popen is called with --remote-debugging-port= and --user-data-dir= in default mode.
+
+Notes
+The ~/.research_henchman_chrome profile is dedicated and separate from the user's normal Chrome profile — no tab collisions. Library logins persist across CLI runs in that profile. If no Chrome executable is found, the script prints a clear error and exits non-zero. The --no-launch flag preserves full backwards compatibility for scripted or externally-managed environments.
+
 [2026-04-29] - CLI Refactor: fetch_documents.py Rewritten as Thin Wrapper over document_fetch Library
 
 Problem

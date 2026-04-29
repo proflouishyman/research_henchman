@@ -27,6 +27,7 @@ Usage (adapters):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
@@ -165,6 +166,70 @@ class BrowserClient:
             "action_required": "",
         }
 
+    @contextlib.contextmanager
+    def session(self):
+        """Reusable browser session — opens ONE persistent tab and yields a
+        session object that reuses it across all fetches.
+
+        Without this context manager, every ``fetch_with_eval`` call enters
+        its own ``sync_playwright`` block and creates a new tab via
+        ``ctx.new_page()``, which on Chrome+CDP repeatedly steals OS focus
+        away from whatever the user is doing. With ``session()``, only the
+        initial tab open pulls focus once; the user's previously-active tab
+        is brought back to the front immediately, and all subsequent
+        navigations reuse the same tab without further focus events.
+
+        Yields an object exposing ``fetch``, ``fetch_with_eval``,
+        ``is_available``, and ``open_tabs`` — interface-compatible with
+        ``BrowserClient`` so callers (``run_fetch`` / ``fetch_seed_page``)
+        can use a session and a raw client interchangeably.
+
+        For non-CDP providers (HTTP / claude_cu) the session is a no-op
+        passthrough — ``yield self`` — since there is no UI to manage.
+        """
+        if self.provider != BrowserProvider.PLAYWRIGHT_CDP:
+            yield self
+            return
+
+        try:
+            from playwright.sync_api import sync_playwright  # type: ignore
+        except ImportError:
+            # Playwright not installed — fall back to per-call behavior.
+            yield self
+            return
+
+        from adapters.cdp_utils import effective_cdp_url  # local import
+        effective = effective_cdp_url(self.cdp_url)
+
+        with sync_playwright() as pw:
+            try:
+                browser = pw.chromium.connect_over_cdp(effective)
+            except Exception:
+                # CDP unreachable — fall back to per-call behavior so each
+                # individual fetch can fail with its own error envelope.
+                yield self
+                return
+
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.new_page()
+
+            # Restore the user's previously-active tab to the front so our
+            # new working tab doesn't hold focus during the run.
+            try:
+                others = [p for p in ctx.pages if p is not page]
+                if others:
+                    others[0].bring_to_front()
+            except Exception:
+                pass
+
+            try:
+                yield _PersistentPageSession(self, ctx, page)
+            finally:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+
     def open_tabs(self, urls: List[str]) -> Dict[str, Any]:
         """Open URLs as tabs in the browser session (CDP only; HTTP is a no-op)."""
         clean = [u.strip() for u in urls if u.strip().lower().startswith(("http://", "https://"))]
@@ -242,6 +307,7 @@ class BrowserClient:
         js_expr: str,
         *,
         wait_ms: int = 2000,
+        wait_for: Optional[str] = None,
     ) -> tuple:
         """Navigate to `url` via CDP, wait for JS rendering, run `js_expr`.
 
@@ -249,6 +315,21 @@ class BrowserClient:
         the JS expression returns (list / dict / scalar / None).  Only supported
         under the ``playwright_cdp`` provider; HTTP and claude_cu providers return
         the page result with ``eval_result = None``.
+
+        Parameters
+        ----------
+        wait_ms:
+            Maximum time to wait for the result anchor (or, when ``wait_for``
+            is None, a fixed sleep before evaluating ``js_expr``).
+        wait_for:
+            Optional CSS selector for a result-list anchor (e.g. EBSCO's
+            ``article[data-auto="search-result-item"]``). When provided,
+            ``wait_for_selector(wait_for, timeout=wait_ms)`` is used so we
+            return as soon as content has rendered (typically much faster
+            than ``wait_ms``); if the selector never appears within
+            ``wait_ms``, evaluation proceeds anyway so soft-fails / empty
+            results still get logged. Anchor-based waits are content-driven
+            and look less bot-like than uniform fixed sleeps.
 
         Used by document_fetch extractors (EBSCO, JSTOR) that need to query the
         live DOM to extract article records from search-results pages.
@@ -271,7 +352,15 @@ class BrowserClient:
             page = ctx.new_page()
             try:
                 page.goto(url, timeout=self.timeout_seconds * 1000, wait_until="domcontentloaded")
-                if wait_ms > 0:
+                if wait_for:
+                    try:
+                        page.wait_for_selector(wait_for, timeout=wait_ms, state="visible")
+                    except Exception:
+                        # Selector never appeared — proceed to eval so the caller
+                        # still sees the page content (block detection, soft-fail
+                        # signals, etc.). Eval may return empty.
+                        pass
+                elif wait_ms > 0:
                     page.wait_for_timeout(wait_ms)
                 try:
                     eval_result = page.evaluate(js_expr)
@@ -286,7 +375,10 @@ class BrowserClient:
                     content=html_bytes,
                     content_type="text/html",
                 )
+                # Parent-page text first, then live-DOM iframe probe.
                 blocked, reason, action = _detect_blocked(html_bytes, url)
+                if not blocked:
+                    blocked, reason, action = _detect_iframe_block(page)
                 page_result.blocked = blocked
                 page_result.blocked_reason = reason
                 page_result.action_required = action
@@ -372,6 +464,140 @@ class BrowserClient:
 
 
 # ------------------------------------------------------------------
+# Persistent-page session (single-tab reuse)
+# ------------------------------------------------------------------
+
+
+class _PersistentPageSession:
+    """Single-tab browser session yielded by ``BrowserClient.session()``.
+
+    Reuses one Playwright page across many ``fetch_with_eval`` / ``fetch``
+    calls so the run only steals focus once instead of once per URL.
+
+    The interface intentionally mirrors ``BrowserClient`` (``fetch``,
+    ``fetch_with_eval``, ``is_available``, ``open_tabs``) so callers can
+    pass either a session or a raw client without branching.
+    """
+
+    def __init__(self, client: "BrowserClient", ctx: Any, page: Any) -> None:
+        self._client = client
+        self._ctx = ctx
+        self._page = page
+        self._timeout_seconds = client.timeout_seconds
+        self._user_agent = client.user_agent
+
+    # -- pass-through helpers -----------------------------------------
+
+    def is_available(self) -> bool:
+        return self._client.is_available()
+
+    def open_tabs(self, urls: List[str]) -> Dict[str, Any]:
+        # Tab opening is a separate UX action — delegate to the client so
+        # it uses a fresh sync_playwright session and doesn't disturb our
+        # persistent page.
+        return self._client.open_tabs(urls)
+
+    # -- core fetch path (reuses self._page) --------------------------
+
+    def fetch(self, url: str, **_: Any) -> PageResult:
+        """Navigate the persistent page to ``url`` and return its content."""
+        start = time.monotonic()
+        page = self._page
+        try:
+            page.goto(
+                url,
+                timeout=self._timeout_seconds * 1000,
+                wait_until="domcontentloaded",
+            )
+            html_bytes = page.content().encode("utf-8", errors="ignore")
+            result = PageResult(
+                url=url,
+                status_code=200,
+                content=html_bytes,
+                content_type="text/html",
+            )
+            # Check parent-page text first; fall back to live-DOM iframe
+            # probe for cross-origin CAPTCHA widgets (reCAPTCHA / Turnstile).
+            blocked, reason, action = _detect_blocked(html_bytes, url)
+            if not blocked:
+                blocked, reason, action = _detect_iframe_block(page)
+            result.blocked = blocked
+            result.blocked_reason = reason
+            result.action_required = action
+            result.elapsed_ms = int((time.monotonic() - start) * 1000)
+            return result
+        except Exception as exc:  # noqa: BLE001
+            return PageResult(
+                url=url, status_code=0, content=b"", content_type="",
+                blocked=True, blocked_reason="error",
+                error=str(exc)[:200],
+                elapsed_ms=int((time.monotonic() - start) * 1000),
+            )
+
+    def fetch_with_eval(
+        self,
+        url: str,
+        js_expr: str,
+        *,
+        wait_ms: int = 2000,
+        wait_for: Optional[str] = None,
+    ) -> tuple:
+        """Navigate the persistent page to ``url``, wait, and run ``js_expr``."""
+        start = time.monotonic()
+        page = self._page
+        try:
+            page.goto(
+                url,
+                timeout=self._timeout_seconds * 1000,
+                wait_until="domcontentloaded",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                PageResult(
+                    url=url, status_code=0, content=b"", content_type="",
+                    blocked=True, blocked_reason="timeout",
+                    action_required="Check network or browser",
+                    error=str(exc)[:200],
+                    elapsed_ms=int((time.monotonic() - start) * 1000),
+                ),
+                None,
+            )
+
+        if wait_for:
+            try:
+                page.wait_for_selector(wait_for, timeout=wait_ms, state="visible")
+            except Exception:
+                # Selector never appeared — proceed anyway so soft-fail
+                # signals (block detection, empty results) still surface.
+                pass
+        elif wait_ms > 0:
+            page.wait_for_timeout(wait_ms)
+
+        try:
+            eval_result = page.evaluate(js_expr)
+        except Exception:
+            eval_result = None
+
+        html_bytes = page.content().encode("utf-8", errors="ignore")
+        result = PageResult(
+            url=url,
+            status_code=200,
+            content=html_bytes,
+            content_type="text/html",
+        )
+        # Parent-page text first, then live-DOM iframe probe (CAPTCHAs in
+        # cross-origin iframes never show up in parent HTML / regex).
+        blocked, reason, action = _detect_blocked(html_bytes, url)
+        if not blocked:
+            blocked, reason, action = _detect_iframe_block(page)
+        result.blocked = blocked
+        result.blocked_reason = reason
+        result.action_required = action
+        result.elapsed_ms = int((time.monotonic() - start) * 1000)
+        return result, eval_result
+
+
+# ------------------------------------------------------------------
 # Blocked-page detection
 # ------------------------------------------------------------------
 
@@ -405,6 +631,56 @@ def _detect_blocked(content: bytes, url: str) -> tuple[bool, str, str]:
         if pattern.search(text):
             return True, reason, action
     return False, "", ""
+
+
+# JS used by _detect_iframe_block to find CAPTCHA iframes / globals.
+# Text regex can't see widgets that live in Google/hCaptcha/Cloudflare iframes
+# because the parent page's HTML doesn't contain "I'm not a robot" — that text
+# lives inside the cross-origin iframe. This DOM probe checks iframe src
+# patterns and the JS challenge-API globals (covers v3 / invisible variants).
+_IFRAME_BLOCK_JS = """() => {
+    try {
+        const frames = Array.from(document.querySelectorAll('iframe'));
+        for (const f of frames) {
+            const src = (f.src || '').toLowerCase();
+            if (!src) continue;
+            if (src.includes('recaptcha')) return 'recaptcha';
+            if (src.includes('hcaptcha'))  return 'hcaptcha';
+            if (src.includes('challenges.cloudflare.com') || src.includes('turnstile')) return 'turnstile';
+            if (src.includes('captcha'))   return 'captcha';
+        }
+        // Globals catch invisible / v3-style challenges with no visible iframe.
+        if (typeof window.grecaptcha !== 'undefined') return 'recaptcha';
+        if (typeof window.hcaptcha   !== 'undefined') return 'hcaptcha';
+        if (typeof window.turnstile  !== 'undefined') return 'turnstile';
+    } catch (e) {}
+    return '';
+}"""
+
+
+def _detect_iframe_block(page: Any) -> tuple[bool, str, str]:
+    """Probe the live page DOM for CAPTCHA iframes / challenge globals.
+
+    Complements _detect_blocked (which only sees the parent-page text) for
+    cross-origin challenge widgets where the visible "I'm not a robot" text
+    lives in an iframe and never appears in the parent HTML.
+
+    Returns (blocked, reason, action). Best-effort: returns (False, "", "")
+    on any error so it never breaks a successful fetch.
+    """
+    try:
+        kind = page.evaluate(_IFRAME_BLOCK_JS)
+    except Exception:
+        return False, "", ""
+    if not kind:
+        return False, "", ""
+    pretty = {
+        "recaptcha": "Solve reCAPTCHA challenge in browser",
+        "hcaptcha":  "Solve hCaptcha challenge in browser",
+        "turnstile": "Wait for / solve Cloudflare Turnstile in browser",
+        "captcha":   "Solve CAPTCHA challenge in browser",
+    }
+    return True, "captcha", pretty.get(kind, "Solve challenge in browser")
 
 
 def _cdp_host(cdp_url: str) -> str:

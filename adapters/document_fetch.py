@@ -89,6 +89,23 @@ MAX_ARTICLES   = 8       # max articles to extract per search-results page
 FETCH_SUBDIR   = "fetched"
 FETCH_TIMEOUT  = 30      # seconds per HTTP fetch
 
+# Per-source result-list anchor selectors for content-driven waits in
+# fetch_with_eval. When the anchor appears, results are ready and we evaluate
+# immediately (typically much faster than the fixed wait_ms). If the anchor
+# never appears within wait_ms, we still evaluate so empty/soft-fail pages are
+# captured. Anchors include both modern and legacy selectors so older skins
+# still resolve.
+_WAIT_SELECTORS = {
+    "ebsco_api":    'article[data-auto="search-result-item"], article.record, .result-list-item',
+    "ebscohost":    'article[data-auto="search-result-item"], article.record, .result-list-item',
+    "jstor":        'li.result',
+    "project_muse": '.search-result, .result-item, article',
+}
+# Max wait for the anchor to appear before falling through to evaluation.
+# 5 s gives SPA-heavy result pages (EBSCO/ProQuest) time to render but is
+# rarely paid in full because the selector usually appears within ~1-2 s.
+_WAIT_FOR_SELECTOR_MS = 5000
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -321,9 +338,17 @@ def fetch_seed_page(
     else:
         js_expr = None  # generic: save HTML only
 
+    wait_for = _WAIT_SELECTORS.get(source_id)
+    # When we have an anchor we can wait longer (up to _WAIT_FOR_SELECTOR_MS)
+    # because we'll return as soon as it appears; without an anchor, keep the
+    # legacy 2500 ms fixed wait so non-SPA pages don't block unnecessarily.
+    wait_ms = _WAIT_FOR_SELECTOR_MS if wait_for else 2500
+
     def _attempt():
         if js_expr:
-            return browser_client.fetch_with_eval(item.url, js_expr, wait_ms=2500)
+            return browser_client.fetch_with_eval(
+                item.url, js_expr, wait_ms=wait_ms, wait_for=wait_for,
+            )
         return browser_client.fetch(item.url), None
 
     page_result, eval_result = _attempt()
@@ -491,46 +516,52 @@ def run_fetch(
                   f"[{item.gap_id}] abstract save failed: {exc!s:.80}",
                   {"gap_id": item.gap_id, "source_id": item.source_id})
 
-    # ── Seed pages: browser required ──────────────────────────────────────
-    for i, item in enumerate(seeds, 1):
-        tag = f"[{i}/{len(seeds)}] {item.gap_id}/{item.source_id}"
-        _emit("fetching", "seed_start",
-              f"{tag}: fetching {item.url[:70]}",
-              {"gap_id": item.gap_id, "source_id": item.source_id,
-               "url": item.url[:80], "index": i, "total": len(seeds)})
-        stats.seeds_attempted += 1
-        try:
-            count = fetch_seed_page(item, browser_client, emit=_emit, on_blocked=on_blocked)
-            stats.seeds_ok += 1
-            stats.articles_extracted += count
-            _emit("fetching", "seed_ok",
-                  f"{tag}: {count} article(s) saved",
-                  {"gap_id": item.gap_id, "source_id": item.source_id, "count": count})
-        except Exception as exc:
-            stats.seeds_failed += 1
-            _emit("fetching", "seed_failed",
-                  f"{tag}: {exc!s:.80}",
-                  {"gap_id": item.gap_id, "source_id": item.source_id, "error": str(exc)[:120]})
+    # Open ONE persistent browser tab for the whole batch so we don't
+    # steal focus on every fetch. session() yields a session-shaped object
+    # that exposes the same fetch / fetch_with_eval interface as
+    # browser_client itself; for non-CDP providers it's a passthrough.
+    with browser_client.session() as bc:
 
-    # ── PDFs ──────────────────────────────────────────────────────────────
-    for i, item in enumerate(pdfs, 1):
-        tag = f"[{i}/{len(pdfs)}] {item.gap_id}"
-        _emit("fetching", "pdf_start",
-              f"{tag}: downloading {item.url[:70]}",
-              {"gap_id": item.gap_id, "source_id": item.source_id,
-               "url": item.url[:80], "index": i, "total": len(pdfs)})
-        stats.pdfs_attempted += 1
-        try:
-            path = download_pdf(item, browser_client, emit=_emit)
-            stats.pdfs_ok += 1
-            _emit("fetching", "pdf_ok",
-                  f"{tag}: saved {path.name}",
-                  {"gap_id": item.gap_id, "source_id": item.source_id, "file": path.name})
-        except Exception as exc:
-            stats.pdfs_failed += 1
-            _emit("fetching", "pdf_failed",
-                  f"{tag}: {exc!s:.80}",
-                  {"gap_id": item.gap_id, "source_id": item.source_id, "error": str(exc)[:120]})
+        # ── Seed pages: browser required ──────────────────────────────────
+        for i, item in enumerate(seeds, 1):
+            tag = f"[{i}/{len(seeds)}] {item.gap_id}/{item.source_id}"
+            _emit("fetching", "seed_start",
+                  f"{tag}: fetching {item.url[:70]}",
+                  {"gap_id": item.gap_id, "source_id": item.source_id,
+                   "url": item.url[:80], "index": i, "total": len(seeds)})
+            stats.seeds_attempted += 1
+            try:
+                count = fetch_seed_page(item, bc, emit=_emit, on_blocked=on_blocked)
+                stats.seeds_ok += 1
+                stats.articles_extracted += count
+                _emit("fetching", "seed_ok",
+                      f"{tag}: {count} article(s) saved",
+                      {"gap_id": item.gap_id, "source_id": item.source_id, "count": count})
+            except Exception as exc:
+                stats.seeds_failed += 1
+                _emit("fetching", "seed_failed",
+                      f"{tag}: {exc!s:.80}",
+                      {"gap_id": item.gap_id, "source_id": item.source_id, "error": str(exc)[:120]})
+
+        # ── PDFs ──────────────────────────────────────────────────────────
+        for i, item in enumerate(pdfs, 1):
+            tag = f"[{i}/{len(pdfs)}] {item.gap_id}"
+            _emit("fetching", "pdf_start",
+                  f"{tag}: downloading {item.url[:70]}",
+                  {"gap_id": item.gap_id, "source_id": item.source_id,
+                   "url": item.url[:80], "index": i, "total": len(pdfs)})
+            stats.pdfs_attempted += 1
+            try:
+                path = download_pdf(item, bc, emit=_emit)
+                stats.pdfs_ok += 1
+                _emit("fetching", "pdf_ok",
+                      f"{tag}: saved {path.name}",
+                      {"gap_id": item.gap_id, "source_id": item.source_id, "file": path.name})
+            except Exception as exc:
+                stats.pdfs_failed += 1
+                _emit("fetching", "pdf_failed",
+                      f"{tag}: {exc!s:.80}",
+                      {"gap_id": item.gap_id, "source_id": item.source_id, "error": str(exc)[:120]})
 
     return stats
 

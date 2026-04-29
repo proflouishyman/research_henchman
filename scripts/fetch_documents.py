@@ -295,27 +295,62 @@ def _make_emit():
     return _emit
 
 
+_RATE_LIMIT_BACKOFF_SECONDS = 60   # fixed wait for rate_limit; library retries once
+
+
 def _make_on_blocked():
-    """Return an on_blocked callable that pauses the fetch for manual unblock.
+    """Return an on_blocked callable with reason-aware recovery.
 
     document_fetch.fetch_seed_page calls on_blocked(item, page_result) when a
-    page is gated by CAPTCHA / login / access-denied. Returning True signals
-    the library to retry the URL once. The user solves the challenge in the
-    live CDP browser session, then presses Enter to continue.
+    page is gated. The handler dispatches by ``page_result.blocked_reason``:
 
-    A best-effort Telegram ping (per AGENTS.md §15) is sent so the user knows
-    to come back and click — failures are silently ignored to keep the pause
-    flow working even without Telegram credentials configured.
+    - ``rate_limit``  → sleep and retry without prompting (a human can't help
+      here; the server needs time). 60 s fixed; one retry from the library.
+    - ``access_denied`` → return False (skip without pause). Subscription /
+      authorization issues won't change between back-to-back retries.
+    - ``captcha`` / ``login`` / unknown → print a banner, ping Telegram, block
+      on input() until the user solves the challenge in the CDP browser, then
+      return True so the library retries the URL once.
+
+    Telegram delivery (per AGENTS.md §15) is best-effort and silent on missing
+    credentials so the recovery flow works even without notifications.
     """
     def _on_blocked(item, page_result) -> bool:
         reason = page_result.blocked_reason or "blocked"
-        action = page_result.action_required or "Solve challenge in browser"
+        action = page_result.action_required or ""
+
+        # Rate-limited: sleep + auto-retry. Humans can't accelerate this.
+        if reason == "rate_limit":
+            delay = _RATE_LIMIT_BACKOFF_SECONDS
+            msg = (
+                f"\n[rate_limit] {item.gap_id}/{item.source_id}: "
+                f"sleeping {delay}s before retry — {action or 'server-side cooldown'}"
+            )
+            print(msg, flush=True)
+            _try_telegram(
+                f"[fetch_documents] rate-limited at {item.gap_id}/{item.source_id}; "
+                f"backing off {delay}s then retrying"
+            )
+            time.sleep(delay)
+            return True
+
+        # Access denied: auth/subscription problem, retry won't help. Skip
+        # without pausing — the user can review _blocked.html later if needed.
+        if reason == "access_denied":
+            print(
+                f"\n[access_denied] {item.gap_id}/{item.source_id}: "
+                f"skipping (retry will not help) — {action or 'no access'}",
+                flush=True,
+            )
+            return False
+
+        # CAPTCHA / login / unknown: human-in-the-loop pause + retry.
         msg = (
             f"\n┌─ PAUSED — page blocked ({reason}) ────────────────────────┐\n"
             f"│ Gap:    {item.gap_id}\n"
             f"│ Source: {item.source_id}\n"
             f"│ URL:    {item.url[:90]}\n"
-            f"│ Hint:   {action}\n"
+            f"│ Hint:   {action or 'Solve challenge in browser'}\n"
             f"│ ACTION: solve the challenge in the Chrome window, then press Enter.\n"
             f"└────────────────────────────────────────────────────────────┘"
         )

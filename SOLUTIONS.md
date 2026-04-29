@@ -1,3 +1,21 @@
+[2026-04-29] - Parallel PDF fetch (4-way concurrency via thread workers)
+
+Problem
+The Phase-1 sequential PDF fetch took ~4-5 s per article. For the full corpus (650 search-results pages × ~8 articles ≈ 5200 articles), that projected to roughly 6-7 hours wall-clock — too slow for production runs.
+
+Root Cause
+fetch_seed_page invoked download_article_pdf in a serial Python for-loop, using the single ``_PersistentPageSession._page`` for all detail-page navigations. Even though network I/O was the dominant cost, only one in-flight Playwright operation was possible per run.
+
+Solution
+1. Refactored the page-level PDF logic into ``_download_pdf_with_page(page, record, out_dir)`` so it can be called by both the sequential session-based path AND by independent worker threads.
+2. Added ``_fetch_pdf_in_worker(record, cdp_url, out_dir)``: each invocation creates its own ``sync_playwright`` instance (Playwright sync state is per-thread-not-shareable), connects to the same CDP browser, opens a transient page, runs the PDF capture, and tears down. Multiple workers run truly concurrently because each owns independent Playwright state but they share the browser's cookie jar (same authenticated session).
+3. ``_try_pdf_fetch_per_article`` now reads ``ORCH_PDF_WORKERS`` (default 4); when >1 AND the session is a real CDP session (cdp_url is a string starting with http) AND has a ``_page``, it dispatches via ``ThreadPoolExecutor``. Otherwise (workers=1, non-CDP session, mocks), falls back to the original sequential single-page path.
+4. Result emission moved to a shared helper ``_emit_pdf_outcome`` so both code paths produce identical events. ``as_completed`` is used to emit events as workers finish, not in submission order — output streams in real time.
+5. ``isinstance(cdp_url, str) and cdp_url.startswith("http")`` guards against MagicMock attributes that auto-resolve in tests; without this, mock-based tests would hit the parallel path and report cdp_connect_failed.
+
+Notes
+The mock-detection guard is critical: with a plain MagicMock for cdp_url, ``can_parallelize`` would evaluate True and the worker would try to connect to a fake URL, polluting test results. Strict isinstance(str) + startswith("http") filters this cleanly. Workers do NOT currently honor on_blocked — if a CAPTCHA appears on a detail page in worker mode, the page evaluator returns null (no /viewer/pdf/ link visible), and the article gets reported as ``pdf_inline_unavailable``. Future enhancement: add iframe-block detection inside ``_download_pdf_with_page`` and emit a distinct ``pdf_inline_blocked`` event so blocked-but-recoverable articles can be retried in a follow-up pass. Tab pollution: each non-``--no-prompt`` CLI invocation opens an EBSCO login tab that persists across runs; over many runs these accumulate.
+
 [2026-04-29] - Per-article click-in PDF fetch (EBSCO research.ebsco.com)
 
 Problem

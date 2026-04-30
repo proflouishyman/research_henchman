@@ -1,3 +1,28 @@
+[2026-04-30] - EBSCO multi-profile cookie auto-redirect — pin to named institutional profile via URL rewrite
+
+Problem
+After yesterday's successful full-corpus run from the JHU Libraries profile (op-id ``6hfcoc``, databases ``asn,bsu``), today's runs landed on the JHU School of Medicine profile (op-id ``mys74t``, medical databases like CINAHL / MEDLINE) — every legacy ``search.ebscohost.com/login.aspx?direct=true&bquery=...`` URL silently auto-redirected to SOM, and every search returned 0 results because the medical databases don't match e-commerce queries. Even after wiping the Chrome user-data-dir and signing in fresh via JHU Libraries (catalyst.library.jhu.edu), live probes initially returned Libraries (c/6hfcoc/) but degraded back to SOM within minutes — the cookie priority kept shifting.
+
+Root Cause
+EBSCO's ``login.aspx`` endpoint is an authentication-arbitration redirect: when multiple institutional sessions are present in the user's cookie jar (Libraries + SOM, both linked through JHU's Shibboleth IDP), EBSCO picks one based on priority signals that aren't stable from request to request. JHU users with access to both profiles see this as an apparently-random per-navigation choice. There's no reliable way to force a specific profile via the legacy URL pattern itself — adding ``&db=asn,bsu`` only triggers EBSCO's webauth callback (``PersistentLink.aspx?...&authtype=promptedcallback``) rather than redirecting to the named profile.
+
+Solution
+Added _rewrite_ebsco_url_if_configured(url) in adapters/document_fetch.py. When ``ORCH_EBSCO_OPID`` is set in the environment, legacy login.aspx URLs are rewritten to the modern direct profile URL: ``https://research.ebsco.com/c/<opid>/search/results?q=<urlencoded-bquery>&db=<urlencoded-csv>`` — bypassing the cookie-arbitration layer entirely. The bquery is parsed via urllib.parse.parse_qs (which decodes form-encoded ``+`` as space) and re-encoded via urllib.parse.quote — preserving literal ``+`` characters from the original ``%2B`` encoding (critical for boolean queries like "Amazon + e-commerce" used throughout the JHU dataset).
+
+Configuration:
+- ORCH_EBSCO_OPID — the institutional profile ID. Find by signing into EBSCO via the desired portal and inspecting the URL: research.ebsco.com/c/<opid>/.... For JHU Libraries it's ``6hfcoc``; SOM is ``mys74t``.
+- ORCH_EBSCO_DB   — comma-separated database codes, default ``asn,bsu``.
+- CLI flags --ebsco-opid and --ebsco-db (in scripts/fetch_documents.py) override the env vars per-invocation.
+
+The rewrite is fully no-op when ORCH_EBSCO_OPID is unset (preserves legacy behaviour), when the URL is already a research.ebsco.com path, when bquery is missing, or for non-EBSCO sources entirely.
+
+fetch_seed_page now applies the rewrite to ``item.url`` before passing to ``fetch_with_eval`` / ``fetch``. Stored URLs in the JSON record artifacts are unchanged — only the runtime navigation target gets adjusted.
+
+Validated end-to-end: live probe of "Amazon e-commerce revolution archives" against the rewritten direct URL returned 20 articles from "Johns Hopkins Libraries" (c/6hfcoc/), where the same query through login.aspx returned 0 from "Johns Hopkins School of Medicine" (c/mys74t/). Tests: 177 → 182 (+5 regression tests covering: no-op when unset, URL pass-through for already-direct paths and non-EBSCO URLs, default DB asn,bsu, custom DB via env var, no-op when bquery missing, encoded-plus-survives roundtrip).
+
+Notes
+The opid value is institution-specific. JHU is hardcoded in test fixtures but the code is generic — any institution with multiple linked profiles can use this with their own opid. Future enhancement could auto-detect the opid by capturing it from a known-good probe URL once per run, but the env var approach is simpler and the user only sets it once. Not all EBSCO institutional profiles use the same operator-ID format; if a user encounters a longer or differently-shaped opid, the URL is opaque to our rewriter (we just substitute the path segment). The cookie-layer behaviour is also visible at the CLI: a user can detect the wrong profile by running a live probe that shows ``"institution": "..."``  — included in /docs/orchestrator_app.md as a debug procedure.
+
 [2026-04-30] - Worker-level CAPTCHA detection + pool pause for human solve
 
 Problem

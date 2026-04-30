@@ -323,6 +323,52 @@ def save_abstract(item: FetchItem) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _rewrite_ebsco_url_if_configured(url: str) -> str:
+    """Rewrite legacy ``search.ebscohost.com/login.aspx`` seed URLs to the
+    direct ``research.ebsco.com/c/<opid>/search/results`` profile URL when
+    ``ORCH_EBSCO_OPID`` is set in the environment.
+
+    Why this exists: EBSCO's login.aspx endpoint redirects based on cookie
+    priority. For users with multiple institutional profiles in their
+    cookie jar (e.g. JHU Libraries + JHU School of Medicine), EBSCO can
+    silently route to the wrong profile, returning 0 articles for queries
+    targeted at the other profile's databases. Going direct to the named
+    profile URL bypasses that arbitration.
+
+    Configuration:
+      ORCH_EBSCO_OPID — operator/profile ID (e.g. ``6hfcoc`` for JHU
+                        Libraries Academic Search Ultimate / Business
+                        Source Ultimate). Find yours by signing into
+                        EBSCO via the desired portal and inspecting the
+                        URL: ``research.ebsco.com/c/<opid>/...``.
+      ORCH_EBSCO_DB   — comma-separated database codes to search
+                        (default ``asn,bsu``).
+
+    No-op when ORCH_EBSCO_OPID is unset, when the URL is already a direct
+    research.ebsco.com URL, or when bquery cannot be parsed.
+    """
+    opid = os.environ.get("ORCH_EBSCO_OPID", "").strip()
+    if not opid:
+        return url
+    if "search.ebscohost.com/login.aspx" not in url:
+        return url
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        bquery = (qs.get("bquery", [""]) or [""])[0]
+    except Exception:
+        return url
+    if not bquery:
+        return url
+
+    db = os.environ.get("ORCH_EBSCO_DB", "asn,bsu").strip() or "asn,bsu"
+    return (
+        f"https://research.ebsco.com/c/{opid}/search/results?"
+        f"q={urllib.parse.quote(bquery)}&db={urllib.parse.quote(db)}"
+    )
+
+
 def fetch_seed_page(
     item: FetchItem,
     browser_client: Any,
@@ -371,12 +417,18 @@ def fetch_seed_page(
     # legacy 2500 ms fixed wait so non-SPA pages don't block unnecessarily.
     wait_ms = _WAIT_FOR_SELECTOR_MS if wait_for else 2500
 
+    # Rewrite the URL to target a specific EBSCO institutional profile when
+    # ORCH_EBSCO_OPID is set (no-op otherwise). Prevents EBSCO from
+    # auto-redirecting to a wrong-profile session for users with multiple
+    # institutional logins active at once.
+    target_url = _rewrite_ebsco_url_if_configured(item.url)
+
     def _attempt():
         if js_expr:
             return browser_client.fetch_with_eval(
-                item.url, js_expr, wait_ms=wait_ms, wait_for=wait_for,
+                target_url, js_expr, wait_ms=wait_ms, wait_for=wait_for,
             )
-        return browser_client.fetch(item.url), None
+        return browser_client.fetch(target_url), None
 
     page_result, eval_result = _attempt()
 

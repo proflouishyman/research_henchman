@@ -195,6 +195,10 @@ def main() -> None:
         os.environ["ORCH_PDF_MAX_THROTTLE_PAUSES"] = str(args.max_throttle_pauses)
     if args.jitter_ms is not None:
         os.environ["ORCH_PDF_JITTER_MS"] = str(args.jitter_ms)
+    if args.ebsco_opid is not None:
+        os.environ["ORCH_EBSCO_OPID"] = args.ebsco_opid
+    if args.ebsco_db is not None:
+        os.environ["ORCH_EBSCO_DB"] = args.ebsco_db
 
     # Re-read settings so the overridden CDP URL is picked up.
     settings = OrchestratorSettings.from_env()
@@ -569,6 +573,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--jitter-ms", type=int, default=None,
                    help="Per-task random sleep upper bound in ms — spreads request stream "
                         "(default 800; sets ORCH_PDF_JITTER_MS; pass 0 to disable)")
+    p.add_argument("--ebsco-opid", default=None,
+                   help="EBSCO institutional profile ID (e.g. '6hfcoc' for JHU "
+                        "Libraries Academic Search Ultimate). When set, legacy "
+                        "search.ebscohost.com/login.aspx URLs are rewritten to "
+                        "research.ebsco.com/c/<opid>/... — bypasses cookie-priority "
+                        "auto-redirects when you have multiple EBSCO institutional "
+                        "profiles. Sets ORCH_EBSCO_OPID.")
+    p.add_argument("--ebsco-db", default=None,
+                   help="Comma-separated EBSCO database codes used together with "
+                        "--ebsco-opid (default 'asn,bsu'). Sets ORCH_EBSCO_DB.")
     captcha_grp = p.add_mutually_exclusive_group()
     captcha_grp.add_argument("--pause-on-captcha", dest="pause_on_captcha", action="store_true", default=None,
                              help="When a PDF worker hits a CAPTCHA, pause the whole pool, "

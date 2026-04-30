@@ -182,6 +182,20 @@ def main() -> None:
     if args.cdp_url:
         os.environ["ORCH_PLAYWRIGHT_CDP_URL"] = args.cdp_url
 
+    # PDF worker / throttle tuning — flags override env vars so the user can
+    # set knobs per-invocation without exporting variables. Each flag maps to
+    # the matching ORCH_PDF_* variable read by adapters/document_fetch.py.
+    if args.workers is not None:
+        os.environ["ORCH_PDF_WORKERS"] = str(args.workers)
+    if args.throttle_cooldown is not None:
+        os.environ["ORCH_PDF_THROTTLE_COOLDOWN_SEC"] = str(args.throttle_cooldown)
+    if args.throttle_threshold is not None:
+        os.environ["ORCH_PDF_THROTTLE_THRESHOLD"] = str(args.throttle_threshold)
+    if args.max_throttle_pauses is not None:
+        os.environ["ORCH_PDF_MAX_THROTTLE_PAUSES"] = str(args.max_throttle_pauses)
+    if args.jitter_ms is not None:
+        os.environ["ORCH_PDF_JITTER_MS"] = str(args.jitter_ms)
+
     # Re-read settings so the overridden CDP URL is picked up.
     settings = OrchestratorSettings.from_env()
 
@@ -275,8 +289,17 @@ def main() -> None:
           f"({stats.pdfs_failed} failed)")
     print(f"  Articles extracted: {stats.articles_extracted}")
     if stats.inline_pdfs_attempted:
+        extras = []
+        if stats.inline_pdfs_throttled:
+            extras.append(f"{stats.inline_pdfs_throttled} throttled")
+        if stats.inline_pdfs_failed:
+            extras.append(f"{stats.inline_pdfs_failed} failed")
+        extras_str = (", " + ", ".join(extras)) if extras else ""
         print(f"  Article PDFs saved: {stats.inline_pdfs_ok} / {stats.inline_pdfs_attempted}  "
-              f"({stats.inline_pdfs_unavailable} no PDF, {stats.inline_pdfs_failed} failed)")
+              f"({stats.inline_pdfs_unavailable} no PDF{extras_str})")
+        if stats.throttle_pauses or stats.throttle_exhausted:
+            print(f"  Throttle events:    {stats.throttle_pauses} pauses, "
+                  f"{stats.throttle_resumes} resumes, {stats.throttle_exhausted} exhausted")
     print(f"  Total OK:           {stats.total_ok}")
     print(f"{'─'*60}\n")
     print(f"Done.  Files written under {pull_root}\n")
@@ -291,9 +314,15 @@ def _make_emit():
 
     document_fetch.run_fetch calls emit(stage, status, message, meta_dict).
     This formatter prints ``[stage/status] message`` so CLI output is readable.
+    Throttle-pool state changes (throttle_paused / throttle_resumed /
+    throttle_exhausted) also fire a best-effort Telegram ping per AGENTS.md
+    §15 — these are run-level events the user wants to know about even when
+    the pipeline runs unattended.
     """
     def _emit(stage: str, status: str, message: str, meta: dict = None) -> None:
-        print(f"[{stage}/{status}] {message}")
+        print(f"[{stage}/{status}] {message}", flush=True)
+        if status in ("throttle_paused", "throttle_resumed", "throttle_exhausted"):
+            _try_telegram(f"[fetch_documents] {message}")
 
     return _emit
 
@@ -469,6 +498,22 @@ def _parse_args() -> argparse.Namespace:
                    help="Skip all interactive input() prompts (non-interactive / scripted use)")
     p.add_argument("--no-launch", action="store_true",
                    help="Do not auto-launch Chrome; print help and wait instead (legacy behavior)")
+    p.add_argument("--workers", type=int, default=None,
+                   help="Number of parallel PDF-fetch workers (default 4; "
+                        "1 = sequential, gentlest on EBSCO; sets ORCH_PDF_WORKERS)")
+    p.add_argument("--throttle-cooldown", type=int, default=None,
+                   help="Base cooldown seconds when EBSCO throttles (linear backoff: "
+                        "first pause sleeps this long, second sleeps 2x, third 3x; "
+                        "default 300 = 5 min; sets ORCH_PDF_THROTTLE_COOLDOWN_SEC)")
+    p.add_argument("--throttle-threshold", type=int, default=None,
+                   help="Consecutive page-navigation timeouts that trigger a pool pause "
+                        "(default 3; sets ORCH_PDF_THROTTLE_THRESHOLD)")
+    p.add_argument("--max-throttle-pauses", type=int, default=None,
+                   help="Stop retrying after this many throttle pauses; remaining articles "
+                        "skip with throttle_exhausted (default 3; sets ORCH_PDF_MAX_THROTTLE_PAUSES)")
+    p.add_argument("--jitter-ms", type=int, default=None,
+                   help="Per-task random sleep upper bound in ms — spreads request stream "
+                        "(default 800; sets ORCH_PDF_JITTER_MS; pass 0 to disable)")
     return p.parse_args()
 
 

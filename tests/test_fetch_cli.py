@@ -167,7 +167,7 @@ def test_no_prompt_flag_skips_input(tmp_path: Path, monkeypatch) -> None:
     # run_fetch returns a minimal stats object
     from adapters.document_fetch import FetchDocumentsStats
     monkeypatch.setattr(cli, "make_browser_client", lambda s: mock_browser)
-    monkeypatch.setattr(cli, "run_fetch", lambda items, browser, emit=None, on_blocked=None: FetchDocumentsStats(items_found=len(items)))
+    monkeypatch.setattr(cli, "run_fetch", lambda items, browser, emit=None, on_blocked=None, pause_on_captcha=False: FetchDocumentsStats(items_found=len(items)))
 
     monkeypatch.setattr(sys, "argv", ["fetch_documents.py", "--no-prompt", "--run-id", "run_test"])
 
@@ -293,7 +293,7 @@ def test_auto_launch_calls_popen_with_cdp_flags(tmp_path: Path, monkeypatch) -> 
     from adapters.document_fetch import FetchDocumentsStats
     monkeypatch.setattr(cli, "make_browser_client", lambda s: mock_browser)
     monkeypatch.setattr(cli, "run_fetch",
-                        lambda items, browser, emit=None, on_blocked=None: FetchDocumentsStats(items_found=len(items)))
+                        lambda items, browser, emit=None, on_blocked=None, pause_on_captcha=False: FetchDocumentsStats(items_found=len(items)))
 
     # Capture Popen arguments without actually spawning Chrome.
     popen_calls = []

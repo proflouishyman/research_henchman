@@ -1,3 +1,29 @@
+[2026-04-30] - Worker-level CAPTCHA detection + pool pause for human solve
+
+Problem
+The pool's worker threads silently skipped CAPTCHA-blocked articles. The main session pauses on CAPTCHA via on_blocked + input(), but the four worker tabs that drive PDF click-in have their own pages and weren't running iframe detection. Articles where EBSCO triggered a reCAPTCHA / hCaptcha just looked like "no_pdf_link" — the user couldn't intervene with a single click even though that's all it would take. For long unattended runs this was acceptable; for an attended run where the user is at the keyboard and willing to solve challenges as they appear, it was a clear lost-recovery path.
+
+Root Cause
+_PdfWorkerPool's worker loop called _download_pdf_with_page_detailed and treated the result as terminal — no second-look at the page DOM, no coordination across workers when one hit a challenge. There was also no way for the user to know which of N tabs needed attention.
+
+Solution
+1. Added pause_on_captcha (bool, default False) to _PdfWorkerPool.__init__. When enabled, after a "no_pdf_link" result the worker calls _handle_captcha_if_present(page, record), which probes via _detect_iframe_block (imported lazily from adapters.browser_client to avoid a circular). If a recaptcha / hcaptcha / turnstile iframe is found, the worker brings its tab to front via page.bring_to_front() (best-effort; surfaced tab gives the user a visual signal of which Chrome window to interact with), then acquires _captcha_prompt_lock and clears _free_event so other workers stop pulling tasks.
+
+2. The pool then fires on_state_change("captcha_paused", meta_with_gap_id_title_url_action). This callback is synchronous from the worker thread; the CLI's _make_emit handler — when pause_on_captcha is True — prints a banner, sends a Telegram ping, and BLOCKS on input() until the user presses Enter. When the input() returns, control flows back through the callback, _free_event is set, "captcha_resumed" fires, and ALL workers resume. The original worker then re-attempts the article once on the same page (which is now post-solve), capturing the PDF if available.
+
+3. If a second worker hits a CAPTCHA while the first one is in the prompt lock, _handle_captcha_if_present sees _free_event already cleared and just waits on it — no double-prompt.
+
+4. CLI side (scripts/fetch_documents.py): added a mutually-exclusive --pause-on-captcha / --no-pause-on-captcha flag pair. Default behaviour: ON when interactive (no --no-prompt) and OFF when --no-prompt is set (input() would EOF). If the user explicitly passes --pause-on-captcha alongside --no-prompt, the script warns and disables it (otherwise the worker would block forever on EOF input). Plumbed through run_fetch's new pause_on_captcha kwarg → make_pdf_worker_pool.
+
+5. New emit statuses captcha_paused / captcha_resumed; FetchDocumentsStats counters captcha_pauses / captcha_resumes; CLI summary prints a "CAPTCHA pauses: N (resumed: M)" line when any occurred.
+
+6. EOFError / KeyboardInterrupt during the input() prompt are caught — pool resumes anyway and the article is reported as failed; the run does not get stuck.
+
+Tests added (173 → 175): captcha-pause flow fires both state callbacks and unblocks workers; pool defaults to skip-quietly when pause_on_captcha is False.
+
+Notes
+The captcha pause is bidirectional with the throttle pause — both use _free_event but for different reasons. They don't double-pause since both check is_set before clearing. _detect_iframe_block is imported lazily inside _handle_captcha_if_present to avoid a circular when document_fetch is imported from browser_client (which it isn't today, but the lazy import keeps the option open). The pool's bring_to_front() call is best-effort because some Chrome / CDP versions silently ignore it; the banner + Telegram ping + URL-in-message ensure the user can find the right tab even if focus doesn't auto-shift. _handle_captcha_if_present is only invoked after a "no_pdf_link" result — successful PDF fetches and unrelated errors don't run the iframe probe (avoids per-task overhead). For non-CAPTCHA blocks (login wall, rate-limit) the worker's behavior is unchanged: timeouts go through the throttle path, login walls show up as no_pdf_link the same as missing PDFs would.
+
 [2026-04-30] - Throttle detection + pool pause/cooldown + jitter + worker count flag
 
 Problem

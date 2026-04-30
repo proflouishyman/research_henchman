@@ -278,7 +278,22 @@ def main() -> None:
 
     # ── 5. Run the full fetch via library ─────────────────────────────────
     on_blocked = None if args.no_prompt else _make_on_blocked()
-    stats = run_fetch(items, browser_client, emit=_make_emit(), on_blocked=on_blocked)
+    # CAPTCHA pause defaults: ON when running interactively, OFF with
+    # --no-prompt (no TTY → can't take input). User can override either way.
+    if args.pause_on_captcha is None:
+        pause_on_captcha = not args.no_prompt
+    else:
+        pause_on_captcha = bool(args.pause_on_captcha)
+        if pause_on_captcha and args.no_prompt:
+            print("[warn] --pause-on-captcha disabled because --no-prompt was given "
+                  "(input() would EOF immediately).")
+            pause_on_captcha = False
+    stats = run_fetch(
+        items, browser_client,
+        emit=_make_emit(pause_on_captcha=pause_on_captcha),
+        on_blocked=on_blocked,
+        pause_on_captcha=pause_on_captcha,
+    )
 
     # ── 6. Summary ────────────────────────────────────────────────────────
     print(f"\n{'─'*60}")
@@ -300,6 +315,8 @@ def main() -> None:
         if stats.throttle_pauses or stats.throttle_exhausted:
             print(f"  Throttle events:    {stats.throttle_pauses} pauses, "
                   f"{stats.throttle_resumes} resumes, {stats.throttle_exhausted} exhausted")
+        if stats.captcha_pauses:
+            print(f"  CAPTCHA pauses:     {stats.captcha_pauses} (resumed: {stats.captcha_resumes})")
     print(f"  Total OK:           {stats.total_ok}")
     print(f"{'─'*60}\n")
     print(f"Done.  Files written under {pull_root}\n")
@@ -309,20 +326,58 @@ def main() -> None:
 # emit factory
 # ---------------------------------------------------------------------------
 
-def _make_emit():
+def _make_emit(*, pause_on_captcha: bool = False):
     """Return an emit callable that prints structured log lines to stdout.
 
     document_fetch.run_fetch calls emit(stage, status, message, meta_dict).
-    This formatter prints ``[stage/status] message`` so CLI output is readable.
-    Throttle-pool state changes (throttle_paused / throttle_resumed /
-    throttle_exhausted) also fire a best-effort Telegram ping per AGENTS.md
-    §15 — these are run-level events the user wants to know about even when
-    the pipeline runs unattended.
+    This formatter prints ``[stage/status] message`` so CLI output is
+    readable.
+
+    Special handling:
+      - ``throttle_paused`` / ``throttle_resumed`` / ``throttle_exhausted``
+        also fire a best-effort Telegram ping per AGENTS.md §15.
+      - ``captcha_paused`` (when ``pause_on_captcha`` is enabled): print a
+        clear banner, ping Telegram, then BLOCK on ``input()`` until the
+        user has solved the challenge in the surfaced Chrome tab and
+        pressed Enter. The pool's worker thread is blocked on this call,
+        so returning from input() automatically signals "resume."
     """
     def _emit(stage: str, status: str, message: str, meta: dict = None) -> None:
         print(f"[{stage}/{status}] {message}", flush=True)
+
         if status in ("throttle_paused", "throttle_resumed", "throttle_exhausted"):
             _try_telegram(f"[fetch_documents] {message}")
+            return
+
+        if status == "captcha_paused" and pause_on_captcha:
+            meta = meta or {}
+            banner = (
+                f"\n┌─ PAUSED — PDF worker hit a CAPTCHA ───────────────────┐\n"
+                f"│ Gap:    {meta.get('gap_id', '?')}\n"
+                f"│ Title:  {meta.get('title', '')}\n"
+                f"│ URL:    {meta.get('url', '')}\n"
+                f"│ Hint:   {meta.get('action_required', 'Solve challenge in browser')}\n"
+                f"│ ACTION: solve in the Chrome tab that just came forward, then press Enter.\n"
+                f"└────────────────────────────────────────────────────────┘"
+            )
+            print(banner, flush=True)
+            _try_telegram(
+                f"[fetch_documents] PDF worker PAUSED on CAPTCHA "
+                f"({meta.get('gap_id', '?')}). Solve in browser, press Enter in terminal."
+            )
+            try:
+                input("Press Enter once you've solved the CAPTCHA (or Ctrl-C to abort)... ")
+            except (EOFError, KeyboardInterrupt):
+                # On EOF / Ctrl-C, fall through and let the pool resume —
+                # the article will be retried once and likely fail; nothing
+                # else gets stuck.
+                print("[warn] CAPTCHA prompt aborted; resuming pool — this article will be skipped.",
+                      flush=True)
+            return
+
+        if status == "captcha_resumed":
+            _try_telegram(f"[fetch_documents] {message}")
+            return
 
     return _emit
 
@@ -514,6 +569,13 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--jitter-ms", type=int, default=None,
                    help="Per-task random sleep upper bound in ms — spreads request stream "
                         "(default 800; sets ORCH_PDF_JITTER_MS; pass 0 to disable)")
+    captcha_grp = p.add_mutually_exclusive_group()
+    captcha_grp.add_argument("--pause-on-captcha", dest="pause_on_captcha", action="store_true", default=None,
+                             help="When a PDF worker hits a CAPTCHA, pause the whole pool, "
+                                  "surface the tab, and wait for you to solve it (default: ON when "
+                                  "interactive / OFF with --no-prompt)")
+    captcha_grp.add_argument("--no-pause-on-captcha", dest="pause_on_captcha", action="store_false",
+                             help="Override the default and skip CAPTCHA-blocked articles silently")
     return p.parse_args()
 
 

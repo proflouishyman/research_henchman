@@ -159,6 +159,9 @@ class FetchDocumentsStats:
     throttle_pauses: int = 0
     throttle_resumes: int = 0
     throttle_exhausted: int = 0
+    # Pool-level CAPTCHA events (when pause_on_captcha is enabled).
+    captcha_pauses: int = 0
+    captcha_resumes: int = 0
 
     @property
     def total_ok(self) -> int:
@@ -758,6 +761,7 @@ class _PdfWorkerPool:
         cooldown_base_sec:  int = DEFAULT_COOLDOWN_BASE_SEC,
         max_pauses:         int = DEFAULT_MAX_PAUSES,
         jitter_ms:          int = DEFAULT_JITTER_MS,
+        pause_on_captcha:   bool = False,
         on_state_change:    Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> None:
         self.cdp_url = cdp_url
@@ -766,6 +770,7 @@ class _PdfWorkerPool:
         self.cooldown_base_sec  = max(0, cooldown_base_sec)
         self.max_pauses         = max(0, max_pauses)
         self.jitter_ms          = max(0, jitter_ms)
+        self.pause_on_captcha   = bool(pause_on_captcha)
         self._on_state_change   = on_state_change
 
         self._task_queue: "queue.Queue[Optional[Tuple[Dict[str, Any], Path]]]" = queue.Queue()
@@ -782,6 +787,10 @@ class _PdfWorkerPool:
         # CLEAR = workers must wait. Start in SET state.
         self._free_event            = threading.Event()
         self._free_event.set()
+        # Serializes the captcha-pause flow so multiple workers hitting
+        # CAPTCHAs don't all fire input() prompts at once. The first to
+        # detect surfaces its tab and prompts; others wait on free_event.
+        self._captcha_prompt_lock   = threading.Lock()
 
     @property
     def total_pauses(self) -> int:
@@ -883,6 +892,21 @@ class _PdfWorkerPool:
                             path, reason = _download_pdf_with_page_detailed(
                                 page, record, out_dir,
                             )
+                            # If pause_on_captcha is enabled and the page
+                            # appears to have no PDF link, double-check
+                            # whether the page is actually showing a CAPTCHA
+                            # widget hiding the link. If so, surface the
+                            # tab and pause until the user solves it; then
+                            # retry the same article once.
+                            if self.pause_on_captcha and reason == "no_pdf_link":
+                                solved = self._handle_captcha_if_present(page, record)
+                                if solved:
+                                    try:
+                                        path, reason = _download_pdf_with_page_detailed(
+                                            page, record, out_dir,
+                                        )
+                                    except Exception as exc:  # noqa: BLE001
+                                        path, reason = None, f"worker_exception_after_captcha: {exc!s:.60}"
                         except Exception as exc:  # noqa: BLE001
                             path, reason = None, f"worker_exception: {exc!s:.60}"
 
@@ -958,6 +982,74 @@ class _PdfWorkerPool:
         except Exception:
             pass
 
+    def _handle_captcha_if_present(self, page: Any, record: Dict[str, Any]) -> bool:
+        """Probe ``page`` for a CAPTCHA / challenge iframe; if found, surface
+        the tab to the user, pause the entire pool, and block on the user
+        solving the challenge. Returns ``True`` if a CAPTCHA was detected
+        and (presumably) handled — caller should retry the article once.
+
+        The actual user prompt happens inside ``on_state_change`` (the CLI
+        wires this to print a banner + ping Telegram + call ``input()``);
+        a return from that callback signals "user pressed Enter, resume."
+        Workers other than the one that detected the CAPTCHA block on
+        ``_free_event`` until the CLI handler returns.
+
+        Best-effort: never raises; if iframe detection or front-bringing
+        fails, the worker silently proceeds without pausing.
+        """
+        # Local import to avoid a circular dependency with browser_client
+        # (which imports nothing from this module). Cheap because the module
+        # is already loaded by the time any worker runs.
+        try:
+            from adapters.browser_client import _detect_iframe_block
+        except Exception:
+            return False
+
+        try:
+            blocked, block_reason, action = _detect_iframe_block(page)
+        except Exception:
+            return False
+        if not blocked:
+            return False
+
+        # Surface the worker's tab so the user can find it among any
+        # other open tabs. Best-effort — some Chrome / CDP combinations
+        # silently ignore bring_to_front; we don't fail the run for that.
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+
+        meta: Dict[str, Any] = {
+            "gap_id":          record.get("gap_id", ""),
+            "title":           (record.get("title") or "")[:60],
+            "url":             (record.get("url") or "")[:120],
+            "block_reason":    block_reason,
+            "action_required": action,
+        }
+
+        # Only one worker prompts at a time. If another worker is already
+        # holding the prompt lock, we wait on free_event (which they will
+        # have cleared) — when they resume the pool, we resume too without
+        # double-prompting.
+        with self._captcha_prompt_lock:
+            if not self._free_event.is_set():
+                # Someone else paused already; just wait it out.
+                self._free_event.wait()
+                return True
+
+            self._free_event.clear()
+            try:
+                # _notify is synchronous: the CLI's handler will block on
+                # input() until the user has solved the challenge. When it
+                # returns, control flows back here and we resume.
+                self._notify("captcha_paused", meta)
+            finally:
+                self._free_event.set()
+                self._notify("captcha_resumed", meta)
+
+        return True
+
     def _drain_with_reason(self, reason: str) -> None:
         """Empty the task queue, putting a synthetic reason per task so
         callers don't hang waiting for results."""
@@ -978,6 +1070,7 @@ def make_pdf_worker_pool(
     cooldown_base_sec:  Optional[int] = None,
     max_pauses:         Optional[int] = None,
     jitter_ms:          Optional[int] = None,
+    pause_on_captcha:   bool = False,
     on_state_change:    Optional[Callable[[str, Dict[str, Any]], None]] = None,
 ) -> Iterator[Optional[_PdfWorkerPool]]:
     """Yield an active worker pool when CDP is reachable; ``None`` otherwise.
@@ -1028,6 +1121,7 @@ def make_pdf_worker_pool(
             if jitter_ms is not None
             else _env_int("ORCH_PDF_JITTER_MS", _PdfWorkerPool.DEFAULT_JITTER_MS)
         ),
+        pause_on_captcha=pause_on_captcha,
         on_state_change=on_state_change,
     )
     pool.__enter__()
@@ -1231,6 +1325,7 @@ def run_fetch(
     *,
     emit: Optional[Callable] = None,
     on_blocked: Optional[Callable] = None,
+    pause_on_captcha: bool = False,
 ) -> FetchDocumentsStats:
     """Execute the full fetch pass for a list of FetchItems.
 
@@ -1279,6 +1374,10 @@ def run_fetch(
             stats.throttle_resumes += 1
         elif status == "throttle_exhausted":
             stats.throttle_exhausted += 1
+        elif status == "captcha_paused":
+            stats.captcha_pauses += 1
+        elif status == "captcha_resumed":
+            stats.captcha_resumes += 1
         user_emit(stage, status, message, meta)
 
     # Pool state-change callback: surfaces pause / resume / exhaust events
@@ -1302,6 +1401,17 @@ def run_fetch(
             _emit("fetching", "throttle_exhausted",
                   f"PDF pool exhausted retry budget after {tp} pauses — remaining articles will skip",
                   meta)
+        elif state == "captcha_paused":
+            gid = meta.get("gap_id", "?")
+            url = meta.get("url", "")
+            action = meta.get("action_required", "Solve challenge in browser")
+            _emit("fetching", "captcha_paused",
+                  f"PDF worker hit CAPTCHA on {gid}: {action} — surfaced tab, waiting for user. URL: {url}",
+                  meta)
+        elif state == "captcha_resumed":
+            gid = meta.get("gap_id", "?")
+            _emit("fetching", "captcha_resumed",
+                  f"Resumed after CAPTCHA solve on {gid}", meta)
 
     seeds     = [i for i in items if i.fetch_type == "seed"]
     pdfs      = [i for i in items if i.fetch_type == "pdf"]
@@ -1341,6 +1451,7 @@ def run_fetch(
         with make_pdf_worker_pool(
             _pool_cdp_url,
             _pool_workers,
+            pause_on_captcha=pause_on_captcha,
             on_state_change=_on_pool_state_change,
         ) as pdf_pool:
 

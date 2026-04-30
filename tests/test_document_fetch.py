@@ -425,6 +425,78 @@ def test_try_pdf_fetch_per_article_emits_unavailable_for_each_missing(tmp_path: 
     assert statuses.count("pdf_inline_unavailable") == 2
 
 
+def test_pdf_worker_pool_captcha_pause_blocks_workers_until_handler_returns(tmp_path: Path) -> None:
+    """When pause_on_captcha is enabled and _detect_iframe_block returns
+    blocked=True, _handle_captcha_if_present should: surface the tab, clear
+    the free_event, fire on_state_change('captcha_paused'), wait for the
+    handler to return, then fire 'captcha_resumed' and re-set free_event.
+    """
+    from adapters.document_fetch import _PdfWorkerPool
+
+    states: list = []
+    handler_call_count = {"n": 0}
+
+    def _handler(state, meta):
+        states.append((state, meta.get("gap_id"), meta.get("title")))
+        if state == "captcha_paused":
+            handler_call_count["n"] += 1
+
+    pool = _PdfWorkerPool(
+        cdp_url="http://127.0.0.1:9222",
+        workers=1,
+        pause_on_captcha=True,
+        cooldown_base_sec=999999,
+        max_pauses=10,
+        jitter_ms=0,
+        on_state_change=_handler,
+    )
+
+    # Stand in for a Playwright page: bring_to_front is the only method
+    # called directly; _detect_iframe_block (imported lazily inside
+    # _handle_captcha_if_present) gets the page passed through. We patch
+    # browser_client._detect_iframe_block to return a forced "blocked".
+    fake_page = MagicMock()
+    fake_page.bring_to_front.return_value = None
+
+    record = {"gap_id": "G1", "title": "Article With Captcha", "url": "/c/x/details/y"}
+
+    # Patch the iframe-block detector at its source so the worker pool
+    # treats this page as blocked regardless of the mock's evaluate path.
+    import adapters.browser_client as _bc
+    original = _bc._detect_iframe_block
+    _bc._detect_iframe_block = lambda page: (True, "captcha", "Solve reCAPTCHA challenge in browser")
+    try:
+        result = pool._handle_captcha_if_present(fake_page, record)
+    finally:
+        _bc._detect_iframe_block = original
+
+    assert result is True
+    fake_page.bring_to_front.assert_called_once()
+    state_names = [s[0] for s in states]
+    assert "captcha_paused" in state_names
+    assert "captcha_resumed" in state_names
+    assert handler_call_count["n"] == 1
+    # After the handler returned, the pool should be unpaused.
+    assert pool.is_paused is False
+
+
+def test_pdf_worker_pool_captcha_skipped_when_pause_disabled() -> None:
+    """If pause_on_captcha is False, _handle_captcha_if_present is never
+    called and the worker simply reports the article as no_pdf_link
+    (current default for unattended runs)."""
+    from adapters.document_fetch import _PdfWorkerPool
+
+    pool = _PdfWorkerPool(
+        cdp_url="http://127.0.0.1:9222",
+        workers=1,
+        pause_on_captcha=False,
+        jitter_ms=0,
+    )
+    assert pool.pause_on_captcha is False
+    # The worker loop only invokes _handle_captcha_if_present when
+    # self.pause_on_captcha is True, so its mere existence is benign.
+
+
 def test_pdf_worker_pool_throttle_pause_triggers_state_callback(tmp_path: Path) -> None:
     """When N consecutive navigation_timeout reasons hit the pool, it should
     set the paused flag and fire on_state_change('throttle_paused', ...).

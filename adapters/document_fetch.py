@@ -154,6 +154,11 @@ class FetchDocumentsStats:
     inline_pdfs_ok: int = 0
     inline_pdfs_unavailable: int = 0   # no PDF link on the detail page
     inline_pdfs_failed: int = 0        # link found but capture failed
+    inline_pdfs_throttled: int = 0     # navigation timed out (likely rate-limit)
+    # Pool-level throttle events (one per pause, one per resume, one per exhaust).
+    throttle_pauses: int = 0
+    throttle_resumes: int = 0
+    throttle_exhausted: int = 0
 
     @property
     def total_ok(self) -> int:
@@ -506,30 +511,50 @@ _EBSCO_PDF_LINK_JS = """() => {
 }"""
 
 
-def _download_pdf_with_page(
+# PDF-fetch reason strings (returned by _download_pdf_with_page_detailed):
+#   None                      — success (path is set)
+#   "no_pdf_link"             — detail page rendered but has no /viewer/pdf/ link
+#                               (genuine: many EBSCO records are abstract-only)
+#   "navigation_timeout"      — page.goto timed out — almost always EBSCO throttle
+#                               or a slow-walked response under per-IP rate limit
+#   "navigation_error"        — non-timeout exception during navigation
+#   "viewer_capture_failed"   — viewer URL loaded but no application/pdf response
+#   "write_failed"            — PDF captured but disk write raised
+
+
+def _is_playwright_timeout(exc: BaseException) -> bool:
+    """True if exc is Playwright's TimeoutError (page.goto / waits)."""
+    try:
+        from playwright.sync_api import TimeoutError as _PWTimeout  # type: ignore
+        return isinstance(exc, _PWTimeout)
+    except Exception:
+        # Fall back to class-name match if import fails.
+        return exc.__class__.__name__ == "TimeoutError"
+
+
+def _download_pdf_with_page_detailed(
     page: Any,
     record: Dict[str, Any],
     out_dir: Path,
     *,
     detail_wait_ms: int = 1500,
     viewer_wait_ms: int = 3000,
-) -> Optional[Path]:
-    """Core PDF-fetch logic: takes a Playwright page directly.
+) -> Tuple[Optional[Path], Optional[str]]:
+    """Core PDF-fetch logic, returning ``(path, reason)``.
 
     Shared between the sequential session-based path and parallel worker
-    threads (each of which manages its own page). Best-effort: never raises;
-    returns the saved Path on success, None for any failure mode (no PDF
-    available, navigation error, capture timeout, write error).
+    threads. Best-effort: never raises. Distinguishes navigation timeouts
+    (likely throttle) from genuine "no PDF link" so the pool can react.
     """
     title = (record.get("title") or "").strip()
     raw_url = (record.get("url") or "").strip()
     if not title or not raw_url:
-        return None
+        return None, "no_pdf_link"
 
     slug = _slugify(title)[:60]
     pdf_path = out_dir / f"{slug}.pdf"
     if pdf_path.exists():
-        return pdf_path
+        return pdf_path, None
 
     abs_url = raw_url if raw_url.startswith("http") else f"{_EBSCO_BASE_HOST}{raw_url}"
 
@@ -537,15 +562,15 @@ def _download_pdf_with_page(
     try:
         page.goto(abs_url, timeout=30000, wait_until="domcontentloaded")
         page.wait_for_timeout(detail_wait_ms)
-    except Exception:
-        return None
+    except Exception as exc:
+        return None, ("navigation_timeout" if _is_playwright_timeout(exc) else "navigation_error")
 
     try:
         viewer_href = page.evaluate(_EBSCO_PDF_LINK_JS)
     except Exception:
         viewer_href = None
     if not viewer_href:
-        return None  # no PDF for this article — legitimate skip
+        return None, "no_pdf_link"
 
     viewer_url = (
         viewer_href if viewer_href.startswith("http")
@@ -554,6 +579,7 @@ def _download_pdf_with_page(
 
     # Step 2: viewer page with response listener — captures the PDF body.
     captured: Dict[str, Any] = {}
+    viewer_timed_out = False
 
     def _on_response(resp):
         if "pdf" in captured:
@@ -575,10 +601,13 @@ def _download_pdf_with_page(
     try:
         try:
             page.goto(viewer_url, timeout=45000, wait_until="networkidle")
-        except Exception:
-            # networkidle may time out before the PDF response fully arrives;
-            # the listener may have already captured it.
-            pass
+        except Exception as exc:
+            # networkidle commonly times out before the PDF response fully
+            # arrives — the listener may have already captured it. Track
+            # whether this was a nav timeout so we can flag throttle on
+            # an empty capture.
+            if _is_playwright_timeout(exc):
+                viewer_timed_out = True
         if "pdf" not in captured:
             page.wait_for_timeout(viewer_wait_ms)
     finally:
@@ -588,13 +617,33 @@ def _download_pdf_with_page(
             pass
 
     if "pdf" not in captured:
-        return None
+        # Empty capture + viewer goto timed out → likely throttle on the
+        # viewer endpoint specifically. Empty without timeout → viewer
+        # didn't serve a PDF (older record / region-locked / etc.).
+        return None, ("navigation_timeout" if viewer_timed_out else "viewer_capture_failed")
 
     try:
         pdf_path.write_bytes(captured["pdf"])
-        return pdf_path
+        return pdf_path, None
     except Exception:
-        return None
+        return None, "write_failed"
+
+
+def _download_pdf_with_page(
+    page: Any,
+    record: Dict[str, Any],
+    out_dir: Path,
+    *,
+    detail_wait_ms: int = 1500,
+    viewer_wait_ms: int = 3000,
+) -> Optional[Path]:
+    """Backward-compatible wrapper: returns ``Optional[Path]`` only."""
+    path, _reason = _download_pdf_with_page_detailed(
+        page, record, out_dir,
+        detail_wait_ms=detail_wait_ms,
+        viewer_wait_ms=viewer_wait_ms,
+    )
+    return path
 
 
 def download_article_pdf(
@@ -646,36 +695,102 @@ class _PdfWorkerPool:
     """Persistent pool of N worker threads, each owning its own Playwright
     session + page for the lifetime of the pool.
 
-    The previous ``ThreadPoolExecutor + _fetch_pdf_in_worker`` approach
-    paid ~1-2 s of ``sync_playwright`` setup per article — substantial
-    overhead because total work per article is only ~3-4 s. By keeping the
-    sessions and pages persistent across many articles, the pool eliminates
-    that overhead entirely after the initial startup cost.
-
     Concurrency model
     -----------------
     - N worker threads, started in ``__enter__``, joined in ``__exit__``.
-    - Each worker enters its own ``sync_playwright`` block (Playwright sync
-      state is per-thread-not-shareable), connects to the same CDP browser
-      (so cookies / auth are shared), and opens one persistent page.
+    - Each worker enters its own ``sync_playwright`` block, connects to the
+      same CDP browser (so cookies / auth are shared), and opens one
+      persistent page.
     - Workers consume ``(record, out_dir)`` tasks from a shared queue and
-      push ``(record, path, error)`` to a results queue.
-    - Caller submits batches via ``submit()``; results stream via
-      ``drain(n)`` which yields up to ``n`` results in arrival order.
-    - ``None`` is the shutdown sentinel — one per worker on exit.
+      push ``(record, path, reason)`` to a results queue. ``reason`` is
+      ``None`` on success or one of the typed strings documented above
+      ``_download_pdf_with_page_detailed`` (no_pdf_link / navigation_timeout
+      / viewer_capture_failed / etc.).
+    - ``None`` on the task queue is the shutdown sentinel — one per worker
+      sent on exit.
+
+    Throttle handling
+    -----------------
+    EBSCO rate-limits per-IP under sustained concurrent load — observed live
+    when running 4 parallel workers, EBSCO began slow-walking detail-page
+    responses past the ``page.goto`` timeout. Without a counter-measure,
+    timeouts fall through as "no_pdf_link" and the pipeline silently misses
+    a window of articles.
+
+    The pool now:
+    1. Counts consecutive ``navigation_timeout`` results across all workers.
+    2. When the count reaches ``throttle_threshold``, sets a pause flag.
+       Workers consult the flag before pulling each task and block until
+       it clears.
+    3. A cooldown thread sleeps for ``cooldown_base_sec * (1 + total_pauses)``
+       seconds (linear backoff: 5min, 10min, 15min...) then clears the
+       flag — workers resume.
+    4. After ``max_pauses`` pauses, the pool gives up and drains all
+       remaining tasks with reason ``throttle_exhausted`` so the run can
+       finish gracefully without another infinite throttle loop.
+    5. Each state transition (``throttled`` / ``resumed`` / ``exhausted``)
+       triggers ``on_state_change`` callback so the CLI can emit events,
+       ping Telegram, and surface the pause to the user.
+
+    Inter-request jitter
+    --------------------
+    Workers sleep ``random.uniform(0, jitter_ms)`` ms before each task so
+    the request stream looks less mechanical and reduces same-instant
+    bursts to EBSCO's edge.
 
     Errors during worker startup (Playwright import error, CDP connect
     failure) are propagated by draining outstanding tasks with a fixed
-    error string so callers don't hang.
+    reason string so callers don't hang.
     """
 
-    def __init__(self, cdp_url: str, workers: int) -> None:
+    # Default tuning (overridable via env vars; see make_pdf_worker_pool)
+    DEFAULT_THROTTLE_THRESHOLD = 3
+    DEFAULT_COOLDOWN_BASE_SEC  = 300        # 5 min × 1, 2, 3, ... linear
+    DEFAULT_MAX_PAUSES         = 3
+    DEFAULT_JITTER_MS          = 800
+
+    def __init__(
+        self,
+        cdp_url: str,
+        workers: int,
+        *,
+        throttle_threshold: int = DEFAULT_THROTTLE_THRESHOLD,
+        cooldown_base_sec:  int = DEFAULT_COOLDOWN_BASE_SEC,
+        max_pauses:         int = DEFAULT_MAX_PAUSES,
+        jitter_ms:          int = DEFAULT_JITTER_MS,
+        on_state_change:    Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ) -> None:
         self.cdp_url = cdp_url
         self.workers = max(1, workers)
+        self.throttle_threshold = max(1, throttle_threshold)
+        self.cooldown_base_sec  = max(0, cooldown_base_sec)
+        self.max_pauses         = max(0, max_pauses)
+        self.jitter_ms          = max(0, jitter_ms)
+        self._on_state_change   = on_state_change
+
         self._task_queue: "queue.Queue[Optional[Tuple[Dict[str, Any], Path]]]" = queue.Queue()
         self._result_queue: "queue.Queue[Tuple[Dict[str, Any], Optional[Path], Optional[str]]]" = queue.Queue()
         self._threads: List[threading.Thread] = []
         self._submitted = 0
+
+        # Throttle state — protected by self._lock.
+        self._lock                  = threading.RLock()
+        self._consecutive_throttles = 0
+        self._total_pauses          = 0
+        self._exhausted             = False
+        # Event semantics: SET = workers are FREE to run (no pause).
+        # CLEAR = workers must wait. Start in SET state.
+        self._free_event            = threading.Event()
+        self._free_event.set()
+
+    @property
+    def total_pauses(self) -> int:
+        with self._lock:
+            return self._total_pauses
+
+    @property
+    def is_paused(self) -> bool:
+        return not self._free_event.is_set()
 
     def __enter__(self) -> "_PdfWorkerPool":
         for i in range(self.workers):
@@ -689,7 +804,9 @@ class _PdfWorkerPool:
         return self
 
     def __exit__(self, *_: Any) -> None:
-        # Send shutdown sentinels — one per worker.
+        # Make sure workers aren't blocked on a paused event when we shut
+        # down — release them so they can pull the sentinel.
+        self._free_event.set()
         for _w in range(self.workers):
             self._task_queue.put(None)
         for t in self._threads:
@@ -700,11 +817,12 @@ class _PdfWorkerPool:
         self._task_queue.put((record, out_dir))
         self._submitted += 1
 
-    def drain(self, n: int, timeout: float = 300.0) -> Iterator[Tuple[Dict[str, Any], Optional[Path], Optional[str]]]:
+    def drain(self, n: int, timeout: float = 1800.0) -> Iterator[Tuple[Dict[str, Any], Optional[Path], Optional[str]]]:
         """Yield exactly ``n`` results in arrival order (not submission order).
 
-        Blocks until each result arrives or ``timeout`` seconds elapse per
-        result; on timeout, yields a synthetic error so the caller can move on.
+        Per-result timeout is generous (default 30 min) because workers may
+        be paused for a cooldown that exceeds the previous 5-min default —
+        a paused pool isn't a stuck pool.
         """
         for _ in range(n):
             try:
@@ -719,71 +837,199 @@ class _PdfWorkerPool:
         try:
             from playwright.sync_api import sync_playwright  # type: ignore
         except ImportError:
-            self._drain_with_error("playwright_not_installed")
+            self._drain_with_reason("playwright_not_installed")
             return
 
         try:
             from adapters.cdp_utils import effective_cdp_url
         except ImportError:
-            self._drain_with_error("cdp_utils_unavailable")
+            self._drain_with_reason("cdp_utils_unavailable")
             return
 
         effective = effective_cdp_url(self.cdp_url)
+        import random as _random
 
         try:
             with sync_playwright() as pw:
                 try:
                     browser = pw.chromium.connect_over_cdp(effective)
                 except Exception as exc:  # noqa: BLE001
-                    self._drain_with_error(f"cdp_connect_failed: {exc!s:.60}")
+                    self._drain_with_reason(f"cdp_connect_failed: {exc!s:.60}")
                     return
 
                 ctx = browser.contexts[0] if browser.contexts else browser.new_context()
                 page = ctx.new_page()
                 try:
                     while True:
+                        # Wait while the pool is paused for a throttle cooldown.
+                        # Use timed waits so we can still respond to shutdown.
+                        while not self._free_event.wait(timeout=1.0):
+                            if self._exhausted:
+                                # Pool gave up; drain remaining tasks with error.
+                                self._drain_with_reason("throttle_exhausted")
+                                return
+
                         task = self._task_queue.get()
                         if task is None:
                             return
                         record, out_dir = task
+
+                        # Inter-request jitter — spread out the request
+                        # stream from this thread.
+                        if self.jitter_ms > 0:
+                            time.sleep(_random.uniform(0, self.jitter_ms) / 1000.0)
+
                         try:
-                            path = _download_pdf_with_page(page, record, out_dir)
-                            self._result_queue.put((record, path, None))
+                            path, reason = _download_pdf_with_page_detailed(
+                                page, record, out_dir,
+                            )
                         except Exception as exc:  # noqa: BLE001
-                            self._result_queue.put((record, None, str(exc)[:120]))
+                            path, reason = None, f"worker_exception: {exc!s:.60}"
+
+                        self._result_queue.put((record, path, reason))
+                        self._update_throttle_state(reason)
                 finally:
                     try:
                         page.close()
                     except Exception:
                         pass
         except Exception as exc:  # noqa: BLE001
-            self._drain_with_error(f"worker_init_failed: {exc!s:.60}")
+            self._drain_with_reason(f"worker_init_failed: {exc!s:.60}")
 
-    def _drain_with_error(self, error: str) -> None:
-        """Empty the task queue, putting a synthetic error per task so callers
-        don't hang waiting for results."""
+    def _update_throttle_state(self, reason: Optional[str]) -> None:
+        """Track consecutive throttles; trigger pause when threshold crossed."""
+        with self._lock:
+            if reason == "navigation_timeout":
+                self._consecutive_throttles += 1
+                if (
+                    self._consecutive_throttles >= self.throttle_threshold
+                    and self._free_event.is_set()        # not already paused
+                    and not self._exhausted
+                ):
+                    self._initiate_pause_locked()
+            elif reason is None or reason == "no_pdf_link":
+                # Reset only on outcomes that indicate EBSCO is responding
+                # promptly. Ambiguous reasons (write_failed, viewer_capture_failed,
+                # worker_exception) leave the counter alone — they shouldn't
+                # cancel a brewing throttle but shouldn't escalate it either.
+                self._consecutive_throttles = 0
+
+    def _initiate_pause_locked(self) -> None:
+        """Called under self._lock. Pause workers; spawn cooldown thread."""
+        self._total_pauses += 1
+        if self._total_pauses > self.max_pauses:
+            self._exhausted = True
+            self._notify("throttle_exhausted", {
+                "total_pauses": self._total_pauses - 1,
+                "max_pauses":   self.max_pauses,
+            })
+            return
+
+        cooldown_sec = self.cooldown_base_sec * self._total_pauses
+        self._free_event.clear()                  # block workers
+        self._notify("throttle_paused", {
+            "consecutive_throttles": self._consecutive_throttles,
+            "cooldown_sec":          cooldown_sec,
+            "total_pauses":          self._total_pauses,
+        })
+        threading.Thread(
+            target=self._cooldown_thread,
+            args=(cooldown_sec,),
+            daemon=True,
+            name=f"pdf-pool-cooldown-{self._total_pauses}",
+        ).start()
+
+    def _cooldown_thread(self, cooldown_sec: int) -> None:
+        time.sleep(cooldown_sec)
+        with self._lock:
+            self._consecutive_throttles = 0
+            self._free_event.set()                # release workers
+            self._notify("throttle_resumed", {
+                "cooldown_sec":  cooldown_sec,
+                "total_pauses":  self._total_pauses,
+            })
+
+    def _notify(self, state: str, meta: Dict[str, Any]) -> None:
+        """Best-effort callback fire — never raises."""
+        if self._on_state_change is None:
+            return
+        try:
+            self._on_state_change(state, meta)
+        except Exception:
+            pass
+
+    def _drain_with_reason(self, reason: str) -> None:
+        """Empty the task queue, putting a synthetic reason per task so
+        callers don't hang waiting for results."""
         while True:
             task = self._task_queue.get()
             if task is None:
                 return
             record, _ = task
-            self._result_queue.put((record, None, error))
+            self._result_queue.put((record, None, reason))
 
 
 @contextlib.contextmanager
 def make_pdf_worker_pool(
     cdp_url: Optional[str],
     workers: int,
+    *,
+    throttle_threshold: Optional[int] = None,
+    cooldown_base_sec:  Optional[int] = None,
+    max_pauses:         Optional[int] = None,
+    jitter_ms:          Optional[int] = None,
+    on_state_change:    Optional[Callable[[str, Dict[str, Any]], None]] = None,
 ) -> Iterator[Optional[_PdfWorkerPool]]:
     """Yield an active worker pool when CDP is reachable; ``None`` otherwise.
 
-    Use as ``with make_pdf_worker_pool(url, n) as pool: ...``. Callers branch
-    on ``pool is None`` to fall back to non-pool behavior.
+    Use as ``with make_pdf_worker_pool(url, n, ...) as pool: ...``. Callers
+    branch on ``pool is None`` to fall back to non-pool behavior.
+
+    Tuning knobs (each accepts an explicit override; ``None`` falls back to
+    the matching ``ORCH_PDF_*`` env var, then to the class defaults):
+
+    - ``throttle_threshold`` — consecutive timeouts that trigger a pause.
+    - ``cooldown_base_sec``  — base cooldown; doubled, tripled, ... on each
+      successive pause (linear backoff: 5min, 10min, 15min, ...).
+    - ``max_pauses``         — give up and drain remaining tasks after this
+      many pauses to avoid an infinite throttle loop.
+    - ``jitter_ms``          — per-worker per-task random sleep upper bound
+      to spread out the request stream.
     """
     if not cdp_url or not isinstance(cdp_url, str) or workers <= 1:
         yield None
         return
-    pool = _PdfWorkerPool(cdp_url, workers)
+
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(os.environ.get(name, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    pool = _PdfWorkerPool(
+        cdp_url, workers,
+        throttle_threshold=(
+            throttle_threshold
+            if throttle_threshold is not None
+            else _env_int("ORCH_PDF_THROTTLE_THRESHOLD", _PdfWorkerPool.DEFAULT_THROTTLE_THRESHOLD)
+        ),
+        cooldown_base_sec=(
+            cooldown_base_sec
+            if cooldown_base_sec is not None
+            else _env_int("ORCH_PDF_THROTTLE_COOLDOWN_SEC", _PdfWorkerPool.DEFAULT_COOLDOWN_BASE_SEC)
+        ),
+        max_pauses=(
+            max_pauses
+            if max_pauses is not None
+            else _env_int("ORCH_PDF_MAX_THROTTLE_PAUSES", _PdfWorkerPool.DEFAULT_MAX_PAUSES)
+        ),
+        jitter_ms=(
+            jitter_ms
+            if jitter_ms is not None
+            else _env_int("ORCH_PDF_JITTER_MS", _PdfWorkerPool.DEFAULT_JITTER_MS)
+        ),
+        on_state_change=on_state_change,
+    )
     pool.__enter__()
     try:
         yield pool
@@ -823,8 +1069,8 @@ def _fetch_pdf_in_worker(
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
             page = ctx.new_page()
             try:
-                path = _download_pdf_with_page(page, record, out_dir)
-                return record, path, None
+                path, reason = _download_pdf_with_page_detailed(page, record, out_dir)
+                return record, path, reason
             finally:
                 try:
                     page.close()
@@ -837,28 +1083,41 @@ def _fetch_pdf_in_worker(
 def _emit_pdf_outcome(
     record: Dict[str, Any],
     path: Optional[Path],
-    error: Optional[str],
+    reason: Optional[str],
     *,
     gap_id: str,
     source_id: str,
     emit: Optional[Callable],
 ) -> None:
-    """Translate a (path, error) result into the pipeline's emit vocabulary."""
+    """Translate a (path, reason) result into the pipeline's emit vocabulary.
+
+    Reasons (from ``_download_pdf_with_page_detailed`` + the worker pool):
+      None                  → ok (path is set)
+      "no_pdf_link"         → unavailable (legitimate: article has no PDF)
+      "navigation_timeout"  → throttled (likely EBSCO rate-limit)
+      "throttle_exhausted"  → throttled (pool gave up after max pauses)
+      "worker_pool_timeout" → failed (worker pool drain timed out)
+      anything else         → failed (capture / write / worker error)
+    """
     if not emit:
         return
     title_short = (record.get("title") or "")[:60]
     meta = {"gap_id": gap_id, "source_id": source_id, "title": title_short}
-    if error:
-        emit("fetching", "pdf_inline_failed",
-             f"[{gap_id}] PDF errored for: {title_short} — {error[:60]}",
-             {**meta, "error": error})
-    elif path is None:
-        emit("fetching", "pdf_inline_unavailable",
-             f"[{gap_id}] no PDF for: {title_short}", meta)
-    else:
+    if path is not None and not reason:
         emit("fetching", "pdf_inline_ok",
              f"[{gap_id}] PDF saved: {path.name}",
              {**meta, "file": path.name})
+    elif reason == "no_pdf_link":
+        emit("fetching", "pdf_inline_unavailable",
+             f"[{gap_id}] no PDF for: {title_short}", meta)
+    elif reason in ("navigation_timeout", "throttle_exhausted"):
+        emit("fetching", "pdf_inline_throttled",
+             f"[{gap_id}] throttled ({reason}) on: {title_short}",
+             {**meta, "reason": reason})
+    else:
+        emit("fetching", "pdf_inline_failed",
+             f"[{gap_id}] PDF errored for: {title_short} — {(reason or 'unknown')[:60]}",
+             {**meta, "reason": reason or "unknown"})
 
 
 def _try_pdf_fetch_per_article(
@@ -942,15 +1201,21 @@ def _try_pdf_fetch_per_article(
         return
 
     # ── 3. Sequential fallback ──────────────────────────────────────────
+    page = getattr(session, "_page", None)
     for rec in valid:
+        if page is None:
+            # Mock or non-CDP session — emit a placeholder unavailable.
+            _emit_pdf_outcome(
+                rec, None, "no_pdf_link",
+                gap_id=gap_id, source_id=source_id, emit=emit,
+            )
+            continue
         try:
-            path = download_article_pdf(rec, session, out_dir, emit=emit)
-            error = None
+            path, reason = _download_pdf_with_page_detailed(page, rec, out_dir)
         except Exception as exc:  # noqa: BLE001
-            path = None
-            error = str(exc)[:120]
+            path, reason = None, f"sequential_exception: {exc!s:.60}"
         _emit_pdf_outcome(
-            rec, path, error,
+            rec, path, reason,
             gap_id=gap_id, source_id=source_id, emit=emit,
         )
 
@@ -1005,7 +1270,38 @@ def run_fetch(
         elif status == "pdf_inline_failed":
             stats.inline_pdfs_attempted += 1
             stats.inline_pdfs_failed += 1
+        elif status == "pdf_inline_throttled":
+            stats.inline_pdfs_attempted += 1
+            stats.inline_pdfs_throttled += 1
+        elif status == "throttle_paused":
+            stats.throttle_pauses += 1
+        elif status == "throttle_resumed":
+            stats.throttle_resumes += 1
+        elif status == "throttle_exhausted":
+            stats.throttle_exhausted += 1
         user_emit(stage, status, message, meta)
+
+    # Pool state-change callback: surfaces pause / resume / exhaust events
+    # through the same emit pipeline that the rest of the run uses. The CLI
+    # wraps its emit to also ping Telegram on these statuses.
+    def _on_pool_state_change(state: str, meta: Dict[str, Any]) -> None:
+        if state == "throttle_paused":
+            cd = meta.get("cooldown_sec", "?")
+            tp = meta.get("total_pauses", "?")
+            ct = meta.get("consecutive_throttles", "?")
+            _emit("fetching", "throttle_paused",
+                  f"PDF pool paused after {ct} consecutive timeouts — cooling down {cd}s (pause #{tp})",
+                  meta)
+        elif state == "throttle_resumed":
+            cd = meta.get("cooldown_sec", "?")
+            _emit("fetching", "throttle_resumed",
+                  f"PDF pool resumed after {cd}s cooldown",
+                  meta)
+        elif state == "throttle_exhausted":
+            tp = meta.get("total_pauses", "?")
+            _emit("fetching", "throttle_exhausted",
+                  f"PDF pool exhausted retry budget after {tp} pauses — remaining articles will skip",
+                  meta)
 
     seeds     = [i for i in items if i.fetch_type == "seed"]
     pdfs      = [i for i in items if i.fetch_type == "pdf"]
@@ -1042,7 +1338,11 @@ def run_fetch(
                 _pool_cdp_url = _candidate
         _pool_workers = max(1, int(os.environ.get("ORCH_PDF_WORKERS", "4")))
 
-        with make_pdf_worker_pool(_pool_cdp_url, _pool_workers) as pdf_pool:
+        with make_pdf_worker_pool(
+            _pool_cdp_url,
+            _pool_workers,
+            on_state_change=_on_pool_state_change,
+        ) as pdf_pool:
 
             # ── Seed pages: browser required ──────────────────────────────
             for i, item in enumerate(seeds, 1):

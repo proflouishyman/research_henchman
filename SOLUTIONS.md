@@ -1,3 +1,29 @@
+[2026-04-30] - Throttle detection + pool pause/cooldown + jitter + worker count flag
+
+Problem
+The full-corpus run on 2026-04-29 demonstrated a 60-gap "dead zone" (AUTO-040 through AUTO-099) where 0 PDFs were captured across 1714 articles. EBSCO had silently slow-walked detail-page responses past the 30 s page.goto timeout under sustained 4-worker concurrency. The pipeline reported every timed-out article as "no_pdf_link" / pdf_inline_unavailable because the post-timeout DOM lacked the /viewer/pdf/ anchor — indistinguishable from articles that genuinely have no PDF. ~200-250 retrievable PDFs were missed silently. Three needs surfaced:
+1. Distinguish "EBSCO timed me out" (likely throttle) from "no PDF for this article" (legitimate).
+2. When throttled, pause the pool and back off — instead of silently bleeding articles into the no-PDF bucket.
+3. Make the worker count first-class on the CLI so the user can dial it up or down without exporting env vars.
+
+Root Cause
+fetch_documents.py / adapters/document_fetch.py treated every page.goto failure (including TimeoutError) as a return None → a one-shot "no_pdf_link" emission. There was no shared state across workers to count consecutive timeouts, no pause mechanism, no inter-request jitter, and no CLI knob for workers (only an env var).
+
+Solution
+1. Refactored _download_pdf_with_page into _download_pdf_with_page_detailed which returns (Optional[Path], Optional[str]) where the reason string is one of: None (success) | "no_pdf_link" | "navigation_timeout" | "navigation_error" | "viewer_capture_failed" | "write_failed". TimeoutError is detected via _is_playwright_timeout(exc) which does an isinstance check against playwright.sync_api.TimeoutError with a class-name fallback. Both the detail-page nav and viewer-page nav are tracked separately — viewer timeouts on empty capture are reported as navigation_timeout, viewer non-timeouts on empty capture as viewer_capture_failed. _download_pdf_with_page is preserved as a backward-compat wrapper that drops the reason.
+2. _PdfWorkerPool now tracks consecutive_throttles + total_pauses under a lock. Each worker's result feeds _update_throttle_state(reason) — only navigation_timeout increments the counter; None and no_pdf_link reset it; ambiguous reasons (viewer_capture_failed, write_failed) leave it alone. When the counter hits throttle_threshold (default 3), _initiate_pause_locked clears the free_event and spawns a cooldown thread; workers block on the event before pulling each task. After cooldown_base_sec * total_pauses (linear backoff: 5min, 10min, 15min...) the cooldown thread sets the event and workers resume. After max_pauses (default 3) the pool sets _exhausted and drains remaining tasks with reason throttle_exhausted.
+3. Per-task jitter: each worker sleeps random.uniform(0, jitter_ms) ms before processing each task (default 800 ms cap). Spreads same-instant request bursts across workers.
+4. State callback: _PdfWorkerPool fires on_state_change("throttle_paused" | "throttle_resumed" | "throttle_exhausted", meta_dict) on each transition. run_fetch supplies _on_pool_state_change which routes through the same emit pipeline as article events; the CLI's _make_emit pings Telegram for these three statuses (per AGENTS.md §15) so the user knows about pauses even when running unattended.
+5. _emit_pdf_outcome now uses the typed reason directly: None+path → pdf_inline_ok; no_pdf_link → pdf_inline_unavailable; navigation_timeout / throttle_exhausted → pdf_inline_throttled (new status); everything else → pdf_inline_failed.
+6. FetchDocumentsStats added inline_pdfs_throttled, throttle_pauses, throttle_resumes, throttle_exhausted; the run_fetch emit wrapper tallies all five. CLI summary now prints "Article PDFs saved: N/M (X no PDF, Y throttled, Z failed)" and a "Throttle events:" line when any pause occurred.
+7. CLI flags: --workers N (overrides ORCH_PDF_WORKERS), --throttle-cooldown SEC, --throttle-threshold N, --max-throttle-pauses N, --jitter-ms MS. Each flag overrides its env var so the user can tune per-invocation. make_pdf_worker_pool reads each as either explicit arg, env var, or class default in that order.
+8. Sequential fallback (mock / non-CDP / workers=1) now also uses _download_pdf_with_page_detailed so emit reasons are consistent across all three dispatch paths (pool, per-task ThreadPoolExecutor, sequential).
+
+Tests added (170 → 173): pool throttle threshold trigger fires on_state_change with correct meta; no_pdf_link resets the counter (legitimate stretches don't trigger spurious pauses); after max_pauses, next threshold-cross emits throttle_exhausted instead of throttle_paused.
+
+Notes
+The cooldown is fixed-linear (1×, 2×, 3×) rather than exponential because EBSCO's apparent throttle window is ~30 min — exponential would overshoot. The pool's drain timeout was bumped from 300 s to 1800 s so a paused pool isn't mistaken for a stuck pool by the worker_pool_timeout fallback. Workers in the pool DO honor the pause but still don't honor the CAPTCHA on_blocked path — a future enhancement would have workers run iframe detection and surface a pdf_inline_blocked event so the main thread can prompt the user to solve a challenge. Telegram pings on throttle events are best-effort (silent if creds missing) and route through _try_telegram which already had silent-fallback behavior. The `download_article_pdf` function is preserved unchanged for backward compatibility with API endpoint callers; internal pipeline paths now use _download_pdf_with_page_detailed directly.
+
 [2026-04-29] - Persistent worker pool for PDF fetch (eliminates per-task setup overhead)
 
 Problem

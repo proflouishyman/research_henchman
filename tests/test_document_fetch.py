@@ -260,6 +260,9 @@ def _make_mock_browser(eval_result: Any = None, blocked: bool = False) -> MagicM
     # configured return values flow through.
     browser.session.return_value.__enter__.return_value = browser
     browser.session.return_value.__exit__.return_value = False
+    # Mark this as a non-CDP session so _try_pdf_fetch_per_article's sequential
+    # fallback short-circuits without trying to navigate a MagicMock page.
+    browser._page = None
     return browser
 
 
@@ -422,6 +425,93 @@ def test_try_pdf_fetch_per_article_emits_unavailable_for_each_missing(tmp_path: 
     assert statuses.count("pdf_inline_unavailable") == 2
 
 
+def test_pdf_worker_pool_throttle_pause_triggers_state_callback(tmp_path: Path) -> None:
+    """When N consecutive navigation_timeout reasons hit the pool, it should
+    set the paused flag and fire on_state_change('throttle_paused', ...).
+
+    Constructed with workers=1 (single thread) so we can drive the throttle
+    counter deterministically. The pool's _update_throttle_state is called
+    directly (bypassing the worker loop's playwright dependency) — verifies
+    the threshold logic in isolation.
+    """
+    from adapters.document_fetch import _PdfWorkerPool
+
+    states: list = []
+    pool = _PdfWorkerPool(
+        cdp_url="http://127.0.0.1:9222",
+        workers=1,
+        throttle_threshold=3,
+        cooldown_base_sec=999999,    # never auto-resume during the test
+        max_pauses=10,
+        jitter_ms=0,
+        on_state_change=lambda s, m: states.append((s, m)),
+    )
+    # Three timeouts in a row → threshold met → pause.
+    for _ in range(3):
+        pool._update_throttle_state("navigation_timeout")
+
+    assert pool.is_paused is True
+    assert pool.total_pauses == 1
+    assert any(s[0] == "throttle_paused" for s in states)
+    pause_meta = next(s[1] for s in states if s[0] == "throttle_paused")
+    assert pause_meta["consecutive_throttles"] == 3
+    assert pause_meta["total_pauses"] == 1
+
+
+def test_pdf_worker_pool_no_pdf_resets_throttle_counter() -> None:
+    """A 'no_pdf_link' result resets the consecutive-throttle counter so a
+    long stretch of legitimate no-PDF articles doesn't accumulate toward
+    a spurious pause."""
+    from adapters.document_fetch import _PdfWorkerPool
+
+    pool = _PdfWorkerPool(
+        cdp_url="http://127.0.0.1:9222",
+        workers=1,
+        throttle_threshold=3,
+        cooldown_base_sec=1, max_pauses=10, jitter_ms=0,
+    )
+    pool._update_throttle_state("navigation_timeout")
+    pool._update_throttle_state("navigation_timeout")
+    assert pool._consecutive_throttles == 2
+    pool._update_throttle_state("no_pdf_link")    # reset
+    assert pool._consecutive_throttles == 0
+    pool._update_throttle_state("navigation_timeout")
+    assert pool._consecutive_throttles == 1
+    assert pool.is_paused is False
+
+
+def test_pdf_worker_pool_exhausts_after_max_pauses() -> None:
+    """After max_pauses, the next threshold-cross fires throttle_exhausted
+    instead of pausing again — pool gives up and remaining tasks drain
+    with that reason so the run finishes."""
+    from adapters.document_fetch import _PdfWorkerPool
+
+    states: list = []
+    pool = _PdfWorkerPool(
+        cdp_url="http://127.0.0.1:9222",
+        workers=1,
+        throttle_threshold=2,
+        cooldown_base_sec=999999,    # never auto-resume — keeps pause stuck
+        max_pauses=2,                # very low so we exhaust quickly
+        jitter_ms=0,
+        on_state_change=lambda s, m: states.append((s, m)),
+    )
+    # Crossing the threshold twice (without an automatic resume in tests)
+    # would normally require the cooldown to fire. We bypass by manually
+    # clearing the paused flag between attempts to simulate cooldown ticks.
+    for _i in range(3):
+        pool._update_throttle_state("navigation_timeout")
+        pool._update_throttle_state("navigation_timeout")
+        # Simulate cooldown elapsing so the next threshold can re-arm.
+        pool._free_event.set()
+        pool._consecutive_throttles = 0
+
+    state_names = [s[0] for s in states]
+    # 2 successful pauses then 1 exhausted
+    assert state_names.count("throttle_paused") == 2
+    assert state_names.count("throttle_exhausted") == 1
+
+
 def test_pdf_worker_pool_drain_yields_for_each_submitted_task() -> None:
     """make_pdf_worker_pool returns None when CDP is unavailable; passing
     pdf_pool=None into _try_pdf_fetch_per_article must not raise.
@@ -448,8 +538,10 @@ def test_try_pdf_fetch_per_article_uses_pool_when_provided(tmp_path: Path) -> No
 
     submitted = []
     drained = [
+        # (record, path, reason): reason is None on success or one of the
+        # typed strings (no_pdf_link / navigation_timeout / etc.).
         ({"title": "A", "url": "/c/x/details/a"}, tmp_path / "A.pdf", None),
-        ({"title": "B", "url": "/c/x/details/b"}, None, None),
+        ({"title": "B", "url": "/c/x/details/b"}, None, "no_pdf_link"),
     ]
 
     class _FakePool:

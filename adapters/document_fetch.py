@@ -132,6 +132,9 @@ class FetchItem:
     journal: str = ""
     pub_date: str = ""
     doi: str = ""
+    # 1-based index when a record produces multiple search-variant FetchItems.
+    # 0 means "no variant" (single query, non-seed records, or un-normalized seeds).
+    variant_index: int = 0
 
 
 @dataclass
@@ -218,8 +221,8 @@ def collect_fetch_items(
                 for rec in records:
                     if not isinstance(rec, dict):
                         continue
-                    item = _classify_record(rec, gap_id, source_id, src_dir, skip_already_fetched)
-                    if item:
+                    # _classify_record now returns a list (0–N items).
+                    for item in _classify_record(rec, gap_id, source_id, src_dir, skip_already_fetched):
                         items.append(item)
 
         if limit and len(items) >= limit:
@@ -262,63 +265,105 @@ def _classify_record(
     source_id: str,
     out_dir: Path,
     skip_already_fetched: bool,
-) -> Optional[FetchItem]:
-    """Return a FetchItem if this record has actionable content, else None.
+) -> List[FetchItem]:
+    """Return a list of FetchItems for this record (empty list if none apply).
 
-    When the record has a ``bquery_normalized`` field (written by
-    ``scripts/normalize_seed_queries.py``), the seed URL's ``bquery``
-    parameter is silently updated to the normalized value so that EBSCO
-    receives a well-formed Boolean query rather than the raw upstream string.
-    The original ``url`` field in the JSON artifact is never modified.
+    When the record has a ``bquery_normalized`` field that is a *list* (written
+    by ``scripts/normalize_seed_queries.py`` with ``--variants N``), one
+    FetchItem is produced per variant, each with a distinct spliced URL and a
+    ``variant_index`` (1-based).  This lets the fetch pipeline issue N separate
+    EBSCO searches for the same research gap, maximising retrieval coverage.
+
+    Backward compatibility:
+    - No ``bquery_normalized``: uses original URL (variant_index=0).
+    - ``bquery_normalized`` is a bare string (old single-query format): treated
+      as a one-element list so the rewrite still happens.
+    - ``bquery_normalized`` is a list: one FetchItem per element.
+
+    The original ``url`` field in the JSON artifact is never modified — only
+    the runtime URL embedded in the FetchItem is updated.
     """
 
     ql       = str(rec.get("quality_label", "")).lower()
-    url      = str(rec.get("url", "") or rec.get("pdf_url", "")).strip()
+    base_url = str(rec.get("url", "") or rec.get("pdf_url", "")).strip()
     pdf_url  = str(rec.get("pdf_url", "")).strip()
     abstract = str(rec.get("abstract", "")).strip()
     title    = str(rec.get("title", "")).strip()
 
-    # If the record was normalized by normalize_seed_queries.py, splice the
-    # improved query text into the legacy login.aspx URL so the browser
-    # navigates to a well-formed Boolean search instead of the raw string.
-    normalized_bquery = str(rec.get("bquery_normalized", "")).strip()
-    if normalized_bquery and url:
-        url = _splice_normalized_bquery(url, normalized_bquery)
-
-    base = dict(
-        gap_id=gap_id,
-        source_id=source_id,
-        out_dir=str(out_dir),
-        title=title,
-        url=url,
-    )
-
     fetch_dir = out_dir / FETCH_SUBDIR
 
-    # Already fetched — skip if requested
+    # Already fetched — skip if requested (applies to all variants).
     if skip_already_fetched and title:
         slug = _slugify(title)[:60]
         if (fetch_dir / f"{slug}.md").exists() or (fetch_dir / f"{slug}.pdf").exists():
-            return None
+            return []
 
+    # PDF records: a single item — normalization doesn't apply to PDF links.
     if pdf_url:
-        return FetchItem(**{**base, "url": pdf_url}, fetch_type="pdf")
+        return [FetchItem(
+            gap_id=gap_id,
+            source_id=source_id,
+            out_dir=str(out_dir),
+            title=title,
+            url=pdf_url,
+            fetch_type="pdf",
+        )]
 
-    if ql == "seed" and url.startswith("http"):
-        return FetchItem(**base, fetch_type="seed")
-
+    # Abstract-only records: single item, no URL rewriting needed.
     if abstract and ql in ("medium", "high") and not pdf_url:
-        return FetchItem(
-            **base,
+        return [FetchItem(
+            gap_id=gap_id,
+            source_id=source_id,
+            out_dir=str(out_dir),
+            title=title,
+            url=base_url,
             fetch_type="abstract",
             abstract=abstract,
             authors=str(rec.get("authors", "")),
             journal=str(rec.get("journal", "")),
             pub_date=str(rec.get("pub_date", "")),
             doi=str(rec.get("doi", "")),
-        )
+        )]
 
-    return None
+    # Seed records: apply bquery_normalized variants if present.
+    if ql == "seed" and base_url.startswith("http"):
+        raw_normalized = rec.get("bquery_normalized")
+
+        # Normalise to a list regardless of old (str) vs new (list) storage.
+        if isinstance(raw_normalized, str) and raw_normalized.strip():
+            normalized_variants: List[str] = [raw_normalized.strip()]
+        elif isinstance(raw_normalized, list):
+            # Filter out any blank entries that may have slipped through.
+            normalized_variants = [v for v in raw_normalized if isinstance(v, str) and v.strip()]
+        else:
+            normalized_variants = []
+
+        if normalized_variants:
+            items: List[FetchItem] = []
+            for idx, variant in enumerate(normalized_variants, start=1):
+                variant_url = _splice_normalized_bquery(base_url, variant)
+                items.append(FetchItem(
+                    gap_id=gap_id,
+                    source_id=source_id,
+                    out_dir=str(out_dir),
+                    title=title,
+                    url=variant_url,
+                    fetch_type="seed",
+                    variant_index=idx,
+                ))
+            return items
+
+        # No normalization — use original URL as a single item.
+        return [FetchItem(
+            gap_id=gap_id,
+            source_id=source_id,
+            out_dir=str(out_dir),
+            title=title,
+            url=base_url,
+            fetch_type="seed",
+        )]
+
+    return []
 
 
 def preview_counts(pull_root: Path, gap_filter: Optional[str] = None) -> Dict[str, int]:

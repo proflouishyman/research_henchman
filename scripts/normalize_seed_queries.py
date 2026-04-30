@@ -5,19 +5,25 @@ Raw ``bquery`` values in seed JSON records were generated upstream and are
 poorly formed for EBSCO's academic-database search syntax — multi-word
 concepts are not quoted, synonyms are missing, and ``+`` characters are
 literal punctuation rather than Boolean operators.  This script rewrites
-each record's ``bquery`` into a well-formed EBSCO Boolean query and stores
-the result in a new ``bquery_normalized`` field, leaving the original
-``bquery`` intact for diff / rollback.
+each record's ``bquery`` into N distinct Boolean-query variants that each
+target the same research gap from a different vocabulary / synonym angle,
+and stores the result as a list in ``bquery_normalized`` (leaving the
+original ``bquery`` intact for diff / rollback).
 
-The ``adapters/document_fetch.py`` consumer reads ``bquery_normalized`` in
-preference to ``bquery`` when constructing EBSCO search URLs (see
-``_splice_normalized_bquery``).
+Multiple variants increase retrieval coverage: each variant targets the
+same gap from a different vocabulary angle so more articles are surfaced
+in aggregate than any single query would find.
+
+The ``adapters/document_fetch.py`` consumer reads ``bquery_normalized`` and
+issues a separate browser fetch for each variant, writing all results into
+the same gap directory.
 
 Usage:
     python scripts/normalize_seed_queries.py --run-id run_27f86e44394442
     python scripts/normalize_seed_queries.py --run-id run_abc --gap-id AUTO-01-G1
     python scripts/normalize_seed_queries.py --run-id run_abc --dry-run --limit 5
     python scripts/normalize_seed_queries.py --run-id run_abc --force
+    python scripts/normalize_seed_queries.py --run-id run_abc --variants 5
     python scripts/normalize_seed_queries.py --run-id run_abc --model qwen2.5:14b
 
 Environment variables (same as the rest of the pipeline):
@@ -32,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -58,18 +65,22 @@ if _env_path.exists():
 from config import OrchestratorSettings  # noqa: E402
 from layers.llm_client import make_llm_client, LLMClient  # noqa: E402
 
+# Default and maximum number of query variants to generate per record.
+DEFAULT_VARIANTS = 3
+MAX_VARIANTS     = 10
 
 # ---------------------------------------------------------------------------
 # LLM prompt
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT_TEMPLATE = """\
 You are an expert in EBSCO academic-database search syntax. Your task is to
-rewrite a raw, poorly-formed query string into a well-structured Boolean
-query that maximises recall in EBSCO's Academic Search Ultimate and Business
-Source Ultimate databases.
+generate {n} DISTINCT Boolean search queries for the same research gap, each
+targeting the gap from a different vocabulary or concept-combination angle so
+that together they maximise recall in EBSCO's Academic Search Ultimate and
+Business Source Ultimate databases.
 
-Rules:
+Rules for each query:
 1. Group synonyms / related terms with OR inside parentheses.
 2. Quote multi-word phrases with double-quotes: "online retail".
 3. Use Boolean AND (uppercase) to connect major concept groups.
@@ -77,52 +88,122 @@ Rules:
    e.g. retail* matches retailer, retailers, retailing.
 5. Remove bare punctuation like standalone + characters; use AND instead.
 6. Avoid stop-words (the, a, an, of, in, …) at the top level.
-7. Aim for 2–4 AND-connected concept groups.
-8. Output ONLY the final normalized query — no explanation, no prefix, no
-   quotes around the whole query. Maximum ~200 characters.
-9. Prefer recall over precision: we want articles to appear, not zero hits.
+7. Aim for 2–4 AND-connected concept groups per query.
+8. Each query must use DIFFERENT vocabulary / angles — not minor rewrites.
+   Vary by: synonyms, adjacent concepts, time-period framing, proper nouns
+   vs generic terms, industry angle vs academic angle, etc.
+9. Maximum ~200 characters per query.
+10. Prefer recall over precision: we want articles to appear, not zero hits.
 
-Examples (raw → normalized):
+Output format: a numbered list, one query per line, no other text.
+  1. <first query>
+  2. <second query>
+  ...
 
-Amazon + e-commerce revolution archives
-→ ("Amazon" OR "Amazon.com") AND ("e-commerce" OR "online retail") AND (history OR evolution OR revolution)
+Examples of what "different angles" means for a gap about "Amazon's role in
+transforming retail":
 
-everything store definition
-→ ("everything store" OR "Jeff Bezos") AND (Amazon OR retail OR commerce)
+  DIRECT angle — core terms:
+    ("Amazon" OR "Amazon.com") AND (retail* AND (transformation OR disruption))
 
-impact of e-commerce on retail
-→ "e-commerce" AND retail* AND (impact OR effect OR transformation)
+  ADJACENT angle — competitor/market framing:
+    "e-commerce" AND ("brick and mortar" OR "physical store") AND (decline OR shift)
 
-China retail market size 2019 online shopping
-→ China AND ("e-commerce" OR "online shopping") AND (market* OR consumer*) AND (2019 OR 2020)
+  HISTORICAL angle — time-period vocabulary:
+    ("online shopping" OR "internet retail") AND (history OR evolution OR 1990s OR 2000s)
 
-Jeff Bezos leadership management style Amazon
-→ "Jeff Bezos" AND (leadership OR management OR strategy) AND Amazon
+Examples for a gap about "effects of algorithmic pricing on competition":
+
+  DIRECT:
+    "algorithmic pricing" AND (competition OR antitrust OR market power)
+
+  MECHANISM angle — focusing on how:
+    ("dynamic pricing" OR "automated pricing") AND (collusion OR coordination)
+
+  SECTOR angle — applied to a domain:
+    (airline* OR hotel* OR e-commerce) AND ("price algorithm*" OR "yield management") AND competit*
 """
 
+# Pattern that strips a leading "1.", "1)", or "1:" style marker from a line.
+_NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.):\s]+\s*")
 
-def _normalize_query(client: LLMClient, raw_bquery: str) -> str:
-    """Send *raw_bquery* to the LLM and return the normalized EBSCO query.
 
-    The system prompt defines the transformation goal and provides worked
-    examples so the model can generalise.  We ask the model to return only
-    the rewritten query; we strip any accidental leading/trailing whitespace
-    or markdown fences.
+def _normalize_queries(client: LLMClient, raw_bquery: str, n: int) -> List[str]:
+    """Send *raw_bquery* to the LLM and return *n* normalized EBSCO query variants.
+
+    Parses the LLM's numbered-list response robustly — handles ``1. q``,
+    ``1) q``, ``1: q``, blank lines, and trailing whitespace.  Each variant
+    is truncated to 200 chars (EBSCO's practical limit).  Empty / all-whitespace
+    strings and exact duplicates are removed before returning.
+
+    If fewer than min(2, n) variants survive validation, a warning is printed
+    but whatever was parsed is returned rather than raising an exception.
     """
+    prompt = _SYSTEM_PROMPT_TEMPLATE.format(n=n)
     response = client.complete(
-        system=_SYSTEM_PROMPT,
-        prompt=f"Normalize this query:\n{raw_bquery}",
-        temperature=0.1,
+        system=prompt,
+        prompt=f"Generate {n} distinct search queries for this research gap:\n{raw_bquery}",
+        temperature=0.3,  # slightly higher than single-query to encourage variation
     )
-    # Strip markdown code fences in case the model adds them despite instructions.
-    normalized = response.strip()
+
+    variants = _parse_numbered_list(response, n)
+
+    # Warn but don't fail if we got fewer than expected.
+    min_expected = min(2, n)
+    if len(variants) < min_expected:
+        print(
+            f"  [WARN] Expected at least {min_expected} variants, got {len(variants)} "
+            f"from LLM for query: {raw_bquery!r}"
+        )
+
+    return variants
+
+
+def _parse_numbered_list(response: str, max_items: int) -> List[str]:
+    """Parse an LLM numbered-list response into a deduplicated list of strings.
+
+    Handles all common numbering styles (``1.``, ``1)``, ``1:``) and removes
+    blank lines.  Strips markdown code fences.  Deduplicates while preserving
+    order.  Truncates each entry to 200 chars.
+    """
+    # Strip any surrounding markdown code fences.
+    text = response.strip()
     for fence in ("```", "`"):
-        if normalized.startswith(fence):
-            normalized = normalized.lstrip("`").strip()
-        if normalized.endswith(fence):
-            normalized = normalized.rstrip("`").strip()
-    # Truncate to 200 chars to stay within EBSCO's practical limit.
-    return normalized[:200].strip()
+        if text.startswith(fence):
+            text = text.lstrip("`").strip()
+        if text.endswith(fence):
+            text = text.rstrip("`").strip()
+
+    seen: set[str] = set()
+    variants: List[str] = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue  # skip blank lines
+
+        # Strip leading "1.", "2)", "3:" etc.
+        line = _NUMBERED_LINE_RE.sub("", line).strip()
+
+        if not line:
+            continue  # line was only the number prefix
+
+        # Truncate to EBSCO's practical limit.
+        entry = line[:200].strip()
+
+        if not entry:
+            continue
+
+        # Deduplicate — skip exact-match repeats.
+        if entry in seen:
+            continue
+        seen.add(entry)
+        variants.append(entry)
+
+        if len(variants) >= max_items:
+            break
+
+    return variants
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +240,19 @@ def _iter_seed_json_files(
 # Per-file processing
 # ---------------------------------------------------------------------------
 
+def _migrate_bquery_normalized(rec: dict) -> None:
+    """Migrate a legacy string ``bquery_normalized`` to a single-element list.
+
+    The previous version of this script stored ``bquery_normalized`` as a
+    bare string.  If we encounter that, wrap it in a list so the rest of the
+    code (and all consumers) see a consistent ``List[str]`` shape.  This is
+    done in-place on *rec* and counts as a modification that needs saving.
+    """
+    existing = rec.get("bquery_normalized")
+    if isinstance(existing, str) and existing.strip():
+        rec["bquery_normalized"] = [existing.strip()]
+
+
 def _process_file(
     json_path: Path,
     client: LLMClient,
@@ -166,11 +260,20 @@ def _process_file(
     force: bool,
     dry_run: bool,
     limit_remaining: Optional[int],
+    variants: int = DEFAULT_VARIANTS,
 ) -> int:
-    """Normalize bquery fields in *json_path*.
+    """Normalize bquery fields in *json_path*, generating *variants* query variants.
 
     Returns the number of records actually normalized (0 if all skipped).
     Updates the file in-place (unless ``dry_run`` is True).
+
+    Idempotency: skips records where ``bquery_normalized`` is already a
+    non-empty list of length >= *variants*, unless *force* is True.
+
+    Migration: if ``bquery_normalized`` is a bare string (written by the
+    previous single-query version), it is wrapped as ``[str]`` before
+    checking idempotency — so re-running will extend an old record to the
+    requested number of variants.
     """
     try:
         raw = json_path.read_text(encoding="utf-8", errors="ignore")
@@ -191,35 +294,47 @@ def _process_file(
             # No bquery field — nothing to normalize.
             continue
 
-        already_done = bool(rec.get("bquery_normalized", "").strip())
+        # Migrate old-style string value to list before any idempotency check.
+        _migrate_bquery_normalized(rec)
+
+        existing = rec.get("bquery_normalized")
+        already_done = (
+            isinstance(existing, list)
+            and len(existing) >= variants
+        )
         if already_done and not force:
-            print(f"  [SKIP] {json_path.name} — bquery_normalized already set")
+            print(f"  [SKIP] {json_path.name} — bquery_normalized already has {len(existing)} variants")
             continue
 
         if limit_remaining is not None and limit_remaining <= 0:
             break
 
-        print(f"  [IN ] {bquery!r}")
+        print(f"  [IN ] {bquery!r}  (requesting {variants} variants)")
 
         if dry_run:
-            # Simulate what the LLM would do without writing anything.
-            fake = f'(DRY RUN — would normalize: {bquery!r})'
-            print(f"  [OUT] {fake}")
+            # Simulate without writing — migration still counts so callers
+            # know the record would have been touched.
+            fake_list = [f'(DRY RUN variant {i+1} for: {bquery!r})' for i in range(variants)]
+            print(f"  [OUT] {fake_list}")
             count += 1
             if limit_remaining is not None:
                 limit_remaining -= 1
             continue
 
         try:
-            normalized = _normalize_query(client, bquery)
+            variant_list = _normalize_queries(client, bquery, variants)
         except Exception as exc:
             print(f"  [ERR] LLM call failed for {json_path.name}: {exc}")
             continue
 
-        print(f"  [OUT] {normalized!r}")
-        # Preserve the original for rollback; add normalized alongside.
+        if not variant_list:
+            print(f"  [WARN] LLM returned no usable variants for {json_path.name}; skipping.")
+            continue
+
+        print(f"  [OUT] {variant_list}")
+        # Preserve the original for rollback; store variant list.
         rec["bquery_original"] = bquery
-        rec["bquery_normalized"] = normalized
+        rec["bquery_normalized"] = variant_list
         modified = True
         count += 1
         if limit_remaining is not None:
@@ -261,6 +376,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Source sub-directory name to process (default: ebsco_api).",
     )
     p.add_argument(
+        "--variants", type=int, default=DEFAULT_VARIANTS,
+        help=(
+            f"Number of distinct query variants to generate per record "
+            f"(default: {DEFAULT_VARIANTS}, max: {MAX_VARIANTS})."
+        ),
+    )
+    p.add_argument(
         "--limit", type=int, default=None,
         help="Stop after normalizing N records (useful for testing).",
     )
@@ -287,6 +409,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     """Entry point.  Returns 0 on success, non-zero on error."""
     args = _build_arg_parser().parse_args(argv)
 
+    # Clamp --variants to [1, MAX_VARIANTS].
+    variants = max(1, min(args.variants, MAX_VARIANTS))
+    if variants != args.variants:
+        print(f"[WARN] --variants clamped to {variants} (was {args.variants})")
+
     settings = OrchestratorSettings.from_env()
     data_root = Path(args.data_root) if args.data_root else settings.data_root
     pull_outputs_root = data_root / "pull_outputs"
@@ -305,6 +432,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         f"gap: {args.gap_id or '(all)'}  "
         f"source: {args.source}"
     )
+    print(f"Variants     : {variants} per record")
     if args.dry_run:
         print("Mode         : DRY RUN (no files will be written)")
     if args.limit:
@@ -336,6 +464,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             force=args.force,
             dry_run=args.dry_run,
             limit_remaining=limit_remaining,
+            variants=variants,
         )
         total_normalized += n
         if limit_remaining is not None:

@@ -141,24 +141,28 @@ def test_preview_counts_returns_correct_breakdown(tmp_path: Path) -> None:
 
 def test_classify_record_seed(tmp_path: Path) -> None:
     rec = {"title": "T", "url": "https://jstor.org/search?q=x", "quality_label": "seed"}
-    item = _classify_record(rec, "G1", "jstor", tmp_path, skip_already_fetched=False)
-    assert item is not None
+    # _classify_record now returns a list of FetchItems.
+    items = _classify_record(rec, "G1", "jstor", tmp_path, skip_already_fetched=False)
+    assert len(items) == 1
+    item = items[0]
     assert item.fetch_type == "seed"
     assert item.url == rec["url"]
 
 
 def test_classify_record_pdf(tmp_path: Path) -> None:
     rec = {"title": "T", "pdf_url": "https://example.com/a.pdf", "quality_label": "high"}
-    item = _classify_record(rec, "G1", "ebsco_api", tmp_path, skip_already_fetched=False)
-    assert item is not None
+    items = _classify_record(rec, "G1", "ebsco_api", tmp_path, skip_already_fetched=False)
+    assert len(items) == 1
+    item = items[0]
     assert item.fetch_type == "pdf"
     assert item.url == rec["pdf_url"]
 
 
 def test_classify_record_abstract(tmp_path: Path) -> None:
     rec = {"title": "T", "abstract": "Summary.", "quality_label": "medium"}
-    item = _classify_record(rec, "G1", "project_muse", tmp_path, skip_already_fetched=False)
-    assert item is not None
+    items = _classify_record(rec, "G1", "project_muse", tmp_path, skip_already_fetched=False)
+    assert len(items) == 1
+    item = items[0]
     assert item.fetch_type == "abstract"
     assert item.abstract == "Summary."
 
@@ -166,8 +170,8 @@ def test_classify_record_abstract(tmp_path: Path) -> None:
 def test_classify_record_no_match(tmp_path: Path) -> None:
     # high quality without abstract or pdf_url — not fetchable
     rec = {"title": "T", "quality_label": "high", "url": ""}
-    item = _classify_record(rec, "G1", "jstor", tmp_path, skip_already_fetched=False)
-    assert item is None
+    items = _classify_record(rec, "G1", "jstor", tmp_path, skip_already_fetched=False)
+    assert items == []
 
 
 # ---------------------------------------------------------------------------

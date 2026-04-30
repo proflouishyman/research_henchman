@@ -1,3 +1,32 @@
+[2026-04-29] - Multi-variant seed query normalization for broader EBSCO retrieval coverage
+
+Problem
+A single Boolean query, even when well-formed, does not capture the full retrieval surface for a research gap. Different vocabulary angles — direct terms, adjacent-concept framing, historical/period-specific phrasing, proper-noun vs generic — surface different articles. The previous single-query normalization left significant recall on the table.
+
+Root Cause
+``normalize_seed_queries.py`` (commit 9859b68) was designed as a 1-in → 1-out transformer: one raw bquery in, one normalized Boolean query out. The ``bquery_normalized`` field was stored as a bare string, and ``_classify_record`` produced exactly one FetchItem per seed record. There was no mechanism to issue multiple searches for the same research gap.
+
+Solution
+1. Extended ``scripts/normalize_seed_queries.py``:
+   - Added ``--variants N`` CLI flag (default 3, max 10). The LLM is prompted to generate N distinct search angles for the same gap, using a new system-prompt template with worked examples showing "direct", "adjacent", and "historical" vocabulary angles.
+   - The LLM response is a numbered list (``1. query``, ``2. query``, …). ``_parse_numbered_list`` parses robustly — handles ``1.``, ``1)``, ``1:`` styles, blank lines, trailing whitespace, markdown fences — and deduplicates while preserving order.
+   - ``bquery_normalized`` is now stored as ``List[str]`` instead of a bare string. ``_migrate_bquery_normalized`` auto-wraps old string values as ``[str]`` for backward compatibility.
+   - Idempotency updated: skips records where ``bquery_normalized`` is already a non-empty list of length >= ``--variants`` (unless ``--force``). Old string-format records with length 1 trigger re-normalization when ``--variants > 1``.
+
+2. Updated ``adapters/document_fetch.py``:
+   - ``_classify_record`` now returns ``List[FetchItem]`` instead of ``Optional[FetchItem]``. When ``bquery_normalized`` is a list of N variants, it returns N FetchItems — same gap_id/source_id/out_dir, but each with a distinct spliced URL and a ``variant_index`` (1-based int). Un-normalized seeds and non-seed records return a single-element list (or empty list for no-match).
+   - ``FetchItem`` gained a new ``variant_index: int = 0`` field (default 0 = un-normalized; ≥1 = variant number). This is backward compatible — no existing code sets or reads it, and the dataclass default means no callers need updating.
+   - ``collect_fetch_items`` updated to iterate the returned list from ``_classify_record``.
+   - All variant results land in the same ``<gap_id>/<source>/fetched/`` directory. Article slug collisions (same article found by two variants) are skipped by the existing file-exists check in ``_write_ebsco_records``.
+
+3. Tests (202 → 207, net +5):
+   - Updated 4 existing tests in ``test_document_fetch.py`` to match the new list-return shape.
+   - Updated existing tests in ``test_normalize_seed_queries.py`` to expect ``bquery_normalized`` as a list.
+   - Added: ``test_three_variants_produce_three_fetch_items``, ``test_old_string_bquery_normalized_produces_one_fetch_item``, ``test_dedup_identical_variants_produces_single_item``, ``test_migration_string_to_list_in_process_file``, ``test_variants_flag_sets_list_length``, ``test_idempotent_reruns_when_fewer_variants_than_requested``.
+
+Notes
+The ``FetchItem.variant_index`` field is a new contract field — added with a safe default (0) that is backward compatible. The change from ``Optional[FetchItem]`` to ``List[FetchItem]`` for ``_classify_record`` is an internal contract change; no external callers were found outside the test suite. Article deduplication at the filesystem level (slug collision) is intentional: if variant 2 finds the same article as variant 1 already wrote, it is silently skipped, keeping the fetched/ directory clean. Variant temperature raised to 0.3 (from 0.1) to encourage vocabulary variation across variants.
+
 [2026-04-29] - LLM-driven EBSCO seed query normalization (bquery_normalized)
 
 Problem

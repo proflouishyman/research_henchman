@@ -425,6 +425,92 @@ def test_try_pdf_fetch_per_article_emits_unavailable_for_each_missing(tmp_path: 
     assert statuses.count("pdf_inline_unavailable") == 2
 
 
+def _maybe_skip_no_playwright_browser():
+    """Skip the calling test when Playwright + headless Chromium aren't
+    installed — keeps the suite green on environments that haven't done
+    ``playwright install chromium``."""
+    import pytest
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        pytest.skip("playwright not installed")
+    try:
+        with sync_playwright() as pw:
+            b = pw.chromium.launch(headless=True)
+            b.close()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"headless chromium not available: {exc!s:.60}")
+
+
+def test_ebsco_js_extracts_records_from_local_fixture() -> None:
+    """Load the bundled EBSCO-results HTML fixture in a real headless
+    Chromium and run the production _EBSCO_JS extractor against it.
+
+    Catches DOM-shape regressions in the JS extractor without depending on
+    a live EBSCO session. The fixture mirrors the data-auto-* attribute
+    structure observed in research.ebsco.com (2026-04-30) — when EBSCO
+    re-skins the layout, this test should fail before any live run does.
+    """
+    _maybe_skip_no_playwright_browser()
+    from playwright.sync_api import sync_playwright
+    from adapters.document_fetch import _EBSCO_JS
+
+    fixture = Path(__file__).parent / "fixtures" / "ebsco_search_results.html"
+    assert fixture.exists(), "fixture HTML missing"
+    file_url = fixture.as_uri()
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            page = browser.new_context().new_page()
+            page.goto(file_url, wait_until="domcontentloaded")
+            page.wait_for_selector('article[data-auto="search-result-item"]',
+                                   timeout=5000, state="visible")
+            records = page.evaluate(_EBSCO_JS)
+        finally:
+            browser.close()
+
+    assert isinstance(records, list)
+    assert len(records) == 2
+
+    rec0 = records[0]
+    assert rec0["title"] == "The Everything Store: Jeff Bezos and the Age of Amazon"
+    assert rec0["authors"] == "Stone, Brad"
+    assert "Library Journal" in rec0["source"]
+    assert rec0["database"] == "Academic Search Ultimate"
+    assert "Brad Stone" in rec0["abstract"]
+    # URL was relative in the fixture; extractor should return it
+    # absolute via new URL(href, location.origin).
+    assert rec0["url"].endswith("/c/6hfcoc/search/details/abc123?db=asn")
+
+    rec1 = records[1]
+    assert rec1["title"] == "Online Retail and the Transformation of American Shopping"
+    assert rec1["authors"] == "Hyman, Louis"
+    assert rec1["database"] == "Business Source Ultimate"
+
+
+def test_ebsco_js_returns_empty_list_when_no_articles() -> None:
+    """When the page has no result-item articles (loading state, blocked
+    page, empty result set), the extractor should return [] and not raise."""
+    _maybe_skip_no_playwright_browser()
+    from playwright.sync_api import sync_playwright
+    from adapters.document_fetch import _EBSCO_JS
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            page = browser.new_context().new_page()
+            page.set_content(
+                "<html><body><div>Loading…</div></body></html>",
+                wait_until="domcontentloaded",
+            )
+            records = page.evaluate(_EBSCO_JS)
+        finally:
+            browser.close()
+
+    assert records == []
+
+
 def test_rewrite_ebsco_url_no_op_when_opid_unset(monkeypatch) -> None:
     """Without ORCH_EBSCO_OPID, _rewrite_ebsco_url_if_configured returns the
     URL unchanged — preserves legacy behaviour for users with a single

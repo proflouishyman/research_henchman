@@ -425,6 +425,90 @@ def test_try_pdf_fetch_per_article_emits_unavailable_for_each_missing(tmp_path: 
     assert statuses.count("pdf_inline_unavailable") == 2
 
 
+def test_rewrite_ebsco_url_no_op_when_opid_unset(monkeypatch) -> None:
+    """Without ORCH_EBSCO_OPID, _rewrite_ebsco_url_if_configured returns the
+    URL unchanged — preserves legacy behaviour for users with a single
+    institutional profile."""
+    from adapters.document_fetch import _rewrite_ebsco_url_if_configured
+    monkeypatch.delenv("ORCH_EBSCO_OPID", raising=False)
+    url = "https://search.ebscohost.com/login.aspx?direct=true&bquery=test+query"
+    assert _rewrite_ebsco_url_if_configured(url) == url
+
+
+def test_rewrite_ebsco_url_redirects_to_named_profile(monkeypatch) -> None:
+    """When ORCH_EBSCO_OPID is set, legacy login.aspx URLs are rewritten to
+    research.ebsco.com/c/<opid>/search/results — bypasses the cookie-priority
+    auto-redirect that surfaces when multiple institutional profiles are
+    authenticated at once."""
+    from adapters.document_fetch import _rewrite_ebsco_url_if_configured
+    monkeypatch.setenv("ORCH_EBSCO_OPID", "6hfcoc")
+    monkeypatch.setenv("ORCH_EBSCO_DB", "asn,bsu")
+    # bquery=Amazon+e-commerce (form-encoded "+" = space) → q=Amazon%20e-commerce
+    url = "https://search.ebscohost.com/login.aspx?direct=true&bquery=Amazon+e-commerce"
+    rewritten = _rewrite_ebsco_url_if_configured(url)
+    assert rewritten.startswith("https://research.ebsco.com/c/6hfcoc/search/results?")
+    assert "q=Amazon%20e-commerce" in rewritten
+    assert "db=asn%2Cbsu" in rewritten
+
+
+def test_rewrite_ebsco_url_handles_encoded_plus_in_query(monkeypatch) -> None:
+    """Real-world seed URLs include '+%2B+' meaning a literal '+' character
+    (e.g. 'Amazon + e-commerce'). The rewrite must preserve the '+' literal,
+    not collapse it. Regression for the JHU dataset where most queries have
+    boolean operators encoded this way."""
+    from adapters.document_fetch import _rewrite_ebsco_url_if_configured
+    monkeypatch.setenv("ORCH_EBSCO_OPID", "6hfcoc")
+    # bquery=Amazon+%2B+e-commerce → "Amazon + e-commerce" → q=Amazon%20%2B%20e-commerce
+    url = ("https://search.ebscohost.com/login.aspx?direct=true&"
+           "bquery=Amazon+%2B+e-commerce+revolution+archives")
+    rewritten = _rewrite_ebsco_url_if_configured(url)
+    assert "Amazon%20%2B%20e-commerce" in rewritten
+    # The literal "+" character (encoded as %2B) must survive the rewrite —
+    # otherwise EBSCO's boolean parser misinterprets the query.
+
+
+def test_rewrite_ebsco_url_passes_through_non_legacy_urls(monkeypatch) -> None:
+    """URLs that are already research.ebsco.com paths or aren't EBSCO at all
+    should pass through untouched even with ORCH_EBSCO_OPID set."""
+    from adapters.document_fetch import _rewrite_ebsco_url_if_configured
+    monkeypatch.setenv("ORCH_EBSCO_OPID", "6hfcoc")
+    direct = "https://research.ebsco.com/c/6hfcoc/search/details/abc?db=asn"
+    assert _rewrite_ebsco_url_if_configured(direct) == direct
+    nonebsco = "https://www.jstor.org/search?q=test"
+    assert _rewrite_ebsco_url_if_configured(nonebsco) == nonebsco
+
+
+def test_rewrite_ebsco_url_no_op_when_bquery_missing(monkeypatch) -> None:
+    """If the legacy URL has no bquery parameter (corrupt or non-search URL),
+    rewrite is a no-op rather than producing a URL with empty q=."""
+    from adapters.document_fetch import _rewrite_ebsco_url_if_configured
+    monkeypatch.setenv("ORCH_EBSCO_OPID", "6hfcoc")
+    weird = "https://search.ebscohost.com/login.aspx?direct=true"
+    assert _rewrite_ebsco_url_if_configured(weird) == weird
+
+
+def test_rewrite_ebsco_url_uses_default_db_when_unset(monkeypatch) -> None:
+    """ORCH_EBSCO_DB defaults to asn,bsu (Academic Search Ultimate +
+    Business Source Ultimate) — JHU's most-licensed academic databases."""
+    from adapters.document_fetch import _rewrite_ebsco_url_if_configured
+    monkeypatch.setenv("ORCH_EBSCO_OPID", "6hfcoc")
+    monkeypatch.delenv("ORCH_EBSCO_DB", raising=False)
+    url = "https://search.ebscohost.com/login.aspx?direct=true&bquery=test"
+    rewritten = _rewrite_ebsco_url_if_configured(url)
+    assert "db=asn%2Cbsu" in rewritten
+
+
+def test_rewrite_ebsco_url_respects_custom_db(monkeypatch) -> None:
+    """Caller can configure a different database mix via ORCH_EBSCO_DB."""
+    from adapters.document_fetch import _rewrite_ebsco_url_if_configured
+    monkeypatch.setenv("ORCH_EBSCO_OPID", "myinst")
+    monkeypatch.setenv("ORCH_EBSCO_DB", "asn,a9h,a3h")
+    url = "https://search.ebscohost.com/login.aspx?direct=true&bquery=hello"
+    rewritten = _rewrite_ebsco_url_if_configured(url)
+    assert "db=asn%2Ca9h%2Ca3h" in rewritten
+    assert rewritten.startswith("https://research.ebsco.com/c/myinst/search/results?")
+
+
 def test_pdf_worker_pool_captcha_pause_blocks_workers_until_handler_returns(tmp_path: Path) -> None:
     """When pause_on_captcha is enabled and _detect_iframe_block returns
     blocked=True, _handle_captcha_if_present should: surface the tab, clear

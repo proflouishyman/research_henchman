@@ -1,3 +1,29 @@
+[2026-04-29] - LLM-driven EBSCO seed query normalization (bquery_normalized)
+
+Problem
+Raw ``bquery`` strings stored in seed JSON records were generated upstream with no regard for EBSCO's Boolean search syntax. Strings like ``"Amazon + e-commerce revolution archives"`` are interpreted literally — ``+`` is a literal character, multi-word concepts aren't phrase-quoted, synonyms are absent, and there's no Boolean structure. Result: queries are too narrow (implicitly AND-only), miss synonyms, and rich-content articles never match.
+
+Root Cause
+The upstream pipeline that generates ``bquery`` values treats the query as a free-text label, not a structured search expression. EBSCO expects Boolean syntax: ``OR``-grouped synonyms in parentheses, ``"quoted phrases"``, ``*`` truncation for stems, and ``AND`` between major concept groups.
+
+Solution
+1. Added ``scripts/normalize_seed_queries.py`` — a standalone CLI script that walks ``data/pull_outputs/<run_id>/<gap_id>/<source>/*.json``, reads each record's ``bquery`` field, sends it to an LLM for rewriting using a detailed system prompt with 5 worked examples, and writes the result back as ``bquery_normalized`` alongside the original ``bquery``. The original is also mirrored to ``bquery_original`` for explicit rollback.
+
+2. Added ``_splice_normalized_bquery(url, normalized)`` in ``adapters/document_fetch.py`` — a pure URL transformer that replaces the ``bquery`` query parameter in a ``search.ebscohost.com/login.aspx`` URL with the normalized text, leaving all other parameters intact. No-op for non-login.aspx URLs or URLs with no bquery param.
+
+3. Modified ``_classify_record`` in ``adapters/document_fetch.py`` to call ``_splice_normalized_bquery`` when a record has ``bquery_normalized`` set. This wires the normalization into the existing fetch pipeline: ``_classify_record`` → spliced URL in FetchItem → ``_rewrite_ebsco_url_if_configured`` builds the direct ``research.ebsco.com/c/<opid>/…`` URL using the normalized query.
+
+LLM plumbing reused: ``layers/llm_client.py`` / ``make_llm_client()`` — the same provider-agnostic client (Ollama / Claude / OpenAI) used by the gap-analysis and reflection layers. ORCH_LLM_PROVIDER and ORCH_LLM_MODEL control provider selection; local Ollama is the default (no network cost, faster for batch).
+
+Script CLI flags: ``--run-id`` (required), ``--gap-id``, ``--source`` (default: ebsco_api), ``--limit``, ``--force``, ``--dry-run``, ``--model``, ``--data-root``.
+
+Safety invariants: original ``bquery`` is never overwritten; ``bquery_normalized`` field is additive; idempotent by default (skips records with existing ``bquery_normalized`` unless ``--force``); ``--dry-run`` makes zero writes; script explicitly documented as offline-only (the user runs it manually before fetch runs).
+
+Tests added (183 → 201): 18 new tests in ``tests/test_normalize_seed_queries.py`` covering ``_process_file`` (write, idempotent, force, dry-run, limit, no-bquery, truncation), ``main()`` CLI (missing run dir, dry-run, limit, gap-id filter), and ``_splice_normalized_bquery`` / ``_classify_record`` wiring (replace bquery, no-op for non-EBSCO URLs, end-to-end pipeline through ``_rewrite_ebsco_url_if_configured``).
+
+Notes
+The system prompt includes 5 worked examples matching the actual JHU dataset query style. The LLM temperature is set to 0.1 (deterministic / low variance). Responses are truncated to 200 characters to stay within EBSCO's practical query length limit. The wiring change in _classify_record is a 4-line addition; no existing tests required modification. The live run in run_27f86e44394442/ was NOT touched during development — all testing used tmp_path fixtures.
+
 [2026-04-30] - EBSCO multi-profile cookie auto-redirect — pin to named institutional profile via URL rewrite
 
 Problem

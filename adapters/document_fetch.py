@@ -228,6 +228,34 @@ def collect_fetch_items(
     return items[:limit] if limit else items
 
 
+def _splice_normalized_bquery(url: str, normalized: str) -> str:
+    """Return *url* with its ``bquery`` query parameter replaced by *normalized*.
+
+    Only operates on ``search.ebscohost.com/login.aspx`` URLs (the legacy seed
+    URL shape stored in JSON artifacts).  When the URL has no ``bquery`` param,
+    or is not a login.aspx URL, the original URL is returned unchanged so the
+    normal EBSCO rewrite path still applies.
+
+    This is a pure URL transformation — it does not touch the filesystem or
+    make any network calls.  Called from ``_classify_record`` so the
+    ``bquery_normalized`` field written by ``scripts/normalize_seed_queries.py``
+    flows transparently into the runtime search URL.
+    """
+    if "search.ebscohost.com/login.aspx" not in url:
+        return url
+    try:
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        if "bquery" not in qs:
+            return url
+        # Replace with the normalized text (form-encoded: spaces become "+").
+        qs["bquery"] = [normalized]
+        new_query = urllib.parse.urlencode(qs, doseq=True)
+        return urllib.parse.urlunparse(parsed._replace(query=new_query))
+    except Exception:
+        return url
+
+
 def _classify_record(
     rec: Dict[str, Any],
     gap_id: str,
@@ -235,13 +263,27 @@ def _classify_record(
     out_dir: Path,
     skip_already_fetched: bool,
 ) -> Optional[FetchItem]:
-    """Return a FetchItem if this record has actionable content, else None."""
+    """Return a FetchItem if this record has actionable content, else None.
+
+    When the record has a ``bquery_normalized`` field (written by
+    ``scripts/normalize_seed_queries.py``), the seed URL's ``bquery``
+    parameter is silently updated to the normalized value so that EBSCO
+    receives a well-formed Boolean query rather than the raw upstream string.
+    The original ``url`` field in the JSON artifact is never modified.
+    """
 
     ql       = str(rec.get("quality_label", "")).lower()
     url      = str(rec.get("url", "") or rec.get("pdf_url", "")).strip()
     pdf_url  = str(rec.get("pdf_url", "")).strip()
     abstract = str(rec.get("abstract", "")).strip()
     title    = str(rec.get("title", "")).strip()
+
+    # If the record was normalized by normalize_seed_queries.py, splice the
+    # improved query text into the legacy login.aspx URL so the browser
+    # navigates to a well-formed Boolean search instead of the raw string.
+    normalized_bquery = str(rec.get("bquery_normalized", "")).strip()
+    if normalized_bquery and url:
+        url = _splice_normalized_bquery(url, normalized_bquery)
 
     base = dict(
         gap_id=gap_id,

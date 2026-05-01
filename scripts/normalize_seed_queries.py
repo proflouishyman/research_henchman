@@ -189,6 +189,16 @@ def _parse_numbered_list(response: str, max_items: int) -> List[str]:
             continue  # line was only the number prefix
 
         # Truncate to EBSCO's practical limit.
+        # FIXME(2026-05-01) — known bug: this truncates mid-clause for queries
+        # >200 chars (gpt-oss:20b commonly produces 250-350 char queries).
+        # Cuts leave dangling quotes / unclosed parens; EBSCO falls back to
+        # keyword-soup matching and surfaces irrelevant articles. Observed
+        # during the 2026-05-01 low-yield recovery: spinal-cord-stimulation
+        # papers showing up under UPS / Amazon gaps.
+        # NEXT FIX: combine prompt constraint ("MAX 250 chars") with a
+        # Boolean-safe truncation helper that walks back to the last
+        # balanced ')' or last AND/OR boundary. Also add a regression test
+        # for known-too-long inputs. See task #20 in conversation history.
         entry = line[:200].strip()
 
         if not entry:

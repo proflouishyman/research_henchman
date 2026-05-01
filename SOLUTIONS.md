@@ -1,3 +1,32 @@
+[2026-05-01] - KNOWN ISSUE (open): EBSCO query truncation breaks Boolean syntax mid-clause
+
+Status
+Open. Marked for next update — discovered during the 2026-05-01 low-yield recovery run while it was still in progress; user opted to let the run complete rather than restart, accepting some noise in exchange for not losing ~3 hr of work.
+
+Problem
+``normalize_seed_queries.py`` truncates each LLM-generated bquery at 200 chars (``line[:200]`` in ``_parse_numbered_list``). The A/B-experiment-winning model gpt-oss:20b commonly produces 250-350 char queries — Boolean expressions with multiple parenthesized OR-groups, year enumerations, and extra synonym layers. Mid-character cuts at 200 leave dangling quotes / unclosed parens. EBSCO receives malformed Boolean, drops the broken tail, and falls back to keyword-soup matching against the surviving tokens. Result: irrelevant articles from Academic Search Ultimate (which is broad enough to include medical / scientific journals) sneak into research gaps where they don't belong.
+
+Concrete example (observed in AUTO-45-G1 — UPS Los Angeles expansion gap):
+- Stored variant 1: ``("United Parcel Service" OR UPS) AND (expansion OR growth OR extension) AND ("Los Angeles" OR LA) AN`` (cut mid-word "AND")
+- Stored variant 2: ``...AND ("common carrier" OR "carrier service`` (unclosed quote)
+- Result: article ``Effects of Spinal Cord Stimulation in Patients with Small Fiber...`` saved to the UPS gap. Spinal-cord paper ranked into top 8 because keyword fallback matched ``expansion`` / generic medical-paper-sized vocabulary against fragments.
+
+Root Cause
+The 200-char limit was a guess at "EBSCO's practical limit" with no margin for Boolean-safe truncation. The system prompt asks for ``Maximum ~200 characters per query`` but gpt-oss:20b doesn't strictly respect it (the small qwen2.5:7b did). The truncation site does a naive ``[:200]`` slice, ignoring quote and paren balance.
+
+Solution (planned, NOT YET IMPLEMENTED)
+1. Tighten the prompt: replace ``Maximum ~200 characters`` with explicit ``MAX 250 chars per query — be concise, you can always use truncation operators (e.g. retail*) instead of long synonym lists``.
+2. Boolean-safe truncation helper: walk backwards from char 200 to the last balanced ``)`` or the last ``AND``/``OR`` boundary; drop everything after. Preserves valid Boolean parse for EBSCO.
+3. Regression test: feed a known >250-char input through the truncator, assert the output parses with balanced quotes / parens (or is shorter than the input but ends at a clean boundary).
+4. Optional: bump max length to 500 chars and rely on Boolean-safe truncation alone — gives recall headroom for genuinely complex multi-concept queries.
+
+A FIXME comment is in place at scripts/normalize_seed_queries.py around the ``line[:200]`` site pointing at this entry.
+
+Notes
+The current run's output is usable but has measurable noise. The new SQLite article index (commit 2fc68ea) makes filtering after the fact straightforward — once DOIs are populated and indexing is rebuilt, articles whose title shares zero overlap with their gap's bquery concepts can be flagged via SQL. That post-hoc filter is a reasonable bridge until the truncation fix lands.
+
+Resurface trigger: before the next full recovery run, OR before re-running normalization on any new pull_output dir, OR when the user reads the article index and sees clearly-irrelevant titles.
+
 [2026-05-01] - Generalized yield-recovery script and medium-yield orchestrator
 
 Problem

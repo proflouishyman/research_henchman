@@ -1,3 +1,40 @@
+[2026-05-01] - Model selection for query normalization: gpt-oss:20b chosen over llama3.1:8b based on A/B experiment
+
+Problem
+With multi-variant normalization shipping (--variants 3), the default model (qwen2.5:7b, ~3s/call) was fast but untested for retrieval quality. Open questions: do larger/slower models produce meaningfully better EBSCO queries? Is the extra wall-clock time justified for recovery passes on low-yield gaps?
+
+Root Cause
+No empirical comparison existed between the candidate models. Qualitative inspection of qwen2.5:7b output showed functional but minimal queries — single brand-name spelling, year ranges written as literals ("1998-2014") that EBSCO cannot parse, no adjacent-concept vocabulary. There was no data on whether slower models with more capacity actually improved PDF yield enough to matter.
+
+Solution
+Ran a controlled A/B experiment on 2026-05-01 against run_27f86e44394442:
+- Arm A: 5 low-yield gaps normalized with llama3.1:8b (mean 3.8s/call), then re-fetched.
+- Arm B: 5 low-yield gaps normalized with gpt-oss:20b (mean 32.9s/call), then re-fetched.
+
+Results:
+  Arm A (llama3.1:8b): +15 PDFs across 9 records — 1.67 PDFs/seed — normalize 15s
+  Arm B (gpt-oss:20b): +53 PDFs across 20 records — 2.65 PDFs/seed — normalize 684s
+
+gpt-oss:20b yields +59% more PDFs per seed record than llama3.1:8b. For one-time low-yield recovery passes where wall-clock is not urgent, the quality gain clearly outweighs the 45× normalization time cost.
+
+Key qualitative differences observed:
+- llama3.1:8b occasionally outputs prompt scaffolding as literal queries (e.g. the string "DIRECT angle — core terms:" appears as a query variant), destroying one of three variants for that record.
+- llama3.1:8b writes year ranges as literals ("1998-2014") that EBSCO cannot parse; gpt-oss:20b enumerates individual years with OR: (1998 OR 1999 OR ... OR 2014).
+- gpt-oss:20b enumerates all known brand-name spellings: ("Barnes & Noble" OR "Barnes and Noble" OR "B&N"). llama3.1:8b typically picks one.
+- gpt-oss:20b adds genuine adjacent-concept framing that captures strategic intent, not just entity names.
+
+Model timing benchmark (5 gaps × 1 record, 3 variants each, 2026-05-01):
+  qwen2.5:7b:       3.1s mean — viable default for online/regular pipeline use
+  llama3.1:8b:      3.8s mean — similar speed to qwen2.5:7b but worse output quality
+  gpt-oss:20b:     32.9s mean — best output quality; use for recovery passes
+  llama3.3:latest: 26.8s mean — similar speed to gpt-oss:20b but lower quality
+  qwen3.5:27b:    120.0s mean — ALL calls timed out at default 120s; unusable
+
+Decision: use gpt-oss:20b for low-yield gap recovery passes (--model gpt-oss:20b). Keep qwen2.5:7b as the pipeline default for speed. llama3.1:8b is not recommended — it is slower than qwen2.5:7b and produces structurally broken output. qwen3.5:27b is blocked at default timeout and must not be used without raising ORCH_LLM_TIMEOUT.
+
+Notes
+The A/B fetch was a full re-fetch (not incremental): all pre-experiment PDFs remained; new PDFs were additive. AUTO-137-G1 (Arm A) yielded 0 new PDFs — the normalization produced valid queries but EBSCO had no matching articles for this gap regardless of query form. The benchmark report with per-record variant output lives at logs/model_bench_report.md. The experiment script is scripts/_ab_experiment.sh; the bench script is scripts/_bench_query_models.py. The live run (PID 76163 / run_27f86e44394442) was not interrupted during the experiment — the Arm gaps are a separate gap slice.
+
 [2026-04-29] - Multi-variant seed query normalization for broader EBSCO retrieval coverage
 
 Problem

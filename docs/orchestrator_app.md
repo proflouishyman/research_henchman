@@ -166,6 +166,36 @@ runs — sign in once and the session stays live on subsequent fetches.  Pass
 `--no-launch` to opt out of auto-launch and get the original "print help and wait"
 behavior (useful when Chrome is managed externally or in scripted CI environments).
 
+## Query normalization workflow (`scripts/normalize_seed_queries.py`)
+
+When a completed run surfaces low-yield gaps — gaps where EBSCO returned few or zero articles — running `normalize_seed_queries.py` before a re-fetch is the primary recovery path. The script reads each seed JSON record's `bquery` field, sends it to an LLM with a detailed EBSCO-syntax system prompt, and writes the result back as `bquery_normalized: List[str]` (N variants, one per vocabulary angle). The original `bquery` is preserved unmodified and also mirrored to `bquery_original` for explicit rollback. The script is idempotent by default — it skips records where `bquery_normalized` is already a non-empty list of the requested length — and `--force` overrides that gate.
+
+To run normalization on all low-yield gaps in a run, then re-fetch:
+```bash
+python3 scripts/normalize_seed_queries.py \
+    --run-id <run_id> \
+    --variants 3 \
+    --model gpt-oss:20b \
+    --force
+
+python3 scripts/fetch_documents.py --run-id <run_id>
+```
+
+Use `--gap-id AUTO-NNN-G1` to restrict to a single gap, `--dry-run` to preview without writing, and `--limit N` to cap the number of records processed. The `--model` flag overrides `ORCH_LLM_MODEL` for this invocation only and accepts any model string recognized by the configured LLM provider (`ORCH_LLM_PROVIDER`).
+
+The fetch pipeline consumes `bquery_normalized` in `adapters/document_fetch.py`: `_classify_record` detects the list field and returns one `FetchItem` per variant (each with a distinct spliced EBSCO search URL and a `variant_index`). All variant results land in the same `<gap_id>/<source>/fetched/` directory; article-slug collisions (the same article found by two variants) are silently skipped by the existing file-exists check, keeping the directory clean. Ingest and fit layers see the union of all variant results without requiring any changes.
+
+**Model recommendation** (from 2026-05-01 A/B experiment — see `logs/model_bench_report.md` and `SOLUTIONS.md`):
+
+| Use case | Model | Mean time/call | Notes |
+|---|---|---|---|
+| One-time gap recovery (best yield) | `gpt-oss:20b` | ~33s | +59% PDFs/seed vs llama3.1:8b; verbose, parses correctly |
+| Regular pipeline / speed-sensitive | `qwen2.5:7b` | ~3s | Pipeline default; functional queries, fast |
+| Avoid | `llama3.1:8b` | ~4s | Sometimes outputs prompt scaffolding as queries; year-range literals |
+| Avoid | `qwen3.5:27b` | 120s+ | All calls timed out at default limit; unusable without raising timeout |
+
+`gpt-oss:20b` is "boring but reliable": verbose, well-structured, enumerates all brand-name spellings, writes year ranges as OR-enumerated lists that EBSCO can parse, and adds adjacent-concept framing. For one-time recovery passes where wall-clock is not urgent this tradeoff is clearly worthwhile. For online or scheduled pipeline runs where latency matters, `qwen2.5:7b` is the right default.
+
 ## Local run
 ```bash
 uvicorn main:app --reload --port 8876

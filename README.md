@@ -156,6 +156,24 @@ Open: <http://localhost:8876>
 python3 -m pytest tests -q
 ```
 
+## EBSCO query normalization (`scripts/normalize_seed_queries.py`)
+
+When a pipeline run surfaces low-yield gaps — gaps where EBSCO returned few or no articles — the `normalize_seed_queries.py` script rewrites the raw `bquery` values stored in seed JSON records into N distinct Boolean-search variants. Each variant targets the same research gap from a different vocabulary angle (direct terms, adjacent-concept framing, proper-noun vs generic, historical phrasing), so that together they surface more articles than any single query would. The LLM response is parsed into a `bquery_normalized` list written back into each seed JSON file alongside the original `bquery`. The fetch pipeline (`adapters/document_fetch.py`) then issues one EBSCO search per variant, collects all results into the same gap directory, and deduplicates at the file-slug level.
+
+**Recommended invocation for one-time recovery passes** (best PDF yield, ~32s per call):
+```bash
+python3 scripts/normalize_seed_queries.py --run-id <run_id> --variants 3 --model gpt-oss:20b --force
+```
+
+**Fast mode** for regular pipeline use where speed matters (~3s per call):
+```bash
+python3 scripts/normalize_seed_queries.py --run-id <run_id> --variants 3 --model qwen2.5:7b
+```
+
+The `--model` flag overrides `ORCH_LLM_MODEL` for this invocation only. Other useful flags: `--gap-id` (process one gap), `--dry-run` (no writes), `--limit N` (cap records processed), `--force` (re-normalize records that already have `bquery_normalized`).
+
+A 5-model timing and quality benchmark from 2026-05-01 is at `logs/model_bench_report.md`. Key findings: `gpt-oss:20b` yields ~59% more PDFs per seed record than `llama3.1:8b` at 45× the normalization time; `qwen2.5:7b` is the recommended default for speed; `qwen3.5:27b` times out at the default 120s limit and should not be used.
+
 ## Docker
 From repository root:
 

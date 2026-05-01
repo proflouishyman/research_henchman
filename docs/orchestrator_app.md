@@ -289,6 +289,54 @@ As a result, DOI dedup fires only for future data where DOIs are explicitly
 written to the markdown.  Backfilling DOIs from saved HTML pages is a follow-up
 task.
 
+## Staged gap-recovery workflow
+
+When a run surfaces gaps with low PDF counts (0–1 PDFs), a multi-phase staged recovery
+improves yield without re-running the full pipeline.  The pattern is:
+
+1. **Low-yield pass** — normalize + re-fetch gaps with 0–1 PDFs, then re-index.
+2. **Re-index** — run `python3 scripts/index_articles.py --run-id <run_id> --dedupe`
+   after each phase so the article index reflects the latest state.  The `--dedupe` flag
+   resolves DOI-level duplicates introduced by multi-variant fetch (one article found by
+   two query variants lands as two rows; dedup marks the weaker row via `canonical_id`).
+3. **Medium-yield pass** — normalize + re-fetch gaps that now have exactly 2 PDFs; many
+   of these gain 3–5 more articles.
+4. (Optional) **High-yield pass** — gaps with 3–5 PDFs; diminishing returns, skip unless
+   the corpus is still thin.
+
+### Entry points
+
+| Script | Purpose |
+|---|---|
+| `scripts/_yield_recovery.sh <gap_list> <label> [model]` | Generic recovery: normalize → fetch → re-index for any gap list |
+| `scripts/_low_yield_recovery.sh` | Thin wrapper calling `_yield_recovery.sh` with `/tmp/low_yield_gaps.txt` + `low_yield` label |
+| `scripts/_orchestrate_recovery.sh` | Dispatcher: polls for low-yield PID, re-indexes, snapshots medium-yield gaps fresh, then runs medium-yield |
+
+### Launching the dispatcher (background)
+
+```bash
+nohup bash scripts/_orchestrate_recovery.sh >> logs/orchestrate_recovery.log 2>&1 &
+```
+
+The dispatcher is safe to launch while the low-yield pass is still running — it simply
+polls `/tmp/low_yield_recovery_pid` every 60 s until the process exits, then proceeds.
+If the PID file is missing (e.g. low-yield already finished), the dispatcher skips
+directly to the re-index and medium-yield steps.
+
+**Important**: the medium-yield gap list is re-snapshotted fresh inside the dispatcher
+*after* low-yield completes, not from `/tmp/medium_yield_gaps.txt` (which was computed
+earlier and is now stale).  This ensures the final PDF counts — not a mid-run estimate —
+drive the medium-yield gap selection.
+
+### Re-indexing manually
+
+```bash
+python3 scripts/index_articles.py --run-id run_27f86e44394442 --dedupe
+```
+
+Re-indexing is idempotent (existing rows are skipped via `UNIQUE(run_id, gap_id,
+source_id, title)`).  `--dedupe` runs a pure SQL UPDATE pass — no files are modified.
+
 ## Tests
 ```bash
 python3 -m pytest tests -q

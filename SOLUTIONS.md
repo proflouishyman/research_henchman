@@ -1,3 +1,42 @@
+[2026-05-01] - Generalized yield-recovery script and medium-yield orchestrator
+
+Problem
+The low-yield recovery script (_low_yield_recovery.sh) was hardcoded for the 56 low-yield
+gaps and could not be reused for medium-yield (exactly 2 PDFs, ~37 gaps) or future high-yield
+passes without copy-pasting the entire script and editing constants.  There was also no
+mechanism to automatically start the medium-yield pass once the low-yield run finished.
+
+Root Cause
+_low_yield_recovery.sh had the gap list path, run label, log filename, and Telegram ping
+strings all hardcoded.  No dispatcher existed to chain phases.
+
+Solution
+Option A (generalization via positional args):
+1. scripts/_yield_recovery.sh — new generic script accepting <gap_list_file> <run_label>
+   [normalize_model].  Runs the same 3-phase pattern (normalize → fetch → re-index with
+   --dedupe) for any gap list.  Log file is named logs/<label>_recovery.log.  Telegram
+   pings use the label.  Re-indexing (Phase 3) is an added step not present in the old
+   script — the article index is updated after every recovery pass.
+2. scripts/_low_yield_recovery.sh — replaced with a 4-line thin wrapper that calls
+   _yield_recovery.sh with /tmp/low_yield_gaps.txt and label "low_yield".  Existing
+   invocations continue to work without change.
+3. scripts/_orchestrate_recovery.sh — dispatcher that polls /tmp/low_yield_recovery_pid
+   via kill -0 every 60 s, re-indexes after low-yield exits, snapshots medium-yield gaps
+   FRESH (re-computed from on-disk PDF counts at that moment), pings Telegram, then runs
+   the medium-yield recovery.  High-yield step is present but commented out.
+4. /tmp/medium_yield_gaps.txt — written with 37 gap IDs (exactly 2 PDFs, snapshotted
+   2026-05-01T11:59:45 — stale by design; the dispatcher re-snapshots at dispatch time).
+5. tests/test_yield_recovery_scripts.py — 6 new tests: bash -n syntax checks for all 3
+   scripts, exit-code checks for missing-arg / missing-file error paths, banner-label
+   assertion using a PATH-stubbed python3.
+
+Notes
+The medium-yield snapshot count is 37 (slightly more than the expected ~36 from baseline
+analysis — the live low-yield run had already moved some 1-PDF gaps up to 2-PDF by the
+time of the snapshot).  The dispatcher always re-snapshots, so this number will differ
+again by the time medium-yield actually starts.  This is documented in a comment in
+_orchestrate_recovery.sh.
+
 [2026-04-29] - SQLite + FTS5 article index for searchable corpus metadata
 
 Problem

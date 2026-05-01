@@ -1,3 +1,63 @@
+[2026-04-29] - SQLite + FTS5 article index for searchable corpus metadata
+
+Problem
+After each fetch run, articles are scattered across thousands of per-gap per-source .md
+files with no way to answer corpus-level questions: what sources are represented, how
+many PDFs vs metadata-only, which gaps got 0 PDFs, or to search across all article titles
+and abstracts.
+
+Root Cause
+The pipeline was designed as a producer of files; there was no consumer-side index. Each
+fetched article exists only as a standalone markdown file in
+data/pull_outputs/<run_id>/<gap_id>/<source>/fetched/. Answering cross-gap queries
+required traversing thousands of files on every question.
+
+Solution
+Added a SQLite + FTS5 article index (no new pip dependencies — stdlib sqlite3):
+
+1. adapters/article_index.py — core module:
+   - open_index(db_path): creates schema on first call; idempotent (all DDL uses
+     IF NOT EXISTS). Schema: articles table + articles_fts virtual table (porter
+     tokenizer) + INSERT/DELETE/UPDATE triggers + indexes on source_id, gap_id, run_id,
+     doi, canonical_id.
+   - ingest_pull_output(conn, pull_root, run_id): walks the run directory, parses
+     markdown files using _parse_markdown_article(), extracts bquery context from seed
+     JSON files, reads gap research question and chapter from data/runs.json via
+     gap_context_for(). Idempotent via UNIQUE(run_id, gap_id, source_id, title) — re-runs
+     skip existing rows and only insert new articles.
+   - dedupe_by_doi(conn, run_id): for rows with non-null DOI, picks one canonical row per
+     DOI (prefer has-PDF > source priority > earliest indexed_at), sets canonical_id on
+     others. Never deletes rows or files.
+   - gap_context_for(run_id, gap_id, runs_json_path): reads data/runs.json and returns
+     (claim_text, chapter) for a gap — stored as gap_research_question and gap_topic.
+
+2. scripts/index_articles.py — CLI builder:
+   --run-id (required), --db, --pull-root, --gap-id, --rebuild, --dedupe.
+   Re-running is idempotent by default.
+
+3. scripts/query_articles.py — convenience query CLI:
+   --sources, --gaps, --zero-pdf-gaps, --search <query>, --gap <gap_id>,
+   --doi-duplicates, --limit.
+
+Design choice: SQLite + FTS5 (not Elasticsearch, ChromaDB, or Postgres):
+  - Zero new pip dependencies (sqlite3 is stdlib).
+  - Single file at data/article_index.sqlite (gitignored under data/).
+  - Rebuilds in seconds from existing markdown files — no network, no daemon.
+  - FTS5 with porter stemming gives full-text search across title/abstract/authors/
+    research question with ranking.
+  - DOI dedup is a pure SQL UPDATE pass — no file changes on disk.
+
+Notes
+DOIs are not present in the existing fetched markdown files. The EBSCO
+_write_ebsco_records writer does not capture DOIs from search-results DOM (DOIs are on
+detail pages). DOI dedup fires only for future data where DOIs are written into markdown.
+Backfilling DOIs from saved HTML is a follow-up task.
+
+Tests added: 206 → 234 (+28) in tests/test_article_index.py covering: markdown parser
+(5 tests), ingest correctness and idempotency (8 tests), FTS5 search (4 tests), DOI
+dedup (4 tests), source-count query (1 test), gap_context_for (4 tests), zero-PDF gap
+detection (2 tests).
+
 [2026-05-01] - Model selection for query normalization: gpt-oss:20b chosen over llama3.1:8b based on A/B experiment
 
 Problem

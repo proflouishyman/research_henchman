@@ -207,6 +207,88 @@ uvicorn main:app --reload --port 8876
 - Set `ORCH_PLAYWRIGHT_CDP_URL` in `.env` when needed; compose falls back to `http://host.docker.internal:9222` and runtime normalizes this hostname for Chrome CDP compatibility in Docker.
 - Docker image now includes the Python Playwright client so CDP-backed seed URL fetch fallback can execute in containerized runs.
 
+## Article Index (SQLite + FTS5)
+
+A searchable, file-based index of all fetched article metadata is maintained in
+`data/article_index.sqlite` (gitignored — under `data/`).  It is built from the
+`data/pull_outputs/<run_id>/` directories by a standalone module
+(`adapters/article_index.py`) and two CLI scripts.  The live run directory is
+never modified.
+
+### Build the index
+
+```bash
+# Index a completed (or in-progress) run:
+python scripts/index_articles.py --run-id run_27f86e44394442
+
+# Re-run is idempotent — only newly-fetched articles are added:
+python scripts/index_articles.py --run-id run_27f86e44394442
+
+# Also run DOI-based deduplication after ingest:
+python scripts/index_articles.py --run-id run_27f86e44394442 --dedupe
+
+# Index a single gap only (incremental):
+python scripts/index_articles.py --run-id run_27f86e44394442 --gap-id AUTO-01-G1
+
+# Drop and re-index all rows for this run:
+python scripts/index_articles.py --run-id run_27f86e44394442 --rebuild
+```
+
+### Query the index
+
+```bash
+# What sources are represented? (with PDF counts)
+python scripts/query_articles.py --sources
+
+# Top gaps by article count (with PDF counts):
+python scripts/query_articles.py --gaps --limit 20
+
+# Gaps that returned 0 PDFs:
+python scripts/query_articles.py --zero-pdf-gaps
+
+# Full-text search (porter-stemmed — finds inflected forms):
+python scripts/query_articles.py --search "e-commerce India"
+
+# All articles for one gap:
+python scripts/query_articles.py --gap AUTO-01-G1
+
+# List DOIs that appear in more than one row (cross-source duplicates):
+python scripts/query_articles.py --doi-duplicates
+```
+
+### Example: `--sources` output
+
+```
+Source                   Total  With PDF  Metadata-only
+--------------------------------------------------------
+ebsco_api                 4245       548           3697
+```
+
+### Schema overview
+
+The `articles` table stores one row per fetched markdown file with:
+- Full citation metadata: title, authors, journal, pub_date, abstract, url, pdf_path, doi
+- Provenance: run_id, gap_id, source_id, database_name
+- Search context: bquery_original, bquery_normalized (JSON list), variant_index
+- Gap context: gap_research_question (claim_text from the manuscript), gap_topic (chapter)
+- Dedup: canonical_id (FK to articles.id — set on duplicate DOI rows; NULL on canonical)
+
+The `articles_fts` FTS5 virtual table (porter tokenizer) indexes title, authors,
+abstract, journal, and gap_research_question and is kept in sync via INSERT/DELETE/UPDATE
+triggers.  Dedup (`--dedupe`) picks one canonical row per DOI (preference: has PDF >
+source priority > earliest indexed_at) and sets `canonical_id` on all others; no rows
+or files are deleted.
+
+### DOI availability note
+
+DOIs are **not present** in the existing fetched markdown files.  The EBSCO
+`_write_ebsco_records` writer extracts data from the search-results DOM, which
+does not include DOIs.  DOIs are available on article detail pages (visited
+during the click-in PDF fetch) but the current writer does not capture them.
+As a result, DOI dedup fires only for future data where DOIs are explicitly
+written to the markdown.  Backfilling DOIs from saved HTML pages is a follow-up
+task.
+
 ## Tests
 ```bash
 python3 -m pytest tests -q

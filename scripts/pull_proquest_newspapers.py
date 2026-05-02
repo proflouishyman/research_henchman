@@ -467,6 +467,11 @@ def main() -> None:
                    help="Run ID (e.g. run_27f86e44394442) — must have a matching gap_report file.")
     p.add_argument("--limit", type=int, default=None,
                    help="Process only the first N relevant gaps (for testing).")
+    p.add_argument("--gap-ids", default=None,
+                   help="Comma-separated list of specific gap IDs to process "
+                        "(e.g. AUTO-181-G1,AUTO-184-G1). Bypasses the keyword "
+                        "filter when set. Useful for retrying specific gaps "
+                        "after a partial run.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print queries and per-gap result counts; do not write JSON.")
     p.add_argument("--model", default="llama3.1:8b",
@@ -498,13 +503,26 @@ def main() -> None:
     gaps_all = parse_gap_report(gap_report)
     print(f"total gaps in report: {len(gaps_all)}", flush=True)
 
-    # Filter to relevant gaps
-    relevant: List[GapInfo] = []
-    for gap_id, chapter, claim in gaps_all:
-        region = classify_region(claim)
-        if region:
-            relevant.append(GapInfo(gap_id, chapter, claim, region))
-    print(f"India/China-relevant: {len(relevant)} gaps", flush=True)
+    # Filter to relevant gaps. --gap-ids overrides the keyword filter so
+    # the user can retry specific gaps that were skipped or had session
+    # issues in a prior partial run.
+    if args.gap_ids:
+        wanted = {g.strip() for g in args.gap_ids.split(",") if g.strip()}
+        relevant: List[GapInfo] = []
+        for gap_id, chapter, claim in gaps_all:
+            if gap_id in wanted:
+                # Region tag is best-effort here; default to "both" if no
+                # keyword match (the LLM will localize from the claim text).
+                region = classify_region(claim) or "both"
+                relevant.append(GapInfo(gap_id, chapter, claim, region))
+        print(f"explicit gap-ids: {len(relevant)} matched out of {len(wanted)} requested", flush=True)
+    else:
+        relevant = []
+        for gap_id, chapter, claim in gaps_all:
+            region = classify_region(claim)
+            if region:
+                relevant.append(GapInfo(gap_id, chapter, claim, region))
+        print(f"India/China-relevant: {len(relevant)} gaps", flush=True)
 
     if args.limit:
         relevant = relevant[:args.limit]
@@ -559,10 +577,15 @@ def main() -> None:
             records = search_proquest(page, proxy_url, query)
             print(f"  → {len(records)} records", flush=True)
             if not records:
-                # Track consecutive empty/error for early-bail per Opus
+                # Track consecutive zero-results for early-bail per Opus.
+                # Note: genuine zero-result queries are common in historical
+                # newspaper archives (corpus is narrower than current news),
+                # so the threshold is generous — 10 in a row is a much
+                # stronger signal of session loss / selector breakage than
+                # the original 5.
                 consecutive_session_fails += 1
-                if consecutive_session_fails >= 5:
-                    print("[abort] 5 consecutive empty/error results — likely "
+                if consecutive_session_fails >= 10:
+                    print("[abort] 10 consecutive empty/error results — likely "
                           "session lost or selector breakage. Stopping.", flush=True)
                     break
                 continue

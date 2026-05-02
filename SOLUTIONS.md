@@ -1,3 +1,32 @@
+[2026-05-02] - HathiTrust full-text book coverage puller
+
+Problem
+The manuscript's gap report covers 185 claims spanning the full pre-Internet → present sweep of e-commerce history, but the existing pull pipeline only had EBSCO + ProQuest sources. Pre-1990 retail history (mail-order catalogs, department-store credit, direct-marketing precedents to Amazon) is thin in EBSCO/ProQuest because those databases skew academic-journal and modern-newspaper. HathiTrust's 17M-volume digitized-book collection — heavy on pre-1923 public-domain works plus search-only access to 20th-century monographs — is the right surface for that historical context.
+
+Root Cause
+HathiTrust has two distinct search surfaces and they yield wildly different recall:
+- catalog.hathitrust.org/Search/Home — metadata-only Solr index. DOM probe with "Sears Roebuck mail order catalog" returned 4 hits.
+- babel.hathitrust.org/cgi/ls?field1=ocr — full-text OCR search inside the books. Same query returned 443,571 hits / 148,729 Full View. Same article.record DOM as the catalog.
+
+The Bibliographic API at catalog.hathitrust.org/api/volumes/ is identifier-only (ISBN/ISSN/OCLC/LCCN) — no free-text REST endpoint exists publicly. WebFetch returns 403 (anti-bot). Selectors on common Solr-result names (li.result, div.searchResult) all returned 0 because HathiTrust uses a Bootstrap-grid layout: article.record > div.flex-grow-1 > h3.record-title plus dl.metadata > div.grid > <dt>label</dt><dd>value</dd>.
+
+Solution
+Built `scripts/pull_hathitrust.py` modeled on `pull_proquest_newspapers.py`. Behavior:
+
+1. Reads the gap report and parses (gap_id, chapter, claim_text) tuples.
+2. No region pre-filter — HathiTrust covers the whole manuscript topic well; --gap-ids and --limit allow narrow targeting when needed.
+3. For each gap, generates a HathiTrust-friendly natural-language query via local Ollama (default llama3.1:8b — same terse-prompt rationale as ProQuest). System prompt steers the LLM toward period vocabulary ("mail order", "department store", "Sears Roebuck", "Montgomery Ward") and quoted phrases over deep Boolean — Solr OCR matching prefers two short concept groups over a 200-char nested expression.
+4. Navigates `babel.hathitrust.org/cgi/ls?q1=<query>&field1=ocr&a=srchls&pgs=100&anchor=search` (no auth required for search; HathiTrust gates only the full-text reader for limited items). 1.5-3.5s jitter, page-1-only (100 results cap).
+5. Extracts `article.record` elements using stable selectors discovered 2026-05-02 by live DOM probe: `h3.record-title` for title, `dl.metadata div.grid > dt|dd` for Published/Author/Subject/Language/Publisher pairs, `a[data-clicktype="catalog"]` and `a[data-clicktype="pt"]` for the two access links. The pt link's text ("Full view" vs "Limited (search-only)") indicates copyright access level. The cover element's `data-hdl` attribute carries the stable HathiTrust ID (e.g. "mdp.49015001020396").
+6. Writes records as JSON in the same shape as ProQuest seeds (title/url/authors/journal/pub_date/abstract/doi/query/gap_id/quality_label/source/link_type) plus HathiTrust-specific extras (hathi_id, access, subject, language). The article indexer's _ingest_seed_json walks these automatically with no indexer change required.
+
+Bot-detection / abort logic mirrors the ProQuest puller: 10 consecutive empty results trips the abort, "are you a robot" or "captcha" or "503" titles trigger clean skip, no retry-with-delay loops.
+
+Validated end-to-end: single-gap test on AUTO-01-G1 (Amazon "everything store" claim) returned 100 records. Top hit was Brad Stone's "The everything store: Jeff Bezos and the age of Amazon" (2013) — exactly the right book. Access split: 87 Limited / 13 Full View. After indexing, the article index gained `hathitrust_fulltext` as a new source (9,826 → 9,926 rows total). Authors and pub_date extracted on 100% of records; publisher field empty on most because HathiTrust's results page shows it inconsistently — title + URL + author + date are the load-bearing fields and those are reliable.
+
+Notes
+HathiTrust full-book PDF download is intentionally out of scope for this puller — Limited items are search-only by copyright; Full View items download page-by-page via a different API (/cgi/imgsrv) that's its own scraping problem. Metadata + reader URL is the deliverable; users follow the URL when they want to read. The --full-view-only flag filters to public-domain-readable items when desired (default keeps both since Limited records still surface citation metadata for follow-up via interlibrary loan). The keyword pre-filter used in the ProQuest India/China puller was deliberately omitted here because HathiTrust's collection breadth makes it useful across the whole manuscript, not just specific regions; --gap-ids and --limit cover the targeted-retry workflow.
+
 [2026-05-02] - Article index extended to ingest JSON seed records
 
 Problem

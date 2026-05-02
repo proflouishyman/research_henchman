@@ -189,17 +189,118 @@ def fetch_unscored_for_gap(
     return conn.execute(sql, (gap_id,)).fetchall()
 
 
+JSON_REPAIR_SYSTEM_PROMPT = """\
+You are a strict JSON formatter. The user will paste text that is supposed
+to be a JSON array of objects. Some objects may have keys "n", "score",
+and "why". Reformat the input as a clean JSON array exactly matching
+this shape:
+
+  [{"n": 1, "score": 0..3, "why": "one sentence"}, ...]
+
+Rules:
+- Output ONLY the JSON array. No prose, no fences, no commentary.
+- Preserve every entry's "n", "score", and "why" — do not invent, drop,
+  or merge entries.
+- If a "score" is non-numeric, coerce to the nearest integer in 0..3.
+- If a "why" is missing, leave it as an empty string.
+- Quote every string. Escape inner quotes with backslash. Use double quotes.
+"""
+
+
+def repair_json_with_fallback(
+    raw: str,
+    formatter_llm: Optional[Any],
+) -> Optional[List[Dict[str, Any]]]:
+    """Try to coerce *raw* into a list-of-dicts JSON structure.
+
+    1. json.loads as-is
+    2. strip ``` fences and try again
+    3. extract a [ ... ] fragment with regex and try
+    4. send the whole raw string to *formatter_llm* with a strict-format
+       system prompt and parse its output
+
+    Returns the parsed list, or None if everything fails.
+    """
+    if not raw:
+        return None
+
+    def _try_parse(s: str) -> Optional[Any]:
+        try:
+            return json.loads(s)
+        except Exception:
+            return None
+
+    # Step 1: as-is
+    parsed = _try_parse(raw.strip())
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        for k in ("scores", "results", "items", "data"):
+            if isinstance(parsed.get(k), list):
+                return parsed[k]
+
+    # Step 2: strip ``` fences
+    s = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+    s = re.sub(r"\s*```$", "", s)
+    parsed = _try_parse(s.strip())
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        for k in ("scores", "results", "items", "data"):
+            if isinstance(parsed.get(k), list):
+                return parsed[k]
+
+    # Step 3: extract first [ ... ] fragment
+    m = re.search(r"\[\s*[\{\[].*[\}\]]\s*\]", raw, re.DOTALL)
+    if m:
+        parsed = _try_parse(m.group(0))
+        if isinstance(parsed, list):
+            return parsed
+
+    # Step 4: ask the small, fast formatter model to clean it up
+    if formatter_llm is not None:
+        try:
+            cleaned = formatter_llm.complete(
+                system=JSON_REPAIR_SYSTEM_PROMPT,
+                prompt=f"Reformat this as the strict JSON array described:\n\n{raw[:6000]}",
+                temperature=0.0,
+            )
+            cleaned = cleaned.strip()
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+            parsed = _try_parse(cleaned)
+            if isinstance(parsed, list):
+                return parsed
+            # Maybe the formatter returned an object wrapping the list
+            if isinstance(parsed, dict):
+                for k in ("scores", "results", "items", "data"):
+                    if isinstance(parsed.get(k), list):
+                        return parsed[k]
+            # Last-ditch: extract first [...] from formatter's output
+            m2 = re.search(r"\[\s*[\{\[].*[\}\]]\s*\]", cleaned, re.DOTALL)
+            if m2:
+                parsed = _try_parse(m2.group(0))
+                if isinstance(parsed, list):
+                    return parsed
+        except Exception as exc:
+            print(f"    [warn] formatter LLM failed: {exc!s:.100}", flush=True)
+    return None
+
+
 def score_batch(
     llm: Any,
     gap_topic: str,
     gap_claim: str,
     batch_rows: List[sqlite3.Row],
+    formatter_llm: Optional[Any] = None,
 ) -> Dict[int, Tuple[int, str]]:
     """Send *batch_rows* to the LLM and return {row_id: (score, why)}.
 
-    Returns empty dict on parse failure — the caller should mark these
-    rows as deferred (NOT writing relevance_score) so the next pass
-    retries them. Never raises on LLM errors; degrades to skip.
+    On primary model JSON-parse failure, falls back to *formatter_llm*
+    (typically a small fast model like llama3.1:8b) for JSON repair —
+    decouples primary-model quality from output-formatting reliability.
+    Returns empty dict if both layers fail; the row stays NULL and the
+    next run retries.
     """
     items = []
     id_for_n: Dict[int, int] = {}
@@ -215,24 +316,54 @@ def score_batch(
         id_for_n[n] = row["id"]
 
     user_prompt = build_user_prompt(gap_topic, gap_claim, items)
+
+    # Step 1: primary model with its own complete_json (fast path).
+    parsed: Optional[Any] = None
+    raw_response: Optional[str] = None
     try:
         parsed = llm.complete_json(
             system=SCORE_SYSTEM_PROMPT,
             prompt=user_prompt,
             temperature=0.1,
         )
-    except Exception as exc:
-        print(f"    [warn] LLM batch failed: {exc!s:.100}", flush=True)
-        return {}
+    except Exception:
+        # Fall through to raw-and-repair path. complete_json's failure
+        # may have been a transient network/parse issue — try the raw
+        # response and route through the repair fallback.
+        try:
+            raw_response = llm.complete(
+                system=SCORE_SYSTEM_PROMPT,
+                prompt=user_prompt,
+                temperature=0.1,
+            )
+        except Exception as exc:
+            print(f"    [warn] primary LLM call failed: {exc!s:.100}", flush=True)
+            return {}
 
-    # Accept either a list at root or a dict with key "scores"/"results"/"items"
-    if isinstance(parsed, dict):
-        for k in ("scores", "results", "items", "data"):
-            if k in parsed and isinstance(parsed[k], list):
-                parsed = parsed[k]
-                break
+    # Step 2: if parsed is unusable, run the raw text through the repair fallback.
     if not isinstance(parsed, list):
-        print(f"    [warn] LLM returned non-list: {str(parsed)[:80]}", flush=True)
+        if isinstance(parsed, dict):
+            # complete_json returned an unusable dict — re-fetch raw to repair.
+            for k in ("scores", "results", "items", "data"):
+                if isinstance(parsed.get(k), list):
+                    parsed = parsed[k]; break
+        if not isinstance(parsed, list):
+            if raw_response is None:
+                try:
+                    raw_response = llm.complete(
+                        system=SCORE_SYSTEM_PROMPT,
+                        prompt=user_prompt,
+                        temperature=0.1,
+                    )
+                except Exception:
+                    raw_response = ""
+            parsed = repair_json_with_fallback(raw_response or "", formatter_llm) or []
+            if parsed:
+                print(f"    [info] JSON repaired via formatter fallback "
+                      f"({len(parsed)} entries)", flush=True)
+
+    if not isinstance(parsed, list) or not parsed:
+        print(f"    [warn] LLM batch failed (no parseable output)", flush=True)
         return {}
 
     out: Dict[int, Tuple[int, str]] = {}
@@ -290,8 +421,14 @@ def main() -> int:
     p.add_argument("--batch", type=int, default=8,
                    help="Sources per LLM call (default 8). "
                         "Higher = fewer calls but riskier parsing.")
-    p.add_argument("--model", default="llama3.1:8b",
-                   help="LLM model. Default llama3.1:8b — terse-prompt friendly.")
+    p.add_argument("--model", default="llama3.3:latest",
+                   help="Primary LLM model used for scoring + WHY explanations. "
+                        "Default llama3.3:latest (Meta 70B) — strongest local "
+                        "reasoning available; slower but more accurate WHYs.")
+    p.add_argument("--formatter-model", default="llama3.1:8b",
+                   help="Small fast model used to repair primary model's "
+                        "JSON output if it fails strict parsing. "
+                        "Default llama3.1:8b. Set to '' to disable repair.")
     p.add_argument("--max-gaps", type=int, default=None,
                    help="Process at most this many gaps (for staged runs).")
     args = p.parse_args()
@@ -301,7 +438,17 @@ def main() -> int:
     ensure_columns(conn)
 
     settings = OrchestratorSettings.from_env()
-    llm = make_llm_client(settings, model=args.model, timeout_seconds=180, temperature=0.1)
+    # Primary model — generous timeout because llama3.3:70b's first call
+    # loads the 42 GB model into memory (one-time ~60 s warm-up).
+    llm = make_llm_client(settings, model=args.model,
+                           timeout_seconds=900, temperature=0.1)
+    # Formatter model — small, fast, called only on JSON-parse failures.
+    formatter_llm = None
+    if args.formatter_model.strip():
+        formatter_llm = make_llm_client(
+            settings, model=args.formatter_model,
+            timeout_seconds=120, temperature=0.0,
+        )
 
     # Discover work — gaps with at least one unscored row.
     if args.gap:
@@ -323,7 +470,8 @@ def main() -> int:
     print(f"DB: {args.db}", flush=True)
     print(f"  already scored:  {total_scored}", flush=True)
     print(f"  unscored:        {total_unscored}", flush=True)
-    print(f"  gaps to process: {len(gap_ids)} (model={args.model}, batch={args.batch})", flush=True)
+    print(f"  gaps to process: {len(gap_ids)} (model={args.model}, "
+          f"formatter={args.formatter_model or 'disabled'}, batch={args.batch})", flush=True)
     print(flush=True)
 
     overall_scored = 0
@@ -345,7 +493,8 @@ def main() -> int:
         gap_failed = 0
         for i in range(0, len(unscored), args.batch):
             batch = unscored[i : i + args.batch]
-            scores = score_batch(llm, gap_topic, gap_claim, batch)
+            scores = score_batch(llm, gap_topic, gap_claim, batch,
+                                  formatter_llm=formatter_llm)
             n_written = write_scores(conn, scores)
             gap_scored += n_written
             gap_failed += (len(batch) - n_written)

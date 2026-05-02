@@ -222,13 +222,13 @@ class TestProcessFile:
         assert n == 0
         client.complete.assert_not_called()
 
-    def test_truncates_each_variant_to_200_chars(self, tmp_path: Path) -> None:
-        """Each variant is truncated to 200 chars to stay within EBSCO limits."""
-        from scripts.normalize_seed_queries import _process_file
+    def test_truncates_each_variant_to_max_chars(self, tmp_path: Path) -> None:
+        """Each variant is safely truncated below the hard cap."""
+        from scripts.normalize_seed_queries import _process_file, _QUERY_MAX_CHARS
 
-        # LLM response: two long variants in numbered-list format.
-        long_a = "A" * 250
-        long_b = "B" * 250
+        # LLM response: two very long variants in numbered-list format.
+        long_a = "A" * 700
+        long_b = "B" * 700
         raw_response = f"1. {long_a}\n2. {long_b}"
         records = [_seed_record("something")]
         jf = _write_seed_file(tmp_path, records)
@@ -240,7 +240,7 @@ class TestProcessFile:
         variants = saved[0]["bquery_normalized"]
         assert isinstance(variants, list)
         for v in variants:
-            assert len(v) <= 200
+            assert len(v) <= _QUERY_MAX_CHARS
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +370,110 @@ class TestMain:
         # AUTO-02-G1 should be untouched.
         g2_saved = json.loads((g2 / "results.json").read_text())
         assert "bquery_normalized" not in g2_saved[0]
+
+
+# ---------------------------------------------------------------------------
+# 2.5. _balanced_truncate — Boolean-safe length cap
+# ---------------------------------------------------------------------------
+
+
+def _quotes_balanced(s: str) -> bool:
+    return s.count('"') % 2 == 0
+
+
+def _parens_balanced(s: str) -> bool:
+    """True when '(' and ')' counts match outside of quoted runs."""
+    depth = 0
+    in_q = False
+    for c in s:
+        if c == '"':
+            in_q = not in_q
+        elif not in_q:
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+                if depth < 0:
+                    return False
+    return depth == 0 and not in_q
+
+
+class TestBalancedTruncate:
+    """Regression tests for _balanced_truncate. Anchored on the bug observed
+    2026-05-01: gpt-oss:20b produced 250-350 char Boolean queries that the
+    old `query[:200]` slice cut mid-quote / mid-paren / mid-clause, causing
+    EBSCO to fall back to keyword soup and surface irrelevant articles
+    (e.g. spinal-cord papers in a UPS Los Angeles gap)."""
+
+    def test_short_query_passes_through_unchanged(self) -> None:
+        from scripts.normalize_seed_queries import _balanced_truncate
+        q = '("Amazon" OR "Amazon.com") AND retail*'
+        assert _balanced_truncate(q, max_chars=500) == q
+
+    def test_truncates_at_last_balanced_close_paren(self) -> None:
+        """Bug-scenario reproduction from the 2026-05-01 incident.
+        Old code returned the first 200 chars of this query, leaving an
+        unclosed quote / unclosed paren. The fix walks back to the last
+        balanced ')'."""
+        from scripts.normalize_seed_queries import _balanced_truncate
+        # Constructed to be balanced through ~150 chars, then a long
+        # trailing AND-clause that gets cut mid-string.
+        q = (
+            '("United Parcel Service" OR UPS) AND ("Los Angeles" OR LA)'
+            ' AND ("Pacific Express Company" OR "Pacific Greyhound" OR "Greyhound Express")'
+            ' AND (acquisition* OR merger* OR buyout*) AND (1929 OR 1930 OR 1931 OR 1932)'
+        )
+        assert len(q) > 200  # otherwise the test isn't testing anything
+        truncated = _balanced_truncate(q, max_chars=200)
+        assert len(truncated) <= 200
+        assert _quotes_balanced(truncated)
+        assert _parens_balanced(truncated)
+        # The trailing fragment that would have caused the bug is gone.
+        assert "Pacific Express Company" not in truncated or truncated.endswith(")")
+
+    def test_balanced_truncate_keeps_quotes_balanced(self) -> None:
+        """A long query with a literal LLM mid-quote cut MUST be rescued."""
+        from scripts.normalize_seed_queries import _balanced_truncate
+        # Query that happens to have an unclosed quote near char 200 — exactly
+        # the spinal-cord-bug shape ("...common carrier" OR "carrier service)
+        q = ('("UPS" OR "United Parcel Service") AND ("Los Angeles" OR LA)'
+             ' AND ("common carrier" OR "carrier service for express delivery")'
+             ' AND retail*')
+        # Even when truncated short, output should never have unbalanced quotes.
+        for cap in (50, 100, 150, 200, 300):
+            t = _balanced_truncate(q, max_chars=cap)
+            assert _quotes_balanced(t), f"unbalanced quotes at cap={cap}: {t!r}"
+            assert _parens_balanced(t), f"unbalanced parens at cap={cap}: {t!r}"
+            assert len(t) <= cap
+
+    def test_falls_back_to_and_or_boundary_when_no_balanced_paren(self) -> None:
+        from scripts.normalize_seed_queries import _balanced_truncate
+        q = "Amazon AND retail AND e-commerce AND online AND digital AND marketplace AND 1995 AND 2000"
+        truncated = _balanced_truncate(q, max_chars=40)
+        assert len(truncated) <= 40
+        assert _quotes_balanced(truncated)
+        assert _parens_balanced(truncated)
+        # Cut should land just before an AND/OR boundary — never mid-token.
+        assert not truncated.endswith("AN")
+        assert not truncated.endswith(" AND")
+        assert not truncated.endswith(" OR")
+
+    def test_pathological_input_does_not_crash(self) -> None:
+        """Malformed inputs shouldn't raise. We don't promise to *repair* an
+        already-broken input that's shorter than max_chars (the short-circuit
+        passes it through), but truncation of a long input must always
+        produce a balanced output."""
+        from scripts.normalize_seed_queries import _balanced_truncate
+        # Short malformed inputs: pass-through is acceptable, just no crash.
+        for bad in [')', '"', '', '(', 'Amazon AND ("retail']:
+            _balanced_truncate(bad, max_chars=10)  # must not raise
+
+        # Long malformed input → truncation must produce balanced output.
+        long_unbalanced = 'Amazon AND ("retail OR ' + ('x' * 300)
+        t = _balanced_truncate(long_unbalanced, max_chars=50)
+        assert _quotes_balanced(t)
+        assert _parens_balanced(t)
+        assert len(t) <= 50
 
 
 # ---------------------------------------------------------------------------

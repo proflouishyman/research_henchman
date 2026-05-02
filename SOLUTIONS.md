@@ -1,7 +1,29 @@
-[2026-05-01] - KNOWN ISSUE (open): EBSCO query truncation breaks Boolean syntax mid-clause
+[2026-05-02] - FIXED: EBSCO query truncation breaks Boolean syntax mid-clause
 
 Status
-Open. Marked for next update — discovered during the 2026-05-01 low-yield recovery run while it was still in progress; user opted to let the run complete rather than restart, accepting some noise in exchange for not losing ~3 hr of work.
+RESOLVED. Implemented after the 2026-05-01 medium-yield recovery completed (1139 PDFs on disk). Replaces the open issue documented below.
+
+Solution
+1. New ``_balanced_truncate(query, max_chars)`` helper in scripts/normalize_seed_queries.py. Walks the input character-by-character tracking paren depth and quote state. Cut strategy in priority order:
+   (a) Latest balanced ``)`` before max_chars (drops a trailing AND-clause cleanly).
+   (b) If no balanced ``)``, latest ``AND`` / ``OR`` boundary at depth 0 with balanced quotes — cut BEFORE the operator so the truncated query isn't left with a dangling boolean op.
+   (c) Final fallback: walk forward, recording the last position where both depth==0 and !in_quote; cut there.
+   Output is guaranteed balanced (or an empty string in pathological cases).
+2. Bumped _QUERY_MAX_CHARS from 200 → 500. The legacy 200-char limit was a guess; modern research.ebsco.com URLs accept 400+ chars in practice. 500 gives gpt-oss:20b's verbose multi-OR queries room and the safe-truncate fallback only activates on outliers.
+3. System-prompt update: replaced ``Maximum ~200 characters per query`` with explicit ``Hard cap: each query MUST be ≤ 400 characters (preferably ≤ 300). Long queries get safe-truncated and lose their tail clauses — bad for recall. Be concise: prefer truncation operators (e.g. retail*) over long synonym lists.``  Tells the LLM the consequence of overshooting.
+4. New TestBalancedTruncate class with 5 regression tests: short-passes-through, drops-trailing-AND-clause-at-balanced-paren, never-leaves-unbalanced-quotes-or-parens-at-multiple-cap-sizes, falls-back-to-AND-OR-boundary-when-no-paren, doesn't-crash-on-pathological-input. Updated the existing ``test_truncates_each_variant_to_200_chars`` to use _QUERY_MAX_CHARS rather than hardcoded 200.
+
+Tests: 234 → 246 (+12), all passing.
+
+Notes
+The ~286 PDFs added during medium-yield (2026-05-01 run) and the ~373 from low-yield are on disk and indexed even though they were collected with the old broken truncator. Some are mis-categorised (e.g. medical articles in non-medical gaps from the truncation issue); the SQLite article index makes filtering after the fact straightforward (FTS5 search + cross-check title vs gap_research_question). A future cleanup pass can flag obviously-irrelevant entries — but this is optional, the corpus still has 1139 high-quality PDFs net of any noise. The truncation fix prevents the same issue on any future runs against new gap data, which was the immediate goal.
+
+Open follow-up: post-hoc relevance filter for the existing 7783-article index — flag rows where title shares zero keyword overlap with the gap's bquery_original concepts. Not blocking; mark as low-priority cleanup.
+
+[2026-05-01] - HISTORICAL (now resolved): EBSCO query truncation breaks Boolean syntax mid-clause
+
+Status
+RESOLVED 2026-05-02 (see entry above). Original problem description preserved below for context.
 
 Problem
 ``normalize_seed_queries.py`` truncates each LLM-generated bquery at 200 chars (``line[:200]`` in ``_parse_numbered_list``). The A/B-experiment-winning model gpt-oss:20b commonly produces 250-350 char queries — Boolean expressions with multiple parenthesized OR-groups, year enumerations, and extra synonym layers. Mid-character cuts at 200 leave dangling quotes / unclosed parens. EBSCO receives malformed Boolean, drops the broken tail, and falls back to keyword-soup matching against the surviving tokens. Result: irrelevant articles from Academic Search Ultimate (which is broad enough to include medical / scientific journals) sneak into research gaps where they don't belong.

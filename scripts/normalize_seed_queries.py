@@ -92,7 +92,10 @@ Rules for each query:
 8. Each query must use DIFFERENT vocabulary / angles — not minor rewrites.
    Vary by: synonyms, adjacent concepts, time-period framing, proper nouns
    vs generic terms, industry angle vs academic angle, etc.
-9. Maximum ~200 characters per query.
+9. Hard cap: each query MUST be ≤ 400 characters (preferably ≤ 300).
+   Long queries get safe-truncated and lose their tail clauses — bad for recall.
+   Be concise: prefer truncation operators (e.g. retail*) over long synonym lists.
+   For year ranges, list at most 5-6 years explicitly, then use stems where possible.
 10. Prefer recall over precision: we want articles to appear, not zero hits.
 
 Output format: a numbered list, one query per line, no other text.
@@ -126,6 +129,109 @@ Examples for a gap about "effects of algorithmic pricing on competition":
 
 # Pattern that strips a leading "1.", "1)", or "1:" style marker from a line.
 _NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.):\s]+\s*")
+
+# Hard cap for an EBSCO bquery. Generous (was 200 historically, but the modern
+# research.ebsco.com URL accepts much longer queries — observed working at
+# 400+ chars). 500 gives gpt-oss:20b's verbose multi-OR queries room without
+# routinely needing the safe-truncate fallback.
+_QUERY_MAX_CHARS = 500
+
+
+def _balanced_truncate(query: str, max_chars: int = _QUERY_MAX_CHARS) -> str:
+    """Truncate a Boolean query to <= ``max_chars`` while keeping it parseable.
+
+    The naive ``query[:max_chars]`` cut is unsafe for Boolean expressions —
+    cutting mid-quote leaves dangling ``"``, cutting mid-paren leaves
+    unbalanced ``(``, cutting mid-clause (``... AND ("Los Angeles" OR LA``)
+    leaves a syntactically broken expression. EBSCO falls back to keyword
+    matching when it sees broken Boolean and surfaces irrelevant articles
+    (observed 2026-05-01: spinal-cord papers in a UPS Los Angeles gap).
+
+    Strategy:
+    - If the query already fits, return it unchanged.
+    - Otherwise walk back from ``max_chars`` to the most recent balanced
+      truncation point: a closing paren ``)`` whose enclosing parens up to
+      that point are balanced AND quotes up to that point are balanced.
+      That gives a clean "drop trailing AND-clause" cut.
+    - If no balanced ``)`` is found, fall back to the last AND/OR boundary
+      that leaves balanced state.
+    - If even that fails (single unclosed quote / paren in the prefix),
+      return the substring up to the first opening quote / paren before
+      max_chars — never produce mismatched delimiters.
+    """
+    if len(query) <= max_chars:
+        return query
+
+    # Scan up to max_chars and record (position, depth, in_quote) at each char,
+    # plus indices of balanced AND/OR token boundaries.
+    candidates_close_paren: List[int] = []  # indices just AFTER a balanced ')'
+    candidates_word_boundary: List[int] = []  # indices just AFTER 'AND' or 'OR' when balanced
+
+    depth = 0
+    in_quote = False
+    i = 0
+    while i < min(len(query), max_chars):
+        ch = query[i]
+        if ch == '"':
+            in_quote = not in_quote
+        elif not in_quote:
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    candidates_close_paren.append(i + 1)
+            elif depth == 0 and ch == ' ':
+                # Look for ' AND ' or ' OR ' boundary just before; record the
+                # position BEFORE the operator (not after) so we drop the op too.
+                if query[max(0, i - 4):i] in (" AND", " OR "[:-1]) and not in_quote:
+                    pass  # handled below by simpler scan
+        i += 1
+
+    # Prefer the latest balanced ')' before the limit.
+    if candidates_close_paren:
+        cut = candidates_close_paren[-1]
+        return query[:cut].rstrip()
+
+    # Fallback: last ' AND ' or ' OR ' boundary at depth 0 with balanced quotes
+    # — cut BEFORE the operator.
+    depth = 0
+    in_quote = False
+    last_bool_cut = 0
+    i = 0
+    while i < min(len(query), max_chars):
+        ch = query[i]
+        if ch == '"':
+            in_quote = not in_quote
+        elif not in_quote:
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+            elif depth == 0 and ch == ' ':
+                rest = query[i + 1:i + 5]
+                if rest.startswith("AND ") or rest.startswith("OR "):
+                    last_bool_cut = i  # cut before the space
+        i += 1
+    if last_bool_cut > 0:
+        return query[:last_bool_cut].rstrip()
+
+    # Final fallback: cut at the last position before max_chars where both
+    # quotes and parens are balanced. Walk backwards.
+    depth = 0
+    in_quote = False
+    last_balanced = 0
+    for j, ch in enumerate(query[:max_chars]):
+        if ch == '"':
+            in_quote = not in_quote
+        elif not in_quote:
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+        if depth == 0 and not in_quote:
+            last_balanced = j + 1
+    return query[:last_balanced].rstrip() if last_balanced else ""
 
 
 def _normalize_queries(client: LLMClient, raw_bquery: str, n: int) -> List[str]:
@@ -188,18 +294,9 @@ def _parse_numbered_list(response: str, max_items: int) -> List[str]:
         if not line:
             continue  # line was only the number prefix
 
-        # Truncate to EBSCO's practical limit.
-        # FIXME(2026-05-01) — known bug: this truncates mid-clause for queries
-        # >200 chars (gpt-oss:20b commonly produces 250-350 char queries).
-        # Cuts leave dangling quotes / unclosed parens; EBSCO falls back to
-        # keyword-soup matching and surfaces irrelevant articles. Observed
-        # during the 2026-05-01 low-yield recovery: spinal-cord-stimulation
-        # papers showing up under UPS / Amazon gaps.
-        # NEXT FIX: combine prompt constraint ("MAX 250 chars") with a
-        # Boolean-safe truncation helper that walks back to the last
-        # balanced ')' or last AND/OR boundary. Also add a regression test
-        # for known-too-long inputs. See task #20 in conversation history.
-        entry = line[:200].strip()
+        # Truncate to EBSCO's practical limit (Boolean-safe: never breaks
+        # mid-quote / mid-paren / mid-clause). See _balanced_truncate.
+        entry = _balanced_truncate(line, _QUERY_MAX_CHARS).strip()
 
         if not entry:
             continue

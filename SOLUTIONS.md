@@ -1,3 +1,36 @@
+[2026-05-02] - ProQuest International Newsstream coverage for India/China manuscript gaps
+
+Problem
+The manuscript on the history of e-commerce had two acknowledged coverage holes: India and China. The existing pull pipeline only routed queries to EBSCO Academic Search Ultimate + Business Source Ultimate, which are USA/Europe-leaning. Newspaper coverage from Indian and Chinese papers (Times of India, South China Morning Post, Beijing Review, Grocer's Asia coverage, Financial Times Asia) is the cleanest way to fill that hole. ProQuest International Newsstream is the right database — JHU has institutional access via EZproxy.
+
+Root Cause
+The existing playwright_adapters.py scaffolding for `proquest_historical_newspapers` was hardcoded to the New York Times Historical archive (`hnpnewyorktimes`) — wrong collection for India/China. No upstream gap-analysis routing produced ProQuest seed records. Zero ProQuest data on disk across any prior run.
+
+Solution
+Built `scripts/pull_proquest_newspapers.py` (option B from the 2026-05-02 Opus consultation: focused enrichment script over upstream-routing refactor). Behavior:
+
+1. Reads gaps from `data/manuscript_exports/<...>/gap_report_<run_id>.md` — extracts per-gap (gap_id, chapter, claim_text) tuples.
+2. Pre-filters gaps by keyword (no LLM cost) — INDIA_KEYWORDS / CHINA_KEYWORDS sets cover named cities, founders, major platforms (Flipkart, Snapdeal, Alibaba, Tmall, JD.com, etc.).
+3. For each relevant gap, generates a single newspaper-flavored Boolean query via local Ollama. Default model: llama3.1:8b (gpt-oss:20b, the academic A/B-experiment winner, treats this terse prompt as chat and asks for clarifications — wrong tool for newspaper queries). System prompt emphasizes period vocabulary, named entities, localizers, simpler Boolean (2-3 concepts AND'd).
+4. Drives the CDP-attached Chrome through JHU's EZproxy (`databases.library.jhu.edu/databases/proxy/JHU07220` for International Newsstream), establishes session, fills `#searchTerm` textarea, submits via Enter (the form has no clickable submit button — Enter triggers the form's onsubmit handler).
+5. Extracts results from `li.resultItem` containers using selectors discovered by walking the live DOM: `.truncatedResultsTitle` for full title, `a[id^="citationDocTitleLink_"]` for the canonical detail URL (NOT the first `a.previewTitle` — that's the thumbnail anchor with empty text), `.scholUnivAuthors` for byline, `.jnlArticle` for the citation block.
+6. `_parse_pub_info` splits ProQuest's citation format ("Grocer; Crawley (Mar 21, 2026): 30,31...") into journal+date by extracting paren-wrapped dates first.
+7. Writes records as JSON into `<gap_id>/proquest_international_newsstream/<query_slug>.json` matching the existing seed-record schema so the downstream fetch pipeline (`_classify_record`) can pick them up naturally.
+
+Anti-bot countermeasures per Opus's failure-mode list:
+- 2-5s random jitter between gap searches
+- Detect `sessionexpired` / login redirects / captcha titles → skip cleanly, never retry
+- Bail after 5 consecutive empty/error results (likely session lost or selector breakage)
+- Cap at 50 results per query (volume shock prevention; ProQuest TOS)
+- Concurrency = 1 (no parallel workers; respectful pace)
+
+Validated end-to-end: full corpus run produced 850 records across all 17 India/China-relevant gaps (50/gap = the cap, indicating recall headroom). Top newspapers in the data: FT.com, Beijing Review, Grocer, Portafolio (Spanish-language Latin American coverage). Sample article titles: "Alibaba and Pinduoduo battle", "China's midyear shopping festival pulls in record online sales", "How Jenny Lee became Asia's Iron Woman of venture capital", "Alibaba y Jack Ma no paran su expansión".
+
+Notes
+22/50 records per query had full journal+date metadata extracted; the rest had empty journal/date because they use slightly different DOM blocks (e.g. magazine articles, dissertations). Title + URL are 100% — those are the load-bearing fields for the seed-record contract; metadata is bonus and can be backfilled by clicking into detail pages later. Records are SEED quality (metadata only); the click-in PDF / full-text fetch via ProQuest's content delivery URLs is the next iteration — Opus warned "ProQuest's TOS prohibits systematic downloading; if PDF flow proves unreliable, treat metadata-only as the deliverable" — that's the current state. Re-running the script is idempotent in effect because the existing JSON files get overwritten with fresh data; if the user wants merge semantics later, the article index is the right place for it.
+
+Open follow-ups (deferred): (a) extend the indexer to ingest ProQuest seed JSON before the click-through fetch runs, so the user can search the new newspaper coverage immediately; (b) write a similar puller for ProQuest US Newsstream (broader US newspaper coverage); (c) Chinese Newspapers Collection (`hnpchinesecollection`) needs a separate query strategy since it indexes Chinese-language papers; English queries return 0 — translation-aware queries are a future enhancement.
+
 [2026-05-02] - FIXED: EBSCO query truncation breaks Boolean syntax mid-clause
 
 Status

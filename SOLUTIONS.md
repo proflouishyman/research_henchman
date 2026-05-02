@@ -1,3 +1,34 @@
+[2026-05-02] - SKIPPED: JSTOR is reCAPTCHA-protected — needs human input
+
+Status
+Deferred. Documented per the user's "if unfixable without my input, move on" guidance.
+
+Problem
+JSTOR was on the source-expansion roadmap. Probed via JHU EZproxy (databases.library.jhu.edu/databases/proxy/JHU03294 → www.jstor.org/). Auth succeeded ("Access provided by louishyman@jhu.edu" visible). The basic-search URL `https://www.jstor.org/action/doBasicSearch?Query=...&so=rel` returns a page titled "JSTOR: Access Check" with the body text: "Our systems have detected unusual traffic activity from your network. Please complete this reCAPTCHA to demonstrate that it's you making the requests and not a robot." Block reference / VID / IP all logged in the page text.
+
+Root Cause
+JSTOR has aggressive bot-detection that triggers on direct URL search even when the user is authenticated through their institutional EZproxy. Possibly tripped by the existing `playwright_adapters.py` JSTOR adapter from earlier runs (which navigates similar URLs). The user's IP has been flagged.
+
+Why I'm not fixing tonight
+1. reCAPTCHA cannot be solved autonomously — the user has to physically click "I'm not a robot" in the CDP-attached browser.
+2. The user is asleep. The autonomous-mode plan explicitly authorizes skipping unfixable sources.
+3. Even after the user solves it once, JSTOR's session-rotation may re-trigger the block on subsequent automated searches. Per Opus's failure-mode advice: "If captcha triggers despite using the user's real authenticated browser, automation isn't viable today — move on."
+
+Path forward (when user is available)
+1. User opens the CDP-attached Chrome window, navigates to JSTOR via Catalyst portal, clicks the reCAPTCHA, then waits a few minutes for the IP to come off the suspicion list.
+2. Probe again — if the search results page renders without the Access Check, do a one-time DOM walk (the existing `_JSTOR_JS = li.result, .title a` selectors are stale; need fresh discovery).
+3. Either extend `pull_proquest_newspapers.py` to be source-agnostic (it already takes a collection arg; the JSTOR work would add a `jstor` collection with appropriate base URL + extractor) OR write a dedicated `pull_jstor.py`.
+
+[2026-05-02] - ProQuest US Newsstream coverage via Basic Search fallback
+
+Problem
+The pull_proquest_newspapers.py script worked for International Newsstream (basic-search UI) but failed for US Newsstream and Historical Newspapers — both of those EZproxy URLs land on the Advanced Search page after auth, which lacks the `#searchTerm` textarea the script's form-submit flow expects.
+
+Solution
+Added a fallback in `search_proquest`: if `#searchTerm` is absent post-auth, find a "Basic Search" link on the page and navigate to it (its href is per-collection, e.g. `/usnews?accountid=...`). This yields the same form-fill flow that International Newsstream uses. Documented the pattern. The Historical Newspapers collection (JHU05070) lands on a different advanced-search variant and may need additional work — deferred.
+
+Validated: US Newsstream test on AUTO-02-G1 returned 50 records. Full US Newsstream run on all 17 India/China gaps launched in background after commit 8ef7879.
+
 [2026-05-02] - ProQuest International Newsstream coverage for India/China manuscript gaps
 
 Problem

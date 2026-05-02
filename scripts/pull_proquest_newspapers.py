@@ -305,37 +305,57 @@ def search_proquest(page: Any, ezproxy_url: str, query: str) -> List[Dict[str, A
         print("[skip] captcha or not authorized", flush=True)
         return []
 
-    # Some ProQuest collections (US Newsstream, Historical Newspapers) land
-    # on the Advanced Search page after EZproxy auth — that page has no
-    # `#searchTerm`. Look for a "Basic Search" link to fall back to the
-    # simple form-fill flow this script uses.
-    has_basic = page.evaluate("""() => !!document.querySelector('#searchTerm')""")
-    if not has_basic:
+    # ProQuest collections vary in UI: International Newsstream lands on
+    # Basic Search (`#searchTerm` textarea); US Newsstream lands on
+    # Advanced Search but has a "Basic Search" link to navigate to;
+    # Historical Newspapers lands on Advanced Search directly with no
+    # basic-search route. Detect which form is present and dispatch.
+    ui_state = page.evaluate("""() => ({
+        has_basic: !!document.querySelector('#searchTerm'),
+        has_advanced: !!document.querySelector('#queryTermField'),
+        has_basic_link: !!Array.from(document.querySelectorAll('a'))
+            .find(a => /^Basic Search$/i.test((a.innerText||'').trim())),
+    })""")
+
+    # Prefer basic search when available (simpler URL patterns, often
+    # broader recall). Hop to it via the "Basic Search" link if needed.
+    if not ui_state["has_basic"] and ui_state["has_basic_link"]:
         try:
             basic_href = page.evaluate("""() => {
                 const a = Array.from(document.querySelectorAll('a'))
                   .find(a => /^Basic Search$/i.test((a.innerText||'').trim()));
                 return a ? a.getAttribute('href') : null;
             }""")
-        except Exception:
-            basic_href = None
-        if basic_href:
-            full = basic_href if basic_href.startswith("http") else f"https://www.proquest.com{basic_href}"
-            try:
+            if basic_href:
+                full = basic_href if basic_href.startswith("http") else f"https://www.proquest.com{basic_href}"
                 page.goto(full, timeout=30000, wait_until="domcontentloaded")
                 page.wait_for_timeout(2500)
-            except Exception:
-                print("[skip] basic-search nav failed", flush=True)
-                return []
-        else:
-            print("[skip] collection lacks a basic-search route", flush=True)
-            return []
+                ui_state = page.evaluate("""() => ({
+                    has_basic: !!document.querySelector('#searchTerm'),
+                    has_advanced: !!document.querySelector('#queryTermField'),
+                })""")
+        except Exception:
+            pass  # fall through to whatever's available now
 
-    # Submit search
+    # Dispatch — basic preferred, advanced as fallback.
     try:
-        page.fill("#searchTerm", query)
-        page.wait_for_timeout(400)
-        page.press("#searchTerm", "Enter")
+        if ui_state.get("has_basic"):
+            page.fill("#searchTerm", query)
+            page.wait_for_timeout(400)
+            page.press("#searchTerm", "Enter")
+        elif ui_state.get("has_advanced"):
+            # Advanced Search has a hidden Search button (cookie banner often
+            # covers it). Fill the visible #queryTermField and submit the
+            # form by id directly — works regardless of overlay state.
+            page.fill("#queryTermField", query)
+            page.wait_for_timeout(400)
+            page.evaluate("""() => {
+                const f = document.getElementById('searchForm');
+                if (f) f.submit();
+            }""")
+        else:
+            print("[skip] no usable search form on this collection page", flush=True)
+            return []
         page.wait_for_timeout(8000)
     except Exception as exc:
         print(f"[warn] search submit failed: {exc!s:.80}", flush=True)

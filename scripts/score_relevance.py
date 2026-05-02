@@ -421,10 +421,12 @@ def main() -> int:
     p.add_argument("--batch", type=int, default=8,
                    help="Sources per LLM call (default 8). "
                         "Higher = fewer calls but riskier parsing.")
-    p.add_argument("--model", default="llama3.3:latest",
+    p.add_argument("--model", default="qwen3.6:35b-a3b-mlx-bf16",
                    help="Primary LLM model used for scoring + WHY explanations. "
-                        "Default llama3.3:latest (Meta 70B) — strongest local "
-                        "reasoning available; slower but more accurate WHYs.")
+                        "Default qwen3.6:35b-a3b-mlx-bf16 — Apple Silicon MLX "
+                        "MoE (3B active params) chosen via 4-way A/B for best "
+                        "research-assistant-style WHY prose. Faster than "
+                        "llama3.3:70b; sharper than deepseek-r1:32b.")
     p.add_argument("--formatter-model", default="llama3.1:8b",
                    help="Small fast model used to repair primary model's "
                         "JSON output if it fails strict parsing. "

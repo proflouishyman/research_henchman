@@ -1,3 +1,26 @@
+[2026-05-02] - Two-way Telegram bridge with command dispatch
+
+Problem
+The hourly Telegram pinger (_hourly_status_telegram.sh) was one-way — it pushed status but provided no way for the user to issue commands or leave notes mid-run. The user wanted to interact with a running pipeline from their phone.
+
+Solution
+Rewrote _hourly_status_telegram.sh as a bidirectional bridge. The main bash loop wakes every 60 s to call getUpdates, advances last_update_id in logs/telegram_poll_state.json (idempotent across restarts), and dispatches recognised slash commands to Python handlers. Full hourly status is still sent on the 3600 s tick. All Telegram I/O is in a single heredoc'd Python block using stdlib urllib only.
+
+Commands shipped:
+  /status  — send fresh status immediately
+  /stop    — write a stop-flag file, send confirmation, exit cleanly
+  /note    — append timestamped text to logs/telegram_user_notes.log
+  /runs    — pgrep + ps for known pipeline scripts, PID + elapsed
+  /disk    — file counts (PDF/MD/JSON) + total MB under data/pull_outputs/
+  /help    — list all commands
+
+Security: only messages whose chat.id matches TELEGRAM_CHAT_ID are acted on; all others are silently dropped.
+
+Notes
+- State file: logs/telegram_poll_state.json — persists last_update_id so no message is reprocessed on restart.
+- Stop flag: /tmp/tg_bridge_stop_<PID> — checked after every poll cycle so /stop is honoured within ~60 s.
+- No new pip dependencies; no existing scripts modified.
+
 [2026-05-02] - SKIPPED: JSTOR is reCAPTCHA-protected — needs human input
 
 Status

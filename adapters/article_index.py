@@ -14,6 +14,15 @@ Schema notes:
   - UNIQUE(run_id, gap_id, source_id, title) prevents duplicate inserts (idempotent).
   - DOI dedup sets canonical_id on secondary rows; no rows are deleted.
   - FTS5 virtual table is kept in sync via INSERT/DELETE triggers.
+
+Ingest passes:
+  1. Markdown walk — for source dirs that have a ``fetched/`` subdirectory, walks
+     ``fetched/*.md`` files (EBSCO, JSTOR, Project MUSE).
+  2. Seed JSON walk — for source dirs that have NO ``fetched/`` subdirectory (e.g.
+     ProQuest sources that write JSON-only records), reads ``*.json`` files directly.
+     Records with ``link_type == "provider_search"`` are skipped (those are EBSCO
+     search-parameter records, not real articles). The md_path and pdf_path are
+     stored as NULL for JSON-only records.
 """
 
 from __future__ import annotations
@@ -253,6 +262,144 @@ def _extract_seed_context(src_dir: Path) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Seed JSON article ingestion (ProQuest and other JSON-only sources)
+# ---------------------------------------------------------------------------
+
+# Records with this link_type are search-parameter metadata, not real articles.
+# They appear in EBSCO seed JSON files and must never be indexed as articles.
+_SKIP_LINK_TYPES = {"provider_search"}
+
+# Title value used by EBSCO seed records — not a real article title.
+_EBSCO_SEED_TITLE = "ebsco_api search results"
+
+
+def _ingest_seed_json(
+    conn: sqlite3.Connection,
+    src_dir: Path,
+    *,
+    run_id: str,
+    gap_id: str,
+    source_id: str,
+    research_question: Optional[str],
+    gap_topic: Optional[str],
+) -> int:
+    """Index article records from JSON seed files in *src_dir*.
+
+    Called for source directories that have no ``fetched/`` subdirectory — these
+    are "JSON-only" sources such as ProQuest collections where the pull script
+    writes metadata directly as JSON without creating ``fetched/*.md`` files.
+
+    Each JSON file may contain a list of record dicts or a single record dict.
+    Records with ``link_type == "provider_search"`` (EBSCO search-parameter
+    records) and records without a meaningful title are skipped.
+
+    The ``bquery_original`` / ``bquery_normalized`` fields are populated from
+    the record itself when present (rare), otherwise stored as NULL. The
+    ``query`` field in ProQuest records is stored as-is in ``bquery_original``
+    when no dedicated bquery field exists.
+
+    Returns the number of new rows inserted.
+    """
+    inserted = 0
+
+    for json_file in sorted(src_dir.glob("*.json")):
+        try:
+            payload = json.loads(json_file.read_text(encoding="utf-8", errors="ignore"))
+        except Exception:
+            continue
+
+        # Normalise to a list of dicts — some files contain a single dict.
+        records = payload if isinstance(payload, list) else [payload]
+
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+
+            # Skip search-parameter records (EBSCO provider_search seeds).
+            link_type = rec.get("link_type", "")
+            if link_type in _SKIP_LINK_TYPES:
+                continue
+
+            title = (rec.get("title") or "").strip()
+            if not title or title == _EBSCO_SEED_TITLE:
+                continue
+
+            # --- Field extraction ---
+
+            # URL: prefer detail_url (ProQuest canonical link), fall back to url
+            url = (rec.get("detail_url") or rec.get("url") or "").strip() or None
+
+            # DOI: empty string → NULL
+            doi = (rec.get("doi") or "").strip() or None
+
+            authors = (rec.get("authors") or "").strip() or None
+            journal = (rec.get("journal") or "").strip() or None
+            pub_date = (rec.get("pub_date") or "").strip() or None
+            abstract = (rec.get("abstract") or "").strip() or None
+
+            # bquery context: use dedicated fields when present; otherwise
+            # fall back to the ``query`` field (ProQuest records store the
+            # Boolean search string there).
+            bquery_original: Optional[str] = None
+            bquery_normalized: Optional[str] = None
+
+            if rec.get("bquery_original"):
+                bquery_original = str(rec["bquery_original"])
+            elif rec.get("query"):
+                # ProQuest records: store the query string as bquery_original
+                # so FTS-context queries can still surface this source.
+                bquery_original = str(rec["query"])
+
+            if rec.get("bquery_normalized"):
+                val = rec["bquery_normalized"]
+                if isinstance(val, list):
+                    bquery_normalized = json.dumps(val)
+                else:
+                    bquery_normalized = str(val)
+
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO articles (
+                        doi, title, authors, journal, pub_date, abstract,
+                        url, pdf_path, md_path,
+                        run_id, gap_id, source_id,
+                        bquery_original, bquery_normalized,
+                        gap_research_question, gap_topic
+                    ) VALUES (
+                        :doi, :title, :authors, :journal, :pub_date, :abstract,
+                        :url, NULL, NULL,
+                        :run_id, :gap_id, :source_id,
+                        :bquery_original, :bquery_normalized,
+                        :gap_research_question, :gap_topic
+                    )
+                    """,
+                    {
+                        "doi": doi,
+                        "title": title,
+                        "authors": authors,
+                        "journal": journal,
+                        "pub_date": pub_date,
+                        "abstract": abstract,
+                        "url": url,
+                        "run_id": run_id,
+                        "gap_id": gap_id,
+                        "source_id": source_id,
+                        "bquery_original": bquery_original,
+                        "bquery_normalized": bquery_normalized,
+                        "gap_research_question": research_question,
+                        "gap_topic": gap_topic,
+                    },
+                )
+                inserted += 1
+            except sqlite3.IntegrityError:
+                # Duplicate row (UNIQUE on run_id, gap_id, source_id, title) — skip.
+                pass
+
+    return inserted
+
+
+# ---------------------------------------------------------------------------
 # Gap context loader (reads runs.json)
 # ---------------------------------------------------------------------------
 
@@ -343,7 +490,21 @@ def ingest_pull_output(
     gap_filter: Optional[str] = None,
     repo_root: Optional[Path] = None,
 ) -> int:
-    """Walk *pull_root* and index all fetched article markdown files.
+    """Walk *pull_root* and index all article records (markdown files + JSON seeds).
+
+    Two passes are performed for each source directory:
+
+    1. **Markdown walk** — if ``<gap>/<source>/fetched/`` exists, index every
+       ``*.md`` file in it (EBSCO, JSTOR, Project MUSE).  pdf_path and md_path
+       are populated with repo-relative paths when the files exist on disk.
+
+    2. **Seed JSON walk** — if ``<gap>/<source>/fetched/`` does NOT exist (i.e.
+       a JSON-only source such as ProQuest), index article records directly from
+       ``*.json`` files in ``<gap>/<source>/``.  pdf_path and md_path are NULL.
+       Records with ``link_type == "provider_search"`` are skipped.
+
+    The two passes are mutually exclusive per source directory, so EBSCO .md
+    files always take priority over any JSON records for the same source.
 
     Parameters
     ----------
@@ -358,6 +519,9 @@ def ingest_pull_output(
         Override for ``data/runs.json`` (defaults to project-root location).
     gap_filter:
         When set, only index the named gap_id (for incremental / targeted runs).
+    repo_root:
+        Override the project root used for computing relative file paths
+        (defaults to the repo root inferred from this module's location).
 
     Returns the number of new rows inserted (existing rows silently skipped via
     the UNIQUE constraint).
@@ -397,10 +561,25 @@ def ingest_pull_output(
                 continue
 
             fetch_dir = src_dir / "fetched"
+
             if not fetch_dir.is_dir():
+                # No fetched/ subdirectory — this is a JSON-only source (e.g. ProQuest).
+                # Index article records directly from the seed JSON files.
+                inserted += _ingest_seed_json(
+                    conn,
+                    src_dir,
+                    run_id=run_id,
+                    gap_id=gap_id,
+                    source_id=source_id,
+                    research_question=research_question,
+                    gap_topic=gap_topic,
+                )
                 continue
 
-            # Collect seed context (bquery fields) from JSON files in this dir
+            # --- Markdown walk (EBSCO, JSTOR, Project MUSE, etc.) ---
+
+            # Collect seed context (bquery fields) from JSON files in this dir.
+            # Only used for the markdown pass; JSON-only sources embed their own context.
             seed_ctx = _extract_seed_context(src_dir)
             bquery_original   = seed_ctx.get("bquery_original")
             bquery_normalized = seed_ctx.get("bquery_normalized")

@@ -1,3 +1,17 @@
+[2026-05-02] - Article index extended to ingest JSON seed records
+
+Problem
+ProQuest newspaper records (2,248 records across 45 JSON files) were invisible to the article indexer. `ingest_pull_output` only walked `fetched/*.md` files; ProQuest sources write JSON directly to `<gap>/<source>/*.json` with no `fetched/` subdirectory. Running `--sources` on the index showed only `ebsco_api` (7,783 rows).
+
+Root Cause
+The ingest loop skipped source directories without a `fetched/` subdirectory (`if not fetch_dir.is_dir(): continue`). No JSON article ingestion path existed.
+
+Solution
+Added `_ingest_seed_json(conn, src_dir, ...)` in `adapters/article_index.py`. The function reads `*.json` files from a source directory, skips records with `link_type == "provider_search"` (EBSCO search-parameter records), and inserts real article records with `pdf_path = NULL` and `md_path = NULL`. `ingest_pull_output` now calls this function when a source directory has no `fetched/` subdirectory; the two passes are mutually exclusive so .md files always take priority over JSON for the same source. The ProQuest `query` field is stored as `bquery_original` when no dedicated bquery fields are present. 9 new tests added covering: mixed md+JSON ingest, idempotency, .md precedence, empty pub_date tolerance, 50-record batch, source_id appearance, provider_search skip, and query→bquery_original fallback.
+
+Notes
+Live ingest on run_27f86e44394442 added 2,043 rows (7,783 → 9,826 total). ProQuest sources in index: proquest_international_newsstream (906), proquest_us_newsstream (759), proquest_historical_newspapers (378). All pdf_path values for JSON-sourced rows are NULL by design — ProQuest TOS prohibits systematic PDF downloading; metadata-only is the current deliverable.
+
 [2026-05-02] - Two-way Telegram bridge with command dispatch
 
 Problem

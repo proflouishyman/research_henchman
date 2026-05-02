@@ -519,3 +519,265 @@ class TestZeroPdfGaps:
         gap_ids = {r["gap_id"] for r in zero_pdf_gaps}
         # AUTO-01-G1 has Article Beta with a PDF
         assert "AUTO-01-G1" not in gap_ids
+
+
+# ---------------------------------------------------------------------------
+# Helpers for ProQuest JSON tests
+# ---------------------------------------------------------------------------
+
+def _make_proquest_record(
+    title: str,
+    *,
+    url: str = "",
+    authors: str = "",
+    journal: str = "",
+    pub_date: str = "",
+    abstract: str = "",
+    query: str = "",
+    gap_id: str = "AUTO-01-G1",
+) -> dict:
+    """Build a minimal ProQuest seed record matching write_records() output."""
+    return {
+        "title": title,
+        "url": url or f"https://www.proquest.com/docview/{hash(title)}",
+        "pdf_url": "",
+        "abstract": abstract,
+        "authors": authors,
+        "journal": journal,
+        "pub_date": pub_date,
+        "doi": "",
+        "query": query or "(\"e-commerce\" OR \"online shopping\") AND (\"Alibaba\")",
+        "gap_id": gap_id,
+        "quality_label": "seed",
+        "quality_rank": "20",
+        "source": "proquest_international_newsstream_proquest_html",
+        "link_type": "newspaper_record",
+        "source_type": "Trade Journal",
+    }
+
+
+def _write_proquest_json(path: Path, records: list) -> None:
+    """Write a ProQuest seed JSON file (list of record dicts)."""
+    path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Fixture: mixed tree with both EBSCO .md and ProQuest JSON sources
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mixed_pull_root(tmp_path) -> Path:
+    """Pull root with one EBSCO .md source + one ProQuest JSON source."""
+    root = tmp_path / "pull_outputs" / "run_mixed"
+
+    # --- Gap 1 / ebsco_api (has fetched/ subdir — markdown path) ---
+    ebsco_dir = root / "AUTO-01-G1" / "ebsco_api"
+    ebsco_fetched = ebsco_dir / "fetched"
+    ebsco_fetched.mkdir(parents=True)
+
+    _write_seed_json(
+        ebsco_dir / "seed.json",
+        query="everything+store",
+        bquery_original="everything store",
+    )
+    _write_md(
+        ebsco_fetched / "EBSCO_Article.md",
+        title="EBSCO Article One",
+        authors="Smith, J.",
+        journal="Commerce Journal, 2020",
+        abstract="EBSCO abstract about retail.",
+    )
+
+    # --- Gap 1 / proquest_international_newsstream (no fetched/ — JSON-only path) ---
+    pq_dir = root / "AUTO-01-G1" / "proquest_international_newsstream"
+    pq_dir.mkdir(parents=True)
+
+    _write_proquest_json(
+        pq_dir / "ecommerce_china.json",
+        [_make_proquest_record(
+            "ProQuest Article One",
+            authors="Liu, N.",
+            journal="FT.com; London",
+            pub_date="Jan 14, 2020",
+            abstract="ProQuest abstract about Chinese e-commerce.",
+            query="(\"e-commerce\") AND (\"China\")",
+        )],
+    )
+
+    return root
+
+
+@pytest.fixture
+def mixed_runs_json(tmp_path) -> Path:
+    """Minimal runs.json for the mixed fixture."""
+    data = {
+        "run_mixed": {
+            "run_id": "run_mixed",
+            "gap_map": {
+                "gaps": [
+                    {
+                        "gap_id": "AUTO-01-G1",
+                        "chapter": "Chapter 1",
+                        "claim_text": "E-commerce in China.",
+                    },
+                ]
+            },
+        }
+    }
+    path = tmp_path / "runs.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Tests: JSON seed ingestion
+# ---------------------------------------------------------------------------
+
+class TestIngestSeedJson:
+
+    def test_both_md_and_json_rows_present_after_ingest(self, db, mixed_pull_root, mixed_runs_json):
+        """After ingest, the EBSCO .md article and the ProQuest JSON article are both indexed."""
+        inserted = ingest_pull_output(
+            db, mixed_pull_root, "run_mixed", runs_json_path=mixed_runs_json
+        )
+        assert inserted == 2
+        titles = {r[0] for r in db.execute("SELECT title FROM articles").fetchall()}
+        assert "EBSCO Article One" in titles
+        assert "ProQuest Article One" in titles
+
+    def test_proquest_pdf_path_and_md_path_are_null(self, db, mixed_pull_root, mixed_runs_json):
+        """ProQuest JSON records have no pdf_path or md_path (metadata-only)."""
+        ingest_pull_output(db, mixed_pull_root, "run_mixed", runs_json_path=mixed_runs_json)
+        row = db.execute(
+            "SELECT pdf_path, md_path FROM articles WHERE title = 'ProQuest Article One'"
+        ).fetchone()
+        assert row is not None
+        assert row["pdf_path"] is None
+        assert row["md_path"] is None
+
+    def test_ingest_is_idempotent_with_json_source(self, db, mixed_pull_root, mixed_runs_json):
+        """Re-running ingest on a JSON source adds zero duplicate rows."""
+        first = ingest_pull_output(db, mixed_pull_root, "run_mixed", runs_json_path=mixed_runs_json)
+        second = ingest_pull_output(db, mixed_pull_root, "run_mixed", runs_json_path=mixed_runs_json)
+        assert first == 2
+        assert second == 0
+        total = db.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+        assert total == 2
+
+    def test_md_takes_precedence_over_json_for_same_source(self, tmp_path):
+        """When a source dir has a fetched/ subdir, the JSON walk is skipped entirely
+        even if JSON files are present alongside it — the .md data is canonical."""
+        root = tmp_path / "pull_outputs" / "run_ebsco_only"
+        ebsco_dir = root / "AUTO-01-G1" / "ebsco_api"
+        fetched = ebsco_dir / "fetched"
+        fetched.mkdir(parents=True)
+
+        # Write the EBSCO seed JSON (provider_search type — should never appear as row)
+        (ebsco_dir / "seed.json").write_text(
+            json.dumps([{
+                "title": "ebsco_api search results",
+                "url": "https://search.ebscohost.com/?bquery=test",
+                "link_type": "provider_search",
+                "quality_label": "seed",
+                "bquery_original": "test query",
+            }]),
+            encoding="utf-8",
+        )
+        # Write the .md article
+        _write_md(
+            fetched / "Canonical_Article.md",
+            title="Canonical Article",
+            authors="Doe, J.",
+            journal="Journal, 2021",
+            abstract="Canonical content.",
+            doi="10.9999/canonical",
+        )
+
+        db = open_index(tmp_path / "test_prec.sqlite")
+        inserted = ingest_pull_output(db, root, "run_ebsco_only")
+        # Only 1 row — the EBSCO seed's "provider_search" record must not appear
+        assert inserted == 1
+        row = db.execute("SELECT title, md_path FROM articles").fetchone()
+        assert row["title"] == "Canonical Article"
+        assert row["md_path"] is not None  # came from the .md walk, not JSON
+
+    def test_empty_pub_date_does_not_break_indexing(self, tmp_path):
+        """ProQuest records often have empty pub_date — must not cause errors."""
+        root = tmp_path / "pull_outputs" / "run_nodates"
+        pq_dir = root / "AUTO-01-G1" / "proquest_international_newsstream"
+        pq_dir.mkdir(parents=True)
+
+        _write_proquest_json(
+            pq_dir / "query.json",
+            [_make_proquest_record(
+                "Article With No Date",
+                pub_date="",  # explicitly empty
+            )],
+        )
+
+        db = open_index(tmp_path / "test_nodates.sqlite")
+        inserted = ingest_pull_output(db, root, "run_nodates")
+        assert inserted == 1
+        row = db.execute("SELECT pub_date FROM articles WHERE title = 'Article With No Date'").fetchone()
+        assert row is not None
+        assert row["pub_date"] is None
+
+    def test_json_list_of_50_records_all_ingested(self, tmp_path):
+        """A JSON file with 50 records (matching real ProQuest output) all get indexed."""
+        root = tmp_path / "pull_outputs" / "run_50recs"
+        pq_dir = root / "AUTO-01-G1" / "proquest_international_newsstream"
+        pq_dir.mkdir(parents=True)
+
+        records = [
+            _make_proquest_record(f"ProQuest Article {i:03d}")
+            for i in range(50)
+        ]
+        _write_proquest_json(pq_dir / "batch_query.json", records)
+
+        db = open_index(tmp_path / "test_50.sqlite")
+        inserted = ingest_pull_output(db, root, "run_50recs")
+        assert inserted == 50
+        total = db.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+        assert total == 50
+
+    def test_sources_query_includes_proquest_source_ids(self, db, mixed_pull_root, mixed_runs_json):
+        """After ingest, a GROUP BY source_id query returns proquest_* source IDs."""
+        ingest_pull_output(db, mixed_pull_root, "run_mixed", runs_json_path=mixed_runs_json)
+        sources = {r[0] for r in db.execute("SELECT source_id FROM articles GROUP BY source_id").fetchall()}
+        assert "proquest_international_newsstream" in sources
+        assert "ebsco_api" in sources
+
+    def test_provider_search_records_are_never_indexed(self, tmp_path):
+        """Records with link_type == 'provider_search' must be silently skipped."""
+        root = tmp_path / "pull_outputs" / "run_skiptest"
+        pq_dir = root / "AUTO-01-G1" / "proquest_international_newsstream"
+        pq_dir.mkdir(parents=True)
+
+        # Mix of one provider_search record and one real article
+        records = [
+            {
+                "title": "ebsco_api search results",
+                "url": "https://search.ebscohost.com/",
+                "link_type": "provider_search",
+                "quality_label": "seed",
+            },
+            _make_proquest_record("Real Article Only"),
+        ]
+        _write_proquest_json(pq_dir / "mixed.json", records)
+
+        db = open_index(tmp_path / "test_skip.sqlite")
+        inserted = ingest_pull_output(db, root, "run_skiptest")
+        assert inserted == 1
+        row = db.execute("SELECT title FROM articles").fetchone()
+        assert row["title"] == "Real Article Only"
+
+    def test_query_field_stored_as_bquery_original_for_proquest(self, db, mixed_pull_root, mixed_runs_json):
+        """ProQuest records have no bquery_original field; the 'query' field should
+        be stored as bquery_original so search context is preserved."""
+        ingest_pull_output(db, mixed_pull_root, "run_mixed", runs_json_path=mixed_runs_json)
+        row = db.execute(
+            "SELECT bquery_original FROM articles WHERE source_id = 'proquest_international_newsstream'"
+        ).fetchone()
+        assert row is not None
+        assert row["bquery_original"] is not None
+        assert "e-commerce" in row["bquery_original"] or "China" in row["bquery_original"]

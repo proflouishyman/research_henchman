@@ -4,12 +4,13 @@ This is a *separate* table from ``articles`` and from the legacy
 ``layers/analysis.py`` ``AUTO-NN-GN`` heuristic detector. It models gaps as
 nodes in a tree (top-level claim → sub-claims → sub-sub-claims) so that the
 multi-pass detector waves (Pass A intro-promise, Pass B explicit TODO,
-Pass C/D/E in later waves) can each contribute their own subtrees without
-clobbering each other.
+Pass F company-profile, Pass C/D/E in later waves) can each contribute
+their own subtrees without clobbering each other.
 
 ID conventions (v1):
   - Pass A intro-promise top-level nodes: ``IP1``, ``IP2``, …
   - Pass B explicit-TODO top-level nodes: ``TODO1``, ``TODO2``, …
+  - Pass F company-profile top-level nodes: ``CP1``, ``CP2``, …
   - Children added in v3 will use letter suffixes (``IP1.A``, ``IP1.A.1``).
   - The ``AUTO-NN-GN`` prefix is reserved for the legacy detector and must
     never be reused here.
@@ -249,5 +250,47 @@ def update_research_question(
     conn.execute(
         "UPDATE gap_tree SET research_question = ? WHERE gap_id = ?",
         (research_question, gap_id),
+    )
+    conn.commit()
+
+
+def fetch_gap_type(conn: sqlite3.Connection, gap_id: str) -> Optional[str]:
+    """Return the gap_type for a given gap_id, or None if missing."""
+    row = conn.execute(
+        "SELECT gap_type FROM gap_tree WHERE gap_id = ?",
+        (gap_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return row[0]
+
+
+def update_gap_classification(
+    conn: sqlite3.Connection,
+    gap_id: str,
+    *,
+    gap_type: str,
+    tier: int,
+    status: Optional[str] = None,
+    rationale: Optional[str] = None,
+) -> None:
+    """Reclassify an existing row's gap_type/tier (and optionally status/rationale).
+
+    Used by Pass B's editorial-note classifier to demote bracketed
+    ``editorial_todo`` items out of the ``research_gap`` lane after the
+    initial regex pass has already inserted them. No-op if row missing.
+    """
+    sets = ["gap_type = ?", "tier = ?"]
+    params: List[Any] = [gap_type, int(tier)]
+    if status is not None:
+        sets.append("status = ?")
+        params.append(status)
+    if rationale is not None:
+        sets.append("rationale = ?")
+        params.append(rationale)
+    params.append(gap_id)
+    conn.execute(
+        f"UPDATE gap_tree SET {', '.join(sets)} WHERE gap_id = ?",
+        params,
     )
     conn.commit()

@@ -1,3 +1,30 @@
+[2026-05-03] - Pass A/F detector quality fixes + --include-covered flag
+
+Problem
+After Wave 1 shipped (commit 7086523), three quality issues blocked progress to Wave 2 (pulls):
+
+1. Pass A under-extracted: qwen3.6:35b on the 12K-char intro prompt hung indefinitely (>12 min, never returned). Even when it did return, only 5 vague claim-sentences were produced instead of the 20-40 specific topical promises the spec called for.
+2. Pass F missed every user-named target (Mercado Libre, Shein, Temu, Flipkart, Alibaba, Tmall, Alipay) because (a) the legacy text-based ``_split_sections`` returns 26 sections vs 94 real docx headings — entity-dedicated empty headings like "Mercado Libre" were invisible to the section walker; (b) the "no-dedicated-section" detection path required ``in_intro=True`` which excluded all body-only protagonists (Flipkart 19 mentions, Alibaba 47 mentions, both not in intro).
+3. The user later clarified that even well-developed main-character sections (FedEx 994w, UPS 1157w, Wal-Mart 1442w, Amazon, eBay, Netflix) deserve supplementary 10-K / trade-press / scholarly-history pulls — but the detector was hard-coded to skip sections >800 words.
+
+Root Cause
+1. Long-input prompts on qwen3.6:35b: the model is excellent for short-prompt analytical scoring (10s/source) but stalls indefinitely on multi-thousand-token listing prompts. Wrong tool for "list everything" extraction tasks.
+2. Legacy ``layers.analysis._split_sections`` uses regex over flattened text and only catches ~28% of the manuscript's real headings; entity-dedicated empty subsections never make it into its output.
+3. The original ``in_intro`` requirement was a sensible noise-filter for two-character entities (e.g. "AI") but mis-fired on companies the manuscript only develops in body chapters.
+
+Solution
+Three surgical patches to ``layers/gap_detector.py`` and ``scripts/build_gap_tree.py``:
+
+1. Pass A primary model switched from qwen3.6:35b to llama3.1:8b. Loud lesson from today's iteration: qwen3.6 stalls on long-input listing tasks. llama3.1:8b returned 28 high-quality intro promises in seconds. The CLI ``--model`` arg can still override per-pass.
+2. New ``_docx_heading_sections()`` helper reads the docx via python-docx using paragraph-style metadata (Heading 1/2/3/Title) as the truth source — returns 94 sections vs 26. ``_find_dedicated_section_docx()`` is used as a fallback inside ``detect_pass_f`` when the legacy splitter misses an entity heading. Legacy splitter unchanged for the rest of the codebase.
+3. Body-only protagonists are now eligible. New constant ``MAIN_CHARACTER_BODY_FLOOR = 10``: an entity with >= 10 body mentions qualifies even without an intro reference. Catches Flipkart, Alibaba, Bezos.
+4. New ``--include-covered`` CLI flag on ``build_gap_tree.py`` plus an ``include_covered`` kwarg on ``detect_pass_f``. When set, well-developed (>800 word) main-character sections also emit CP gaps with ``rationale="supplementary (covered)"`` and ``evidence_target=60``.
+
+Validated end-to-end. Live counts after the fix: Pass A 28 IP gaps; Pass B 7 research_gap + 14 editorial_todo (auto-rejected by classifier); Pass F 39 CP gaps with --include-covered (26 tier-1, 13 tier-2). All user-named targets present.
+
+Notes
+The qwen3.6:35b-vs-llama3.1:8b split is now official: long-input listing tasks → llama3.1:8b; structured per-item analytical scoring → qwen3.6:35b. The slow agent-loop iteration where qwen3.6 hung for 12+ min on the long Pass A prompt was a clean falsification of the "always use the bigger model" intuition.
+
 [2026-05-03] - Gap-tree schema + Pass A/B detector (Wave 1 of detector overhaul)
 
 Problem

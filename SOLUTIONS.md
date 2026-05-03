@@ -1,3 +1,90 @@
+[2026-05-03] - Gap-tree schema + Pass A/B detector (Wave 1 of detector overhaul)
+
+Problem
+The legacy paragraph-level detector in layers/analysis.py emits 185
+``AUTO-NN-G1`` gaps with significant redundancy (the same claim surfaces
+multiple times because every paragraph mentioning it gets analyzed
+independently). It also misses two structural classes of gaps a manuscript-
+aware detector should catch: (a) intro-promise mismatches — topics the
+author flags in the Introduction but never develops in a later chapter,
+and (b) the author's own bracketed TODOs scattered through the body
+(``[need section on X]``). Both are tier-1 work items the legacy detector
+either drowns out or omits entirely.
+
+Root Cause
+Single-pass paragraph-level analysis cannot reason about whole-manuscript
+structure. The Introduction-vs-chapter coverage check is a graph problem
+(promise → matched chapter → development depth), and bracketed TODOs are
+explicit author intent that should never be diluted into the same heap as
+implicit hedge-language gaps.
+
+Solution
+Built a separate ``gap_tree`` SQLite table (in the same
+``data/article_index.sqlite`` DB as the article index) that models gaps
+as a tree, lets multiple detector passes contribute their own subtrees
+without colliding, and assigns a tier + evidence_target per node.
+
+Components shipped:
+  * ``adapters/gap_tree.py`` — schema (gap_id PK, parent_gap_id self-FK,
+    depth, tier, gap_type, chapter, heading_path, claim_text,
+    research_question, source_locator, evidence_target, detector_pass,
+    status, rationale), plus insert_node / list_nodes / count_by_pass /
+    gap_exists / fetch_research_question / update_research_question
+    helpers. ID prefixes: ``IPn`` for Pass A, ``TODOn`` for Pass B;
+    ``AUTO-`` is reserved for the legacy detector so the two never collide.
+  * ``layers/gap_detector.py`` — ``detect_pass_a`` (LLM-driven intro-
+    promise extraction → deterministic heading pairing → tier-1 if
+    matched section <80 words, tier-2 if 80-300, skip if >300) and
+    ``detect_pass_b`` (regex over body + section headings for ``[...]``
+    TODOs, single-LLM-call research_question rewrite per TODO; resume-safe
+    via the DB).
+  * ``scripts/build_gap_tree.py`` — CLI mirroring score_relevance.py
+    style. ``--pass A,B`` selects passes, ``--review-file`` writes a
+    human-readable markdown file the user edits to approve/reject each
+    gap. Resume-safe: existing gap_id rows are skipped.
+  * Tests: ``tests/test_gap_tree.py`` (13 cases — schema, insert/list,
+    count_by_pass, resume helpers) and ``tests/test_gap_detector.py``
+    (8 cases including a stubbed-LLM Pass A round-trip and a Pass B
+    resume scenario).
+
+Live validation against ``manuscript.docx``:
+
+  Pass A: 5 IP gaps (each paired with a real section heading; 3 mapped to
+          the manuscript's pre-introduction "Manuscript Body" pseudo-heading
+          because the LLM extracted promises about premises stated in the
+          intro itself rather than future-chapter promises — see Notes).
+  Pass B: 21 TODO gaps (out of 22 raw bracket annotations the manuscript
+          contains).
+
+How to run:
+
+  python3 scripts/build_gap_tree.py --pass A
+  python3 scripts/build_gap_tree.py --pass B
+  python3 scripts/build_gap_tree.py --pass A,B
+  python3 scripts/build_gap_tree.py --review-file data/intro_promises_review.md
+
+Notes
+- LLM-quality concern (Pass A): qwen3.6:35b-a3b-mlx-bf16 produced only 5
+  intro promises against a 2985-word intro; the spec expected 15-25. The
+  prompt may need tightening (current prompt is too permissive about
+  "thesis claims" — the model returns broad framing statements that
+  describe what the intro itself asserts rather than what later chapters
+  will cover). Surface for review before Pass C is built.
+- Pass B's bracket regex was extended after first live run from
+  ``[A-Za-z]...`` to ``\[\s*[A-Za-z]...`` because the manuscript has
+  several TODOs prefixed with leading whitespace
+  (``[       MORE ON THIS PLEASE]``). It also now scans section *headings*
+  not just bodies, because ``_split_sections`` promotes ALLCAPS bracketed
+  lines (e.g. ``[HOW DID IT GET TO EBAY]``) to be section headings, which
+  would otherwise hide them from a body-only scan.
+- ``layers/analysis.py`` was NOT modified per Wave 1 scope. The legacy
+  ``AUTO-NN-G1`` detector continues to populate the existing ``articles``
+  table; the new gap_tree is fully separate.
+- Bracketed TODOs that would be filtered as "citations" are short
+  (≤4 words ending in a 4-digit year), so genuine TODOs like
+  ``[Clinton refuses to use Taft-Hartley]`` (5 words, no year) survive
+  the filter.
+
 [2026-05-02] - HathiTrust full-text book coverage puller
 
 Problem

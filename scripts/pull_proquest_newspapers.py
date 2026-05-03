@@ -342,7 +342,15 @@ def search_proquest(page: Any, ezproxy_url: str, query: str) -> List[Dict[str, A
         if ui_state.get("has_basic"):
             page.fill("#searchTerm", query)
             page.wait_for_timeout(400)
-            page.press("#searchTerm", "Enter")
+            # Submit via the form's own .submit() — pressing Enter inside
+            # `#searchTerm` works on International Newsstream but is a no-op
+            # on US Newsstream (the input doesn't bubble Enter to the form).
+            # Calling form.submit() works on both. Discovered 2026-05-03
+            # while smoke-testing Wave 2 dispatch.
+            page.evaluate("""() => {
+                const f = document.getElementById('searchForm');
+                if (f) f.submit();
+            }""")
         elif ui_state.get("has_advanced"):
             # Advanced Search has a hidden Search button (cookie banner often
             # covers it). Fill the visible #queryTermField and submit the

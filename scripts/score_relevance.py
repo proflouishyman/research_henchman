@@ -433,6 +433,10 @@ def main() -> int:
                         "Default llama3.1:8b. Set to '' to disable repair.")
     p.add_argument("--max-gaps", type=int, default=None,
                    help="Process at most this many gaps (for staged runs).")
+    p.add_argument("--gap-prefix", default="",
+                   help="Comma-separated gap_id prefixes to scope scoring "
+                        "(e.g. 'CP,IP,TODO' scopes to gap_tree-detector rows "
+                        "and skips legacy AUTO-NN-G1 rows).")
     args = p.parse_args()
 
     conn = sqlite3.connect(args.db)
@@ -460,6 +464,13 @@ def main() -> int:
             "SELECT DISTINCT gap_id FROM articles "
             "WHERE relevance_score IS NULL ORDER BY gap_id"
         ).fetchall()]
+    if args.gap_prefix:
+        # Filter to gap_ids starting with any of the comma-separated prefixes.
+        # E.g. --gap-prefix CP,IP,TODO scopes to the new gap_tree rows and
+        # skips the legacy AUTO- detector output.
+        prefixes = tuple(p.strip() for p in args.gap_prefix.split(",") if p.strip())
+        if prefixes:
+            gap_ids = [g for g in gap_ids if g.startswith(prefixes)]
     if args.max_gaps:
         gap_ids = gap_ids[:args.max_gaps]
 

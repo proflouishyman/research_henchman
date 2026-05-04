@@ -42,6 +42,48 @@ Provide a contract-enforced research pipeline where the user selects a manuscrip
 - `POST /api/orchestrator/signin/test`
 - `POST /api/orchestrator/signin/open`
 
+## Library mode (writing companion)
+
+A second top-level UI mode (`/write/...`) lets the user browse the
+already-pulled corpus by gap, with per-gap dossiers rendered live from
+SQLite (no markdown intermediate). The sibling `/runs` mode is unchanged.
+
+### API endpoints — `routers/library.py`
+- `GET /api/library/index` — chapter-grouped gap list + corpus stats.
+  Returns `{chapters: [{slug, title, gap_count, gaps: [GapTreeRow]}], corpus_total_rows, corpus_scored_rows, sources}`.
+- `GET /api/library/gaps` — flat gap list with article counts joined.
+  Query params: `chapter`, `gap_type` (CSV), `tier`, `status`,
+  `detector_pass`, `parent_gap_id` (`<root>` finds top-level rows).
+- `GET /api/library/gaps/{gap_id}` — single gap_tree row + counts.
+- `GET /api/library/gaps/{gap_id}/dossier` — structured dossier
+  rendered by `layers.dossier_render.assemble_dossier`. Shape:
+  `{gap, summary: {total_rows, consolidated, tier_counts}, tiers: {"3"|"2"|"1"|"0"|"unscored": [DossierEntry]}}`.
+
+### Shared dossier-render layer — `layers/dossier_render.py`
+The markdown writer (`scripts/generate_dossiers.py`) and the new API
+endpoint share `assemble_dossier(conn, gap_id) -> dict`. The shape
+returned is identical for both surfaces; the markdown writer is now a
+thin wrapper that consumes the same helpers (`norm_title`,
+`dedupe_within_gap`, `pick_primary`, `build_cross_gap_index`,
+`absolutize_url`, `render_url_or_pdf`).
+
+### Frontend — `/write` route tree
+- `/write` → redirect to `/write/gaps`
+- `/write/gaps` → chapter-grouped gap list (sidebar = chapters; main =
+  one section per chapter with gap rows showing gap_id, gap_type,
+  claim, mini tier-counts bar `[3:5 · 2:24 · 1:20 · 0:46]`).
+- `/write/gaps/:gapId` → live dossier view: header (claim, research
+  question, evidence target, summary counts), filter strip (source
+  toggles · score floor · has-PDF only), four collapsible tier
+  sections (tier 3/2 default-open, tier 1/0 collapsed). Each entry is
+  a `<SourceCard>` with the relevance WHY in a prominent callout, an
+  abstract preview clipped to 3 lines, hover popover with the full WHY
+  + abstract, one-click Open (PDF on disk → `/api/orchestrator/files`,
+  URL → new tab), and a Cite dropdown that copies Chicago / `(Last
+  Year)` / link to clipboard. Cards are draggable — dataTransfer
+  carries all three citation forms under different MIME types so the
+  user can drop into Word/Pages and paste any form.
+
 ## Removed MVP concepts
 - `Intent` endpoints and intent state are removed.
 - Manual strategy-preview endpoint is removed.

@@ -45,6 +45,7 @@ from layers import analyze_manuscript, reflect_on_gaps
 from layers.pull import SOURCE_REGISTRY, build_source_availability, source_capability_catalog
 from artifact_export import resolve_gap_folder, resolve_bundle_root
 from pipeline import run_orchestration
+from routers.library import router as library_router
 from store import OrchestratorStore, now_utc
 
 
@@ -69,6 +70,9 @@ app.add_middleware(
 _ui_dir = FRONTEND_DIST if FRONTEND_DIST.exists() else STATIC_DIR
 app.mount("/assets", StaticFiles(directory=str(_ui_dir / "assets") if (FRONTEND_DIST / "assets").exists() else str(STATIC_DIR)), name="assets")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Library / writing-companion API routes (mode=write in the UI).
+app.include_router(library_router)
 
 RUN_CREATE_LOCK = threading.Lock()
 ACTIVE_RUN_STATUSES = {

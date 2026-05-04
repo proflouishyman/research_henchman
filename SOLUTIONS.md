@@ -1,3 +1,94 @@
+[2026-05-02] - Writing-companion UI MVP — dossier browser
+
+Problem
+After Wave 2 finished pulling and scoring 88 gaps, the user could only
+read dossiers as static markdown files written by
+``scripts/generate_dossiers.py``. The two non-negotiables were
+"everything must be in DB" (so dossiers stay in sync as scoring
+re-runs) and the preview UX: see the LLM's WHY + the source's abstract
+*before* incurring the click to open the PDF / URL.
+
+Root Cause
+``scripts/generate_dossiers.py`` owned both the data-assembly logic
+(``norm_title``, ``dedupe_within_gap``, ``pick_primary``,
+``build_cross_gap_index``, ``absolutize_url``) and the markdown
+formatting in one module, so any second consumer (an API, a different
+renderer) would have had to re-implement the assembly and would drift
+out of step. The frontend also lived in a single hard-coded ``/runs``
+tree with no second-mode entry point.
+
+Solution
+Three pieces shipped together as Wave 1 of the writing companion:
+
+  * ``layers/dossier_render.py`` — extracted assembly layer. Public API
+    promotes the helpers that used to be private to the script
+    (``norm_title``, ``dedupe_within_gap``, ``pick_primary``,
+    ``build_cross_gap_index``, ``absolutize_url``,
+    ``render_url_or_pdf``) and adds the high-level
+    ``assemble_dossier(conn, gap_id, *, cross_gap_idx=None) -> dict``.
+    The dossier dict has a stable schema documented in the function
+    docstring and mirrored in ``contracts.LibraryDossierOut``. Markdown
+    writer is now a thin wrapper that imports these helpers — no
+    duplicated logic. Round-trip verified: regenerated CP31 markdown
+    after the refactor diffs zero against the checked-in file.
+
+  * ``routers/library.py`` — new FastAPI router under ``/api/library/``.
+    Four endpoints: ``GET /index`` (chapter-grouped sidebar payload),
+    ``GET /gaps`` (flat list with chapter/gap_type/tier/status filters
+    + article counts joined), ``GET /gaps/{gap_id}`` (single row +
+    counts), ``GET /gaps/{gap_id}/dossier`` (structured dossier per
+    ``assemble_dossier``). Mounted from main.py via include_router. New
+    Pydantic models in ``contracts.py`` document the wire shape.
+    Article counts are computed in one ``GROUP BY gap_id, score`` pass
+    so listing all 88 gaps does not issue an N+1 query.
+
+  * Frontend — ``/write/...`` route tree built on react-router-dom.
+    TopBar gains a Runs/Write mode toggle. ``/write/gaps`` shows a
+    chapter-grouped gap list with a mini tier-counts bar
+    (``[3:5 · 2:24 · 1:20 · 0:46]``). ``/write/gaps/:gapId`` renders
+    the dossier live: header (claim + research_question + summary
+    counts), filter strip (source toggles · score floor · has-PDF
+    only), four collapsible tier sections. Each ``<SourceCard>`` puts
+    the LLM's WHY in a prominent amber callout block, the abstract
+    preview clipped to 3 lines (with "more" expander), a one-click
+    Open (PDF → ``/api/orchestrator/files``, URL → new tab), and a
+    Cite dropdown that copies Chicago / ``(Last Year)`` / link to
+    clipboard. Cards are draggable: ``dataTransfer`` carries all three
+    citation forms under different MIME types
+    (``text/plain`` = Chicago, ``text/x-citation-short`` = short,
+    ``text/uri-list`` = pdf path or URL) so dropping into Word/Pages
+    pastes the correct form. A 300 ms hover side-popover surfaces the
+    full untruncated WHY + abstract — this is the user's
+    "preview before clicking" non-negotiable.
+
+Live validation: ``GET /api/library/gaps/CP31/dossier`` returns the
+expected 5 tier-3 / 24 tier-2 / 20 tier-1 / 46 tier-0 entries with
+absolutized HathiTrust URLs and full WHY text. ``GET /api/library/index``
+returns 17 chapters and the same corpus_total_rows the markdown
+``INDEX.md`` reports. The markdown generator is a one-line behavior
+change (now imports from layers.dossier_render) and produces
+byte-identical output. ``frontend/dist`` builds clean (412 KB JS,
+27 KB CSS).
+
+Tests: ``tests/test_dossier_render.py`` (8 cases — pure helpers + a
+fixture-DB round-trip on ``assemble_dossier``) and
+``tests/test_library_api.py`` (8 cases — TestClient against an
+in-memory fixture DB exercising all four endpoints, including
+gap_type CSV filter and the merged-source / cross-gap-refs path).
+Full backend suite: 332 → 348 passing.
+
+Notes
+- Cross-gap refs filter (score>=1 only) intentionally excludes tier-0
+  noise so the cross-gap chip on a card shows real overlap, not
+  shared false positives.
+- Frontend ``library_api.ts`` is a separate module from ``api.ts`` so
+  changes to the orchestrator API surface don't ripple into write-mode
+  callers.
+- Out of scope this wave (week 2): the manuscript reader (.docx
+  overlay), the corpus search page, the characters dashboard, the
+  coverage matrix, and user-facing marks/starring. Wired the store
+  with TODOs so adding marks is a single-slice change.
+
 [2026-05-03] - Wave 2: SEC EDGAR + gap-type-aware pulling
 
 Problem

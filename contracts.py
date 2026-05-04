@@ -336,6 +336,108 @@ class SignInOpenInput(BaseModel):
     urls: List[str] = Field(default_factory=list)
 
 
+# Library / Writing-companion API contracts
+#
+# These mirror the dict shapes returned by ``layers.dossier_render`` and the
+# ``/api/library/*`` FastAPI routes. They exist so that frontend type
+# generation has a stable Pydantic model to point at — the route handlers
+# may still emit the dict directly for performance, but any contract change
+# must update the model below.
+
+
+class GapTreeRowOut(BaseModel):
+    """One ``gap_tree`` row, with article counts joined for the gap browser."""
+
+    gap_id: str
+    parent_gap_id: Optional[str] = None
+    depth: int = 0
+    tier: Optional[int] = None
+    gap_type: str = ""
+    chapter: str = ""
+    heading_path: str = ""
+    claim_text: str = ""
+    research_question: str = ""
+    source_locator: str = ""
+    evidence_target: int = 0
+    detector_pass: str = ""
+    status: str = ""
+    rationale: str = ""
+    created_at: str = ""
+    total_rows: int = 0
+    tier_counts: Dict[str, int] = Field(default_factory=dict)
+
+
+class LibraryGapsOut(BaseModel):
+    """Response shape for ``GET /api/library/gaps``."""
+
+    gaps: List[GapTreeRowOut] = Field(default_factory=list)
+
+
+class DossierEntryOut(BaseModel):
+    """One row inside a tier section of a gap dossier (API view)."""
+
+    id: int
+    title: str
+    authors: str = ""
+    pub_date: str = ""
+    journal: str = ""
+    abstract: str = ""
+    doi: str = ""
+    url: str = ""
+    pdf_path: str = ""
+    source_id: str = ""
+    also_in_sources: List[str] = Field(default_factory=list)
+    relevance_score: Optional[int] = None
+    relevance_why: str = ""
+    cross_gap_refs: List[str] = Field(default_factory=list)
+
+
+class DossierSummaryOut(BaseModel):
+    total_rows: int = 0
+    consolidated: int = 0
+    tier_counts: Dict[str, int] = Field(default_factory=dict)
+
+
+class GapHeaderOut(BaseModel):
+    gap_id: str
+    chapter: str = ""
+    claim_text: str = ""
+    research_question: str = ""
+    evidence_target: int = 0
+    tier: Optional[int] = None
+    gap_type: str = ""
+    status: str = ""
+    detector_pass: str = ""
+    rationale: str = ""
+    heading_path: str = ""
+
+
+class LibraryDossierOut(BaseModel):
+    """Response shape for ``GET /api/library/gaps/{gap_id}/dossier``."""
+
+    gap: GapHeaderOut
+    summary: DossierSummaryOut
+    tiers: Dict[str, List[DossierEntryOut]] = Field(default_factory=dict)
+
+
+class LibraryChapterOut(BaseModel):
+    """Per-chapter summary used by the sidebar grouped gap list."""
+
+    slug: str
+    title: str
+    gap_count: int = 0
+    gaps: List[GapTreeRowOut] = Field(default_factory=list)
+
+
+class LibraryIndexOut(BaseModel):
+    """Response shape for ``GET /api/library/index``."""
+
+    chapters: List[LibraryChapterOut] = Field(default_factory=list)
+    corpus_total_rows: int = 0
+    corpus_scored_rows: int = 0
+    sources: List[str] = Field(default_factory=list)
+
+
 T = TypeVar("T")
 
 

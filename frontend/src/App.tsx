@@ -1,8 +1,16 @@
-// Root application component — applies dark mode class and renders layout.
+// Root application component — applies dark mode class and renders router.
+//
+// Two top-level modes: /runs (existing pipeline tree) and /write (new
+// writing-companion library/dossier browser). The shared TopBar in each
+// mode lets the user flip between them.
 
 import { useEffect } from 'react'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { useUIStore } from './store/ui'
 import { Layout } from './components/layout/Layout'
+import { WriteShell } from './components/library/WriteShell'
+import { ChapterGroupedGapList } from './components/library/ChapterGroupedGapList'
+import { DossierView } from './components/library/DossierView'
 
 export default function App() {
   const { darkMode } = useUIStore()
@@ -16,5 +24,25 @@ export default function App() {
     }
   }, [darkMode])
 
-  return <Layout />
+  return (
+    <BrowserRouter>
+      <Routes>
+        {/* Default: keep existing /runs experience as the home view. */}
+        <Route path="/" element={<Navigate to="/runs" replace />} />
+
+        {/* Runs (legacy) tree — Layout owns the runs sidebar + pipeline. */}
+        <Route path="/runs/*" element={<Layout />} />
+
+        {/* Library / writing companion. */}
+        <Route path="/write" element={<WriteShell />}>
+          <Route index element={<Navigate to="gaps" replace />} />
+          <Route path="gaps" element={<ChapterGroupedGapList />} />
+          <Route path="gaps/:gapId" element={<DossierView />} />
+        </Route>
+
+        {/* Catch-all → runs. */}
+        <Route path="*" element={<Navigate to="/runs" replace />} />
+      </Routes>
+    </BrowserRouter>
+  )
 }

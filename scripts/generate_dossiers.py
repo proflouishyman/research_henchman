@@ -43,57 +43,41 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+# Allow running this script directly (``python3 scripts/generate_dossiers.py``)
+# by ensuring the repo root is on sys.path before importing project layers.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+# Reuse the shared dossier-render layer so the markdown writer, the API
+# endpoint, and any future surface produce the same per-gap structure.
+# Local re-imports preserve the script's existing public symbol names
+# (older callers may dot-into ``generate_dossiers.norm_title`` etc.).
+from layers.dossier_render import (
+    SOURCE_PRIORITY,
+    absolutize_url,
+    build_cross_gap_index,
+    chapter_slug,
+    dedupe_within_gap,
+    fetch_gap_rows,
+    norm_title,
+    pick_primary,
+    render_url_or_pdf,
+    src_label,
+)
+
 SCRIPT_DIR   = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_DB   = PROJECT_ROOT / "data/article_index.sqlite"
 DEFAULT_OUT  = PROJECT_ROOT / "data/dossiers"
-
-# Source priority for picking the "primary" copy when fuzzy-title dupes
-# exist within a gap. Lower number = higher priority. EBSCO comes first
-# because its records have abstracts and (when they exist) PDFs;
-# HathiTrust comes last because its OCR-driven hits dominate by volume
-# but its metadata is thinner.
-SOURCE_PRIORITY = {
-    "ebsco_api": 0,
-    "proquest_us_newsstream": 1,
-    "proquest_international_newsstream": 2,
-    "proquest_historical_newspapers": 3,
-    "hathitrust_fulltext": 4,
-}
 
 CORPUS_READING_MIN_GAPS  = 10  # title must appear in this many gaps to be corpus-wide
 CHAPTER_READING_MIN_GAPS = 3   # title must appear in this many gaps within a chapter
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Markdown-only helpers (formatting, escapes)
 # ---------------------------------------------------------------------------
-
-
-_NORM_RE = re.compile(r"[^a-z0-9 ]")
-
-
-def norm_title(t: Optional[str]) -> str:
-    """Normalize a title for fuzzy duplicate detection.
-
-    Lowercase, drop non-alphanumerics, collapse whitespace, truncate.
-    Two-letter+ titles only — empty / single-char results return ''."""
-    if not t:
-        return ""
-    s = _NORM_RE.sub(" ", t.lower())
-    s = re.sub(r"\s+", " ", s).strip()
-    return s[:200] if len(s) >= 4 else ""
-
-
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
-
-
-def chapter_slug(topic: Optional[str]) -> str:
-    """Slugify a chapter/topic string for use as a directory name."""
-    if not topic:
-        return "00_uncategorized"
-    s = _SLUG_RE.sub("_", topic.lower()).strip("_")
-    return s[:80] or "00_uncategorized"
 
 
 def md_escape(s: str) -> str:
@@ -101,136 +85,6 @@ def md_escape(s: str) -> str:
     if not s:
         return ""
     return s.replace("\n", " ").replace("|", "\\|").strip()
-
-
-def src_label(source_id: str) -> str:
-    """Render source_id more readably."""
-    return {
-        "ebsco_api":                          "EBSCO",
-        "proquest_us_newsstream":             "ProQuest US News",
-        "proquest_international_newsstream":  "ProQuest Intl News",
-        "proquest_historical_newspapers":     "ProQuest Historical",
-        "hathitrust_fulltext":                "HathiTrust",
-    }.get(source_id, source_id)
-
-
-def pick_primary(rows: List[sqlite3.Row]) -> Tuple[sqlite3.Row, List[sqlite3.Row]]:
-    """From a list of fuzzy-title-equivalent rows in the same gap, pick the
-    primary (best) copy. Returns (primary, [other_copies])."""
-    def rank(r: sqlite3.Row) -> tuple:
-        # Lower rank is "better" — sort ascending then take [0].
-        has_pdf = 0 if r["pdf_path"] else 1
-        has_doi = 0 if (r["doi"] or "").strip() else 1
-        has_abs = 0 if (r["abstract"] or "").strip() else 1
-        src     = SOURCE_PRIORITY.get(r["source_id"], 99)
-        return (has_pdf, has_doi, src, has_abs, r["id"])
-    sorted_rows = sorted(rows, key=rank)
-    return sorted_rows[0], sorted_rows[1:]
-
-
-def absolutize_url(url: str, source_id: str) -> str:
-    """Some seed records (notably EBSCO) store path-relative URLs. Prefix
-    the appropriate host so links work when clicked from the dossier."""
-    if not url or url.startswith(("http://", "https://")):
-        return url
-    if url.startswith("/"):
-        host = {
-            "ebsco_api":         "https://research.ebsco.com",
-            "hathitrust_fulltext": "https://babel.hathitrust.org",
-        }.get(source_id, "")
-        if host:
-            return host + url
-    return url
-
-
-def render_url_or_pdf(primary: sqlite3.Row) -> str:
-    """Return a markdown link string preferring local PDF over remote URL."""
-    pdf_path = (primary["pdf_path"] or "").strip()
-    url = absolutize_url((primary["url"] or "").strip(), primary["source_id"])
-    if pdf_path:
-        # Make the path relative to repo root if possible, else absolute.
-        try:
-            p = Path(pdf_path)
-            if p.is_absolute():
-                p = p.relative_to(PROJECT_ROOT)
-            return f"[PDF]({p}) · [URL]({url})" if url else f"[PDF]({p})"
-        except Exception:
-            return f"[PDF]({pdf_path}) · [URL]({url})" if url else f"[PDF]({pdf_path})"
-    if url:
-        return f"[URL]({url})"
-    return "(no link)"
-
-
-# ---------------------------------------------------------------------------
-# Data assembly
-# ---------------------------------------------------------------------------
-
-
-def fetch_gap_rows(conn: sqlite3.Connection, gap_id: str) -> List[sqlite3.Row]:
-    return conn.execute(
-        """SELECT id, title, authors, journal, pub_date, abstract, doi,
-                  url, pdf_path, source_id, gap_id, gap_topic,
-                  gap_research_question,
-                  relevance_score, relevance_why
-             FROM articles WHERE gap_id = ?""",
-        (gap_id,),
-    ).fetchall()
-
-
-def dedupe_within_gap(
-    rows: List[sqlite3.Row],
-) -> List[Dict[str, Any]]:
-    """Group fuzzy-title-equivalent rows within the gap. Returns a list of
-    consolidated entries, one per unique normalized title (or one per row
-    if its title fails the norm filter)."""
-    groups: Dict[str, List[sqlite3.Row]] = defaultdict(list)
-    standalone: List[sqlite3.Row] = []
-    for r in rows:
-        n = norm_title(r["title"])
-        if n:
-            groups[n].append(r)
-        else:
-            standalone.append(r)
-
-    out: List[Dict[str, Any]] = []
-    for n, grp in groups.items():
-        primary, others = pick_primary(grp)
-        all_sources = sorted({r["source_id"] for r in grp})
-        # Score is the primary's score (the LLM scored each row separately;
-        # for consolidated entries we trust the primary's score, since
-        # cross-source dupes within a gap should have similar relevance).
-        out.append({
-            "norm":     n,
-            "primary":  primary,
-            "others":   others,
-            "sources":  all_sources,
-        })
-    for r in standalone:
-        out.append({
-            "norm":     "",
-            "primary":  r,
-            "others":   [],
-            "sources":  [r["source_id"]],
-        })
-    return out
-
-
-def build_cross_gap_index(conn: sqlite3.Connection) -> Dict[str, List[str]]:
-    """Map normalized title → list of gap_ids that have a scored row for it
-    (score >= 1; we don't surface 0-tier in cross-gap notes since those are
-    the LLM's noise calls)."""
-    rows = conn.execute(
-        """SELECT title, gap_id, relevance_score
-             FROM articles
-            WHERE relevance_score IS NOT NULL AND relevance_score >= 1
-              AND title IS NOT NULL"""
-    ).fetchall()
-    idx: Dict[str, set] = defaultdict(set)
-    for r in rows:
-        n = norm_title(r["title"])
-        if n:
-            idx[n].add(r["gap_id"])
-    return {k: sorted(v) for k, v in idx.items()}
 
 
 # ---------------------------------------------------------------------------

@@ -80,3 +80,40 @@ export interface LibraryIndex {
   corpus_scored_rows: number
   sources: string[]
 }
+
+// ---------------------------------------------------------------------------
+// Wave 2: corpus search + characters dashboard contracts.
+// ---------------------------------------------------------------------------
+
+/** One search result row — DossierEntry plus FTS context. */
+export interface SearchResult extends DossierEntry {
+  /** Owning gap_id (search results aren't pre-grouped by gap). */
+  gap_id: string
+  /** 200-char excerpt with ``<mark>`` tags around hits. */
+  snippet: string
+}
+
+export interface LibrarySearch {
+  total: number
+  results: SearchResult[]
+}
+
+/** Filters posted to ``/api/library/articles/search``. */
+export interface SearchFilters {
+  sourceIds: string[]
+  scoreMin: number
+  gapId: string
+  yearFrom: number | null
+  yearTo: number | null
+  hasPdf: boolean | null
+}
+
+/** One company-profile gap with character-card preview fields. */
+export interface CharacterCard extends GapTreeRow {
+  top_tier3_titles: string[]
+  tier_histogram: Record<string, number>
+}
+
+export interface LibraryCharacters {
+  characters: CharacterCard[]
+}

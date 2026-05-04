@@ -58,6 +58,18 @@ SQLite (no markdown intermediate). The sibling `/runs` mode is unchanged.
 - `GET /api/library/gaps/{gap_id}/dossier` — structured dossier
   rendered by `layers.dossier_render.assemble_dossier`. Shape:
   `{gap, summary: {total_rows, consolidated, tier_counts}, tiers: {"3"|"2"|"1"|"0"|"unscored": [DossierEntry]}}`.
+- `GET /api/library/articles/search` (Wave 2) — full-text search via
+  SQLite FTS5. Query params: `q` (required), `source_id` (CSV),
+  `score_min` (0–3), `gap_id`, `year_from`, `year_to`, `has_pdf`,
+  `limit` (≤200), `offset`. Returns `{total, results: [DossierEntry &
+  {gap_id, snippet}]}` with `<mark>`-highlighted excerpts. Empty `q`
+  yields 400 (no full-table dump). Reserved FTS5 chars in user input
+  are stripped before MATCH; tokens are wrapped in phrase quotes so
+  user punctuation never reaches the FTS5 parser as operators.
+- `GET /api/library/characters` (Wave 2) — main-characters dashboard
+  data: company-profile gaps with `top_tier3_titles` (up to 3) and
+  `tier_histogram` aliasing `tier_counts`. Sorted by tier-3 count
+  desc, then `evidence_target` desc.
 
 ### Shared dossier-render layer — `layers/dossier_render.py`
 The markdown writer (`scripts/generate_dossiers.py`) and the new API
@@ -83,6 +95,29 @@ thin wrapper that consumes the same helpers (`norm_title`,
   Year)` / link to clipboard. Cards are draggable — dataTransfer
   carries all three citation forms under different MIME types so the
   user can drop into Word/Pages and paste any form.
+- `/write/search` (Wave 2) → corpus search page with debounced (300 ms)
+  FTS5 query + filter rail (source checkboxes, score-floor radio, year
+  range, has-PDF tri-state, gap_id autocomplete). Results reuse
+  `<SourceCard>` with a `snippet` prop that renders the
+  `<mark>`-highlighted excerpt below the abstract. "Load more" button
+  appends to the result list (no infinite scroll).
+- `/write/characters` (Wave 2) → main-characters dashboard. Card grid
+  (responsive 1–4 cols) of company-profile gaps with a 4-bar tier
+  histogram, top-3 tier-3 titles, and a one-click "Open dossier"
+  button. Tabs: All / Empty / Thin / Supplementary, filtered by
+  rationale substring.
+- `/write/queue` (Wave 2) → reading queue. Lists locally-starred
+  articles grouped by gap. Marks (star + read) live in
+  `localStorage['library.marks']` and persist across sessions. The
+  article→gap mapping is stamped from `localStorage['library.article_gap']`
+  whenever the user opens a dossier so the queue can resolve gap
+  membership without a server-side table.
+
+The shared `<SourceCard>` (Wave 2 polish) gains a hover action toolbar:
+Copy dropdown (Chicago / short / link), Star (toggles localStorage
+`library.marks`), Read (mark/unmark), and a small grip icon advertising
+the drag affordance. Copy actions surface a 1.6 s toast via the global
+`<ToastHost>` mounted in `<WriteShell>`.
 
 ## Removed MVP concepts
 - `Intent` endpoints and intent state are removed.

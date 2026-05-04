@@ -1,3 +1,127 @@
+[2026-05-02] - Writing-companion UI Wave 2 — search + characters + marks
+
+Problem
+After Wave 1 shipped the dossier browser (commit 61d7c74), four
+non-dossier surfaces were missing for the daily writing workflow:
+
+  1. No corpus-wide search — the user had to know which gap a quote
+     belonged to in order to find it. With ~10k scored rows in the
+     corpus this was a hard ceiling on usefulness.
+  2. No main-characters view — the company-profile gaps (CP3 Microsoft,
+     CP4 Apple, CP6 Google, …) are the dominant evidence buckets but
+     were buried inside the chapter tree.
+  3. Drag-to-Word polish: hover affordance was minimal (no visible drag
+     handle, no toast feedback on copy).
+  4. No marks system — when prepping a chapter, the user wants to star
+     "I'll cite this" rows and revisit them. There was no surface.
+
+Root Cause
+Wave 1 deliberately scoped to the dossier browser; the contracts
+deferred to "Wave 2 = breadth" so Wave 1 could ship clean. The
+``articles_fts`` virtual table was built in Wave 0 (article_index.py)
+but had never been wired to an HTTP endpoint. ``gap_tree.gap_type =
+'company_profile'`` already segregated the character gaps but had no
+specialized listing view. ``<SourceCard>`` already attached three MIME
+types to its dataTransfer but the user-facing affordance ended at the
+Cite dropdown — no clipboard toast, no star, no read state.
+
+Solution
+Six pieces shipped together as Wave 2:
+
+  * ``GET /api/library/articles/search`` — FTS5-backed search with the
+    full filter set in the spec (source_id CSV, score_min 0–3, gap_id,
+    year_from/year_to, has_pdf, limit≤200, offset). Reserved FTS5
+    chars (``"*+-^():``) are stripped from each whitespace-token
+    before each token is wrapped in phrase quotes — this neutralises
+    operator parsing while preserving multi-word AND search semantics.
+    bm25 ranks results; ``snippet(articles_fts, 2, '<mark>',
+    '</mark>', '…', 32)`` returns a 200-char excerpt around the hit
+    in column 2 (abstract). Year filtering is post-SQL (pub_date is
+    freeform text); a wider page is fetched when years are active so
+    pagination still terminates correctly. Empty/sanitized-to-empty
+    queries return 400. Live: ``q=Bezos`` returns 174 hits with
+    ``<mark>`` excerpts, ``q=Mercado`` returns 336.
+
+  * ``GET /api/library/characters`` — company-profile gaps with two
+    extra fields per row: ``top_tier3_titles`` (up to 3, ranked by
+    source priority then pub_date desc — same ordering the dossier
+    uses) and ``tier_histogram`` (alias of ``tier_counts`` for the
+    chart component). Sort: ``-tier_counts['3'], -evidence_target,
+    gap_id``. Live: 39 character cards, top is CP3 Microsoft with
+    26 tier-3 hits.
+
+  * Frontend ``/write/search``, ``/write/characters``, ``/write/queue``
+    routes added to ``App.tsx``. ``<WriteShell>`` sidebar gains a top
+    nav rail (Gaps · Search · Characters · Reading queue) above the
+    chapter list, plus a ``<ToastHost>`` mounted at the shell.
+    ``<SourceCard>`` polished:
+      - hover-only drag-handle grip icon (left edge);
+      - new actions in CardActions: Star (yellow when set, persisted
+        to ``localStorage['library.marks']``), Read (green when set);
+      - Copy/Cite dropdown now emits a 1.6 s toast via ``showToast``;
+      - new optional ``snippet`` prop renders an FTS-highlighted
+        excerpt under the abstract preview. Snippet HTML is sanitized
+        by escape-then-reinject: ``<mark>``/``</mark>`` go to
+        sentinels first, all other ``<>&"'`` are escaped, then the
+        sentinels become real ``<mark>`` tags with our own classes.
+        Only ``<mark>`` survives — every other tag is rendered as
+        text. Defense-in-depth even though FTS5 only ever emits
+        ``<mark>`` here.
+  * ``library.ts`` Zustand store extended with ``searchQuery``,
+    ``searchFilters``, ``searchResults`` (Load More appends),
+    ``searchLoading/Error``, plus a ``marks`` map keyed by article id
+    with ``starred``, ``read``, ``addedAt``. ``toggleStar`` /
+    ``toggleRead`` write through to localStorage on every change;
+    ``isStarred(id)``, ``isRead(id)``, ``starredCount()``,
+    ``starredIds()`` selectors round it out.
+
+  * ``QueuePage`` resolves article→gap membership via a second
+    localStorage map (``library.article_gap``) populated lazily by
+    ``DossierView`` whenever the user opens a dossier — this avoids a
+    server-side marks table for v2 while still letting the queue link
+    each starred article back to its dossier. Articles whose gap_id
+    isn't yet stamped show in a "haven't reopened yet" footer.
+
+  * Tests: ``test_library_api_search.py`` (10 cases — basic hit,
+    empty-query 400, FTS sanitization, score_min, source_id filter,
+    gap_id filter, has_pdf, year range, pagination, URL absolutize)
+    and ``test_library_api_characters.py`` (5 cases — only
+    company_profile rows, sort order, top_tier3_titles, histogram
+    matches counts, empty corpus). Both files build their own
+    fixture DB including the FTS5 virtual table + INSERT trigger so
+    search round-trips exercise the real path. Backend suite:
+    347 → 362 passing (15 new).
+
+Live validation:
+``curl '/api/library/articles/search?q=Mercado&limit=3'`` →
+``{"total":336, ...}`` with three Mercado Libre headlines and
+``<mark>``-wrapped snippets. ``curl '/api/library/characters'`` →
+39 cards led by CP3 Microsoft (26 tier-3 hits, 104 total).
+``frontend/dist`` builds clean (438 KB JS, 29 KB CSS — up from 412 KB
+JS post-Wave 1, accounting for the three new pages + Toast + marks
+plumbing).
+
+Notes
+- Marks are intentionally browser-local in Wave 2. Server-side table
+  is deferred to v3 — this keeps the wave to the documented surfaces
+  and avoids a schema change.
+- The article→gap localStorage shim (`library.article_gap`) is a
+  pragmatic v2 workaround. v3 should replace it with a single round-
+  trip endpoint that takes a list of article ids and returns
+  ``{id: gap_id}`` resolved from the articles table.
+- Year filter does Python post-filtering because SQLite has no native
+  regex and pub_date is freeform; cap on candidate set is implicit
+  (FTS MATCH already narrows). For pathological queries with no
+  year hits, the page becomes empty rather than ever exhausting
+  the candidate set — acceptable for v2.
+- ``simplify`` skill was not run; the codebase shape mirrors Wave 1
+  conventions (separate components per page, store-extended-not-
+  forked, citations.ts reused).
+- Dark mode parity: the new components rely on the same color tokens
+  Wave 1 used (``bg-surface-card``, ``border-border``, ``text-ink-*``)
+  which already have ``.dark`` overrides in ``index.css``. No new
+  CSS-in-JS introduced.
+
 [2026-05-02] - Writing-companion UI MVP — dossier browser
 
 Problem

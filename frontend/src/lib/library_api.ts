@@ -1,7 +1,14 @@
 // Typed fetch wrappers for the writing-companion library API.
 // Mirrors the conventions of ``lib/api.ts``.
 
-import type { LibraryDossier, LibraryIndex, GapTreeRow } from '../types/library'
+import type {
+  LibraryCharacters,
+  LibraryDossier,
+  LibraryIndex,
+  LibrarySearch,
+  GapTreeRow,
+  SearchFilters,
+} from '../types/library'
 
 const BASE = '/api/library'
 
@@ -41,4 +48,34 @@ export async function fetchDossier(gapId: string): Promise<LibraryDossier> {
 /** Build the URL for the existing file-serving endpoint (used to open PDFs). */
 export function fileUrl(absoluteOrRepoRelativePath: string): string {
   return `/api/orchestrator/files?path=${encodeURIComponent(absoluteOrRepoRelativePath)}`
+}
+
+// ---------------------------------------------------------------------------
+// Wave 2 — corpus search + characters dashboard
+// ---------------------------------------------------------------------------
+
+/** Search the corpus via FTS5. Returns ``{total, results}``. */
+export async function searchArticles(
+  q: string,
+  filters: SearchFilters,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<LibrarySearch> {
+  const params = new URLSearchParams()
+  params.set('q', q)
+  if (filters.sourceIds.length > 0) {
+    params.set('source_id', filters.sourceIds.join(','))
+  }
+  if (filters.scoreMin > 0) params.set('score_min', String(filters.scoreMin))
+  if (filters.gapId) params.set('gap_id', filters.gapId)
+  if (filters.yearFrom !== null) params.set('year_from', String(filters.yearFrom))
+  if (filters.yearTo !== null) params.set('year_to', String(filters.yearTo))
+  if (filters.hasPdf !== null) params.set('has_pdf', filters.hasPdf ? 'true' : 'false')
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit))
+  if (opts.offset !== undefined) params.set('offset', String(opts.offset))
+  return libFetch<LibrarySearch>(`/articles/search?${params.toString()}`)
+}
+
+/** Company-profile gaps with histogram + top tier-3 titles. */
+export async function fetchCharacters(): Promise<LibraryCharacters> {
+  return libFetch<LibraryCharacters>('/characters')
 }

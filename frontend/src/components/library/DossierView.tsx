@@ -10,6 +10,7 @@ import { useLibraryStore } from '../../store/library'
 import type { DossierEntry, LibraryDossier } from '../../types/library'
 import { DossierFilters } from './DossierFilters'
 import { TierSection } from './TierSection'
+import { stampArticleGap } from './QueuePage'
 
 export function DossierView() {
   const { gapId } = useParams<{ gapId: string }>()
@@ -34,6 +35,18 @@ export function DossierView() {
     if (!data) return null
     return filterTiers(data, dossierFilters.sourceIds, dossierFilters.scoreMin, dossierFilters.hasPdf)
   }, [data, dossierFilters])
+
+  // Stamp the article→gap mapping into localStorage so /write/queue
+  // can resolve which dossier each starred article belongs to. Marks
+  // are browser-local in Wave 2; this is the cheapest correct fix.
+  useEffect(() => {
+    if (!data || !gapId) return
+    const ids: number[] = []
+    for (const bucket of Object.values(data.tiers)) {
+      for (const e of bucket) ids.push(e.id)
+    }
+    stampArticleGap(ids, gapId)
+  }, [data, gapId])
 
   if (!gapId) return <div className="p-6 text-sm text-ink-muted">No gap selected.</div>
   if (isLoading) return <div className="p-6 text-sm text-ink-muted">Loading dossier…</div>

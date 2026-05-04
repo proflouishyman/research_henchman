@@ -7,10 +7,14 @@ consumes these to render the dossier browser.
 The dossier shape is owned by ``layers.dossier_render.assemble_dossier``;
 this router is a thin pagination + filtering layer that joins gap_tree
 rows with article counts and forwards to that helper.
+
+Wave 2 additions: corpus search via FTS5 (``GET /articles/search``) and a
+main-characters dashboard for company-profile gaps (``GET /characters``).
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
@@ -20,6 +24,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from layers.dossier_render import (
     TIER_ORDER,
+    absolutize_url,
     assemble_dossier,
     build_cross_gap_index,
     chapter_slug,
@@ -345,5 +350,260 @@ def api_library_index() -> Dict[str, Any]:
             "corpus_scored_rows": corpus_scored,
             "sources":            sources,
         }
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 — Corpus search via FTS5
+# ---------------------------------------------------------------------------
+
+# Characters reserved by the FTS5 query language. We escape them by
+# wrapping the entire user query in double quotes (FTS5 phrase mode) and
+# doubling any embedded double quotes — this disables operator parsing
+# while still allowing multi-word phrase matches. Per FTS5 docs, the
+# "" sequence inside a quoted string represents a literal double quote.
+_FTS5_RESERVED_CHARS = set('"*+-^():')
+
+
+def _sanitize_fts_query(raw: str) -> str:
+    """Escape user input for safe FTS5 ``MATCH`` evaluation.
+
+    Strategy: tokenize on whitespace, drop any token that becomes empty
+    after stripping reserved chars, and re-emit each token as a quoted
+    phrase. This keeps FTS5 operator semantics out of user input while
+    still preserving multi-word AND-of-tokens search behaviour (FTS5
+    treats space-separated tokens as implicit AND).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    out: List[str] = []
+    for tok in raw.split():
+        # Strip reserved chars rather than escaping — most users typing
+        # them in a search box mean them as punctuation, not operators.
+        cleaned = "".join(c for c in tok if c not in _FTS5_RESERVED_CHARS)
+        if not cleaned:
+            continue
+        # Wrap in double quotes; doubling any embedded " just in case
+        # (cleaned shouldn't contain ", but defense-in-depth).
+        cleaned = cleaned.replace('"', '""')
+        out.append(f'"{cleaned}"')
+    return " ".join(out)
+
+
+_YEAR_RE = re.compile(r"\b(\d{4})\b")
+
+
+def _extract_year(pub_date: Optional[str]) -> Optional[int]:
+    """Return the first 4-digit year found in a freeform pub_date, or None."""
+    if not pub_date:
+        return None
+    m = _YEAR_RE.search(str(pub_date))
+    return int(m.group(1)) if m else None
+
+
+@router.get("/articles/search")
+def api_library_search(
+    q: str = Query(..., min_length=1, description="FTS5 search query"),
+    source_id: str = Query(default="", description="CSV source filter"),
+    score_min: int = Query(default=0, ge=0, le=3),
+    gap_id: str = Query(default=""),
+    year_from: Optional[int] = Query(default=None),
+    year_to: Optional[int] = Query(default=None),
+    has_pdf: Optional[bool] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> Dict[str, Any]:
+    """Full-text search the corpus via SQLite FTS5.
+
+    Returns ``{total, results: [DossierEntry & {snippet}]}`` where
+    ``snippet`` is a 200-char excerpt with ``<mark>`` tags around hits
+    (FTS5 ``snippet()``). Empty / sanitized-to-empty queries 400.
+    """
+    sanitized = _sanitize_fts_query(q)
+    if not sanitized:
+        raise HTTPException(status_code=400, detail="empty search query after sanitization")
+
+    conn = _open_conn()
+    try:
+        clauses: List[str] = ["articles_fts MATCH ?"]
+        params: List[Any] = [sanitized]
+
+        sids = [s.strip() for s in source_id.split(",") if s.strip()]
+        if sids:
+            clauses.append("a.source_id IN (" + ",".join("?" for _ in sids) + ")")
+            params.extend(sids)
+        if score_min > 0:
+            # ``relevance_score >= ?`` only matches scored rows (NULLs
+            # excluded automatically by SQL comparison semantics).
+            clauses.append("a.relevance_score >= ?")
+            params.append(int(score_min))
+        if gap_id.strip():
+            clauses.append("a.gap_id = ?")
+            params.append(gap_id.strip())
+        if has_pdf is True:
+            clauses.append("a.pdf_path IS NOT NULL AND a.pdf_path != ''")
+        elif has_pdf is False:
+            clauses.append("(a.pdf_path IS NULL OR a.pdf_path = '')")
+
+        # Year filters use a regex extract on pub_date. SQLite has no
+        # native regex, but we can approximate with substr/glob; the
+        # cheapest correct path is a Python post-filter, since the FTS
+        # MATCH already narrows the candidate pool sharply. We push the
+        # MATCH + score/source/has_pdf filters into SQL and do year/CGR
+        # post-filtering in Python.
+        where = " AND ".join(clauses)
+
+        # Count + page in two steps so we can return total alongside
+        # the page of results. ``bm25(articles_fts)`` is ascending —
+        # smaller is better.
+        sql_total = (
+            "SELECT COUNT(*) FROM articles a "
+            "JOIN articles_fts ON articles_fts.rowid = a.id "
+            f"WHERE {where}"
+        )
+        try:
+            pre_year_total = int(conn.execute(sql_total, params).fetchone()[0])
+        except sqlite3.OperationalError as exc:
+            raise HTTPException(status_code=503, detail=f"FTS unavailable: {exc}") from exc
+
+        # If year filters are active, we have to scan the candidate set
+        # to count post-filter; cap to a sane upper bound to avoid
+        # pathological queries.
+        year_active = year_from is not None or year_to is not None
+
+        # Snippet column index: articles_fts columns are
+        # (title, authors, abstract, journal, gap_research_question)
+        # — column 2 (abstract) gives the most useful excerpt context.
+        # The trailing 4 args of snippet() are: open_tag, close_tag,
+        # ellipsis, max_tokens.
+        sql_page = (
+            "SELECT a.id, a.title, a.authors, a.pub_date, a.journal, "
+            "       a.abstract, a.doi, a.url, a.pdf_path, a.source_id, "
+            "       a.gap_id, a.relevance_score, a.relevance_why, "
+            "       snippet(articles_fts, 2, '<mark>', '</mark>', '…', 32) AS snip "
+            "  FROM articles a "
+            "  JOIN articles_fts ON articles_fts.rowid = a.id "
+            f" WHERE {where} "
+            " ORDER BY bm25(articles_fts) ASC, a.id ASC "
+            # When year filtering is active, fetch a wider window so we
+            # have room to skip non-matching rows; otherwise honour limit
+            # exactly with offset.
+            f" LIMIT {limit + (10000 if year_active else 0)} OFFSET {0 if year_active else offset}"
+        )
+        rows = conn.execute(sql_page, params).fetchall()
+
+        # Apply year post-filter + pagination if active.
+        if year_active:
+            filtered: List[sqlite3.Row] = []
+            for r in rows:
+                yr = _extract_year(r["pub_date"])
+                if year_from is not None and (yr is None or yr < year_from):
+                    continue
+                if year_to is not None and (yr is None or yr > year_to):
+                    continue
+                filtered.append(r)
+            total = len(filtered)
+            page = filtered[offset : offset + limit]
+        else:
+            total = pre_year_total
+            page = rows
+
+        # Build cross-gap index once for the page (cheap — already
+        # cached by SQLite for read-mostly workloads).
+        cross_gap_idx = build_cross_gap_index(conn)
+        from layers.dossier_render import norm_title
+
+        results: List[Dict[str, Any]] = []
+        for r in page:
+            primary_src = str(r["source_id"] or "")
+            n = norm_title(r["title"])
+            other_gaps = [
+                g for g in cross_gap_idx.get(n, [])
+                if g != (r["gap_id"] or "")
+            ] if n else []
+            results.append({
+                "id":              int(r["id"]),
+                "title":           (r["title"] or "").strip(),
+                "authors":         (r["authors"] or "").strip(),
+                "pub_date":        (r["pub_date"] or "").strip(),
+                "journal":         (r["journal"] or "").strip(),
+                "abstract":        (r["abstract"] or "").strip(),
+                "doi":             (r["doi"] or "").strip(),
+                "url":             absolutize_url(r["url"], primary_src),
+                "pdf_path":        (r["pdf_path"] or "").strip(),
+                "source_id":       primary_src,
+                "also_in_sources": [],  # search rows are individual; merge happens in dossier
+                "relevance_score": int(r["relevance_score"]) if r["relevance_score"] is not None else None,
+                "relevance_why":   (r["relevance_why"] or "").strip(),
+                "cross_gap_refs":  other_gaps,
+                "gap_id":          str(r["gap_id"] or ""),
+                "snippet":         (r["snip"] or "").strip(),
+            })
+
+        return {"total": total, "results": results}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Wave 2 — Main characters (company_profile gaps) dashboard
+# ---------------------------------------------------------------------------
+
+@router.get("/characters")
+def api_library_characters() -> Dict[str, Any]:
+    """List company-profile gaps with histogram + top tier-3 titles.
+
+    Returns ``{characters: [GapTreeRow & {top_tier3_titles, tier_histogram}]}``.
+    Sorted by tier-3 count desc, then evidence_target desc, then gap_id.
+    """
+    conn = _open_conn()
+    try:
+        try:
+            rows = conn.execute(
+                """SELECT * FROM gap_tree
+                    WHERE gap_type = 'company_profile'
+                    ORDER BY rowid ASC"""
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            raise HTTPException(status_code=503, detail=f"gap_tree table missing: {exc}") from exc
+
+        counts = _all_article_counts_by_gap(conn)
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            gap = _gap_tree_row_to_dict(r)
+            c = counts.get(gap["gap_id"])
+            if c:
+                gap["total_rows"] = c["total_rows"]
+                gap["tier_counts"] = c["tier_counts"]
+
+            # Top 3 tier-3 titles for the card preview. Order by source
+            # priority (EBSCO first) then pub_date desc — same heuristic
+            # the dossier uses, so the card preview matches what the
+            # user sees inside the dossier.
+            t3 = conn.execute(
+                """SELECT title, source_id, pub_date
+                     FROM articles
+                    WHERE gap_id = ? AND relevance_score = 3
+                    ORDER BY source_id ASC, pub_date DESC
+                    LIMIT 3""",
+                (gap["gap_id"],),
+            ).fetchall()
+            gap["top_tier3_titles"] = [
+                (row["title"] or "").strip() for row in t3 if (row["title"] or "").strip()
+            ]
+            # ``tier_histogram`` is a friendly alias of tier_counts for
+            # the frontend's chart component (matches the spec).
+            gap["tier_histogram"] = dict(gap["tier_counts"])
+            out.append(gap)
+
+        # Sort: tier-3 count desc, then evidence_target desc, then gap_id.
+        def _sort_key(g: Dict[str, Any]) -> tuple:
+            t3 = int(g.get("tier_counts", {}).get("3", 0))
+            return (-t3, -int(g.get("evidence_target", 0)), g.get("gap_id", ""))
+
+        out.sort(key=_sort_key)
+        return {"characters": out}
     finally:
         conn.close()

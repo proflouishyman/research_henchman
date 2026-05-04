@@ -11,6 +11,9 @@ import { Layout } from './components/layout/Layout'
 import { WriteShell } from './components/library/WriteShell'
 import { ChapterGroupedGapList } from './components/library/ChapterGroupedGapList'
 import { DossierView } from './components/library/DossierView'
+import { SearchPage } from './components/library/SearchPage'
+import { CharactersPage } from './components/library/CharactersPage'
+import { QueuePage } from './components/library/QueuePage'
 
 export default function App() {
   const { darkMode } = useUIStore()
@@ -38,6 +41,10 @@ export default function App() {
           <Route index element={<Navigate to="gaps" replace />} />
           <Route path="gaps" element={<ChapterGroupedGapList />} />
           <Route path="gaps/:gapId" element={<DossierView />} />
+          {/* Wave 2 routes */}
+          <Route path="search" element={<SearchPage />} />
+          <Route path="characters" element={<CharactersPage />} />
+          <Route path="queue" element={<QueuePage />} />
         </Route>
 
         {/* Catch-all → runs. */}

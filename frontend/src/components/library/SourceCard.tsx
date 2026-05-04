@@ -9,17 +9,39 @@
 //
 // The card is also draggable: dataTransfer carries Chicago / short / link
 // forms so the user can drag straight into Word/Pages.
+//
+// Wave 2 polish:
+//   * Hover action toolbar at top-right: Copy (3 forms) + Star + Read.
+//   * Optional ``snippet`` prop renders an FTS-highlighted excerpt (with
+//     <mark> tags) below the abstract preview. Only the <mark> tag is
+//     allowed — every other tag is escaped via DOMParser/textContent.
+//   * Drag handle icon (grip) appears on hover to advertise draggability.
+//   * Compact star icon visible all the time when starred.
 
-import { useEffect, useRef, useState } from 'react'
-import { ExternalLink, Copy, Check, FileText, Link as LinkIcon, Network } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ExternalLink,
+  Copy,
+  Check,
+  FileText,
+  Link as LinkIcon,
+  Network,
+  Star,
+  Eye,
+  GripVertical,
+} from 'lucide-react'
 import type { DossierEntry } from '../../types/library'
 import { fileUrl } from '../../lib/library_api'
 import { attachDragCitations, chicagoCitation, shortCitation, linkOnly } from '../../lib/citations'
+import { useLibraryStore } from '../../store/library'
+import { showToast } from './Toast'
 
 interface Props {
   entry: DossierEntry
   /** Compact single-line rendering for tier 0/1. */
   compact?: boolean
+  /** Optional FTS snippet to render under the abstract (HTML with <mark>). */
+  snippet?: string
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -43,7 +65,35 @@ function tierBadgeClass(score: number | null): string {
   return 'bg-gray-100 text-gray-500 border-gray-200'
 }
 
-export function SourceCard({ entry, compact }: Props) {
+/**
+ * Sanitize an FTS snippet for innerHTML rendering.
+ *
+ * Strategy: escape every HTML special char, then re-introduce
+ * ``<mark>...</mark>`` only — FTS5 emits these tags from a
+ * developer-controlled template, so we know they're the only ones we
+ * need. This is robust against any user input that might contain
+ * accidental HTML, while preserving the highlight UX.
+ */
+function renderSnippetHtml(snippet: string): string {
+  // Use sentinels that can't appear in escaped HTML so we can re-inject
+  // the marks safely after escaping.
+  const OPEN = 'MARKO'
+  const CLOSE = 'MARKC'
+  const withSentinels = snippet
+    .replace(/<mark>/g, OPEN)
+    .replace(/<\/mark>/g, CLOSE)
+  const escaped = withSentinels
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+  return escaped
+    .replace(new RegExp(OPEN, 'g'), '<mark class="bg-accent-light text-accent rounded px-0.5">')
+    .replace(new RegExp(CLOSE, 'g'), '</mark>')
+}
+
+export function SourceCard({ entry, compact, snippet }: Props) {
   const [showAbstract, setShowAbstract] = useState(false)
   const [hoverOpen, setHoverOpen] = useState(false)
   const hoverTimer = useRef<number | null>(null)
@@ -94,6 +144,7 @@ export function SourceCard({ entry, compact }: Props) {
         onMouseLeave={onMouseLeave}
         className="relative flex items-start gap-2 px-2 py-1.5 rounded hover:bg-surface-muted transition-colors group"
       >
+        <DragHandle />
         <span
           className={`text-[10px] font-mono px-1.5 py-0.5 rounded border shrink-0 mt-0.5 ${tierBadgeClass(
             entry.relevance_score,
@@ -111,6 +162,13 @@ export function SourceCard({ entry, compact }: Props) {
               {entry.relevance_why}
             </div>
           )}
+          {snippet && (
+            <div
+              className="text-[11px] text-ink-secondary line-clamp-1 mt-0.5"
+              // eslint-disable-next-line react/no-danger
+              dangerouslySetInnerHTML={{ __html: renderSnippetHtml(snippet) }}
+            />
+          )}
         </div>
         <CardActions entry={entry} onOpen={onOpen} />
         {hoverOpen && <HoverPopover entry={entry} />}
@@ -126,8 +184,10 @@ export function SourceCard({ entry, compact }: Props) {
       onDragStart={handleDragStart}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
-      className="relative bg-surface border border-border rounded-md px-4 py-3 hover:shadow-card hover:border-border-strong transition-all"
+      className="relative bg-surface border border-border rounded-md px-4 py-3 hover:shadow-card hover:border-border-strong transition-all group"
     >
+      <DragHandle />
+
       <div className="flex items-start gap-3 mb-2">
         <span
           className={`text-[10px] font-mono px-1.5 py-0.5 rounded border shrink-0 mt-1 ${tierBadgeClass(
@@ -172,6 +232,20 @@ export function SourceCard({ entry, compact }: Props) {
         </div>
       )}
 
+      {/* FTS snippet — search-mode highlighted excerpt. */}
+      {snippet && (
+        <div className="mt-2 px-2 py-1.5 rounded bg-surface-muted border border-border/60">
+          <p className="text-[11px] uppercase tracking-wider text-ink-muted font-semibold mb-0.5">
+            Match
+          </p>
+          <p
+            className="text-[11px] text-ink-secondary leading-relaxed"
+            // eslint-disable-next-line react/no-danger
+            dangerouslySetInnerHTML={{ __html: renderSnippetHtml(snippet) }}
+          />
+        </div>
+      )}
+
       <div className="flex items-center gap-3 mt-3 pt-2 border-t border-border/70">
         <CardActions entry={entry} onOpen={onOpen} />
         {entry.cross_gap_refs.length > 0 && <CrossGapChip refs={entry.cross_gap_refs} />}
@@ -182,9 +256,24 @@ export function SourceCard({ entry, compact }: Props) {
   )
 }
 
-/** Open + Cite dropdown action row. */
+/** Small drag handle, only visible on card hover. */
+function DragHandle() {
+  return (
+    <span
+      className="absolute -left-4 top-2 opacity-0 group-hover:opacity-100 transition-opacity text-ink-muted cursor-grab active:cursor-grabbing"
+      title="Drag to Word/Pages — drops Chicago citation"
+    >
+      <GripVertical size={14} />
+    </span>
+  )
+}
+
+/** Open + Cite + Star + Read action row. */
 function CardActions({ entry, onOpen }: { entry: DossierEntry; onOpen: () => void }) {
   const hasOpenable = !!entry.pdf_path || !!entry.url
+  const { isStarred, isRead, toggleStar, toggleRead } = useLibraryStore()
+  const starred = isStarred(entry.id)
+  const read = isRead(entry.id)
   return (
     <div className="flex items-center gap-2 ml-auto">
       <button
@@ -197,6 +286,30 @@ function CardActions({ entry, onOpen }: { entry: DossierEntry; onOpen: () => voi
         {entry.pdf_path ? 'Open PDF' : 'Open URL'}
       </button>
       <CiteDropdown entry={entry} />
+      <button
+        onClick={() => {
+          toggleStar(entry.id)
+          showToast(starred ? 'Removed from queue' : 'Added to reading queue')
+        }}
+        className={`flex items-center gap-1 text-[11px] font-medium ${
+          starred ? 'text-accent' : 'text-ink-secondary hover:text-ink'
+        }`}
+        title={starred ? 'Unstar' : 'Star (add to reading queue)'}
+      >
+        <Star size={12} fill={starred ? 'currentColor' : 'none'} />
+      </button>
+      <button
+        onClick={() => {
+          toggleRead(entry.id)
+          showToast(read ? 'Marked unread' : 'Marked as read')
+        }}
+        className={`flex items-center gap-1 text-[11px] font-medium ${
+          read ? 'text-emerald-600' : 'text-ink-secondary hover:text-ink'
+        }`}
+        title={read ? 'Mark unread' : 'Mark as read'}
+      >
+        <Eye size={12} />
+      </button>
     </div>
   )
 }
@@ -221,10 +334,27 @@ function CiteDropdown({ entry }: { entry: DossierEntry }) {
       await navigator.clipboard.writeText(text)
       setCopied(label)
       window.setTimeout(() => setCopied(null), 1200)
+      const friendly =
+        label === 'chicago'
+          ? 'Chicago citation copied'
+          : label === 'short'
+          ? 'Short citation copied'
+          : 'Link copied'
+      showToast(friendly)
     } catch {
       /* clipboard refused — silently no-op; the user can drag instead. */
     }
   }
+
+  // Memoised so we don't re-derive the strings on every render hover.
+  const forms = useMemo(
+    () => ({
+      chicago: chicagoCitation(entry),
+      short: shortCitation(entry),
+      link: linkOnly(entry),
+    }),
+    [entry],
+  )
 
   return (
     <div ref={wrapRef} className="relative">
@@ -238,22 +368,22 @@ function CiteDropdown({ entry }: { entry: DossierEntry }) {
       {open && (
         <div className="absolute right-0 top-full mt-1 z-30 bg-surface-card border border-border rounded-md shadow-panel py-1 w-56 text-xs">
           <button
-            onClick={() => copy('chicago', chicagoCitation(entry))}
+            onClick={() => copy('chicago', forms.chicago)}
             className="w-full text-left px-3 py-1.5 hover:bg-surface-muted flex items-center gap-2"
           >
             <FileText size={11} className="text-ink-muted" />
             <span>Chicago</span>
           </button>
           <button
-            onClick={() => copy('short', shortCitation(entry))}
+            onClick={() => copy('short', forms.short)}
             className="w-full text-left px-3 py-1.5 hover:bg-surface-muted flex items-center gap-2"
           >
             <Copy size={11} className="text-ink-muted" />
             <span>(Author Year)</span>
           </button>
           <button
-            onClick={() => copy('link', linkOnly(entry))}
-            disabled={!linkOnly(entry)}
+            onClick={() => copy('link', forms.link)}
+            disabled={!forms.link}
             className="w-full text-left px-3 py-1.5 hover:bg-surface-muted disabled:opacity-40 flex items-center gap-2"
           >
             <LinkIcon size={11} className="text-ink-muted" />

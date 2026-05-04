@@ -438,6 +438,37 @@ class LibraryIndexOut(BaseModel):
     sources: List[str] = Field(default_factory=list)
 
 
+class SearchResultEntryOut(DossierEntryOut):
+    """One search hit — a DossierEntry plus FTS context fields.
+
+    ``snippet`` is a 200-char excerpt with ``<mark>`` tags around hits.
+    ``gap_id`` is included so the frontend can link back to the dossier.
+    """
+
+    gap_id: str = ""
+    snippet: str = ""
+
+
+class LibrarySearchOut(BaseModel):
+    """Response shape for ``GET /api/library/articles/search``."""
+
+    total: int = 0
+    results: List[SearchResultEntryOut] = Field(default_factory=list)
+
+
+class CharacterCardOut(GapTreeRowOut):
+    """One company-profile gap with character-card preview fields."""
+
+    top_tier3_titles: List[str] = Field(default_factory=list)
+    tier_histogram: Dict[str, int] = Field(default_factory=dict)
+
+
+class LibraryCharactersOut(BaseModel):
+    """Response shape for ``GET /api/library/characters``."""
+
+    characters: List[CharacterCardOut] = Field(default_factory=list)
+
+
 T = TypeVar("T")
 
 

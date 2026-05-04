@@ -51,10 +51,17 @@ export function ChapterGroupedGapList() {
 }
 
 function ChapterBlock({ chapter }: { chapter: LibraryChapter }) {
+  // B10: Null/empty chapter titles render as "Cross-chapter theses" with an
+  // explainer tooltip — these are intro promises whose chapter wasn't auto-paired.
+  const isNullChapter = !chapter.title || chapter.title.trim() === ''
+  const displayTitle = isNullChapter ? 'Cross-chapter theses' : chapter.title
+  const titleTooltip = isNullChapter
+    ? 'Intro promises whose target chapter wasn\'t auto-paired — likely high-priority cross-cutting claims.'
+    : undefined
   return (
     <section>
       <h2 className="text-sm font-semibold text-ink mb-2">
-        {chapter.title}{' '}
+        <span title={titleTooltip}>{displayTitle}</span>{' '}
         <span className="text-xs font-normal text-ink-muted">
           ({chapter.gap_count} gap{chapter.gap_count !== 1 ? 's' : ''})
         </span>

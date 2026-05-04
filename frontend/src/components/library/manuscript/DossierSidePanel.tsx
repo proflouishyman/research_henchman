@@ -16,9 +16,12 @@ interface Props {
   gapIds: string[]   // gap_ids for the selected paragraph
   paraId: string
   onClose: () => void
+  /** B8: The manuscript paragraph text that was clicked, displayed at top in
+   *  italics so the user confirms the source list applies to their passage. */
+  paragraphText?: string
 }
 
-export function DossierSidePanel({ gapIds, paraId, onClose }: Props) {
+export function DossierSidePanel({ gapIds, paraId, onClose, paragraphText }: Props) {
   const { dossierFilters } = useLibraryStore()
   const [activeGapIdx, setActiveGapIdx] = useState(0)
 
@@ -81,6 +84,19 @@ export function DossierSidePanel({ gapIds, paraId, onClose }: Props) {
         </div>
       )}
 
+      {/* B8: Citing-this-passage context block — anchors the source list to the
+          paragraph the user clicked. Shown when panel opens via paragraph click. */}
+      {paragraphText && (
+        <div className="px-4 py-3 border-b border-border bg-accent-light/30 shrink-0">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-accent mb-1">
+            Citing this passage:
+          </p>
+          <p className="text-xs italic text-ink-secondary leading-relaxed line-clamp-4">
+            {paragraphText}
+          </p>
+        </div>
+      )}
+
       {/* Dossier content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {isLoading && (
@@ -116,8 +132,9 @@ export function DossierSidePanel({ gapIds, paraId, onClose }: Props) {
               </p>
             </div>
 
-            <TierSection bucket="3" heading="Tier 3 — cite-worthy" entries={filteredTiers['3']} defaultOpen />
-            <TierSection bucket="2" heading="Tier 2 — adjacent" entries={filteredTiers['2']} defaultOpen={false} />
+            {/* B6: compact=true for all tiers — side panel is 384px wide. */}
+            <TierSection bucket="3" heading="Tier 3 — cite-worthy" entries={filteredTiers['3']} defaultOpen compact />
+            <TierSection bucket="2" heading="Tier 2 — adjacent" entries={filteredTiers['2']} defaultOpen={false} compact />
             <TierSection bucket="1" heading="Tier 1 — tangential" entries={filteredTiers['1']} defaultOpen={false} compact />
           </>
         )}

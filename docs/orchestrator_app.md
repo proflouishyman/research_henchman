@@ -121,57 +121,67 @@ thin wrapper that consumes the same helpers (`norm_title`,
 `dedupe_within_gap`, `pick_primary`, `build_cross_gap_index`,
 `absolutize_url`, `render_url_or_pdf`).
 
-### Frontend — `/write` route tree
-- `/write` → redirect to `/write/gaps`
-- `/write/gaps` → chapter-grouped gap list (sidebar = chapters; main =
-  one section per chapter with gap rows showing gap_id, gap_type,
-  claim, mini tier-counts bar `[3:5 · 2:24 · 1:20 · 0:46]`).
-- `/write/gaps/:gapId` → live dossier view: header (claim, research
-  question, evidence target, summary counts), filter strip (source
-  toggles · score floor · has-PDF only), four collapsible tier
-  sections (tier 3/2 default-open, tier 1/0 collapsed). Each entry is
-  a `<SourceCard>` with the relevance WHY in a prominent callout, an
-  abstract preview clipped to 3 lines, hover popover with the full WHY
-  + abstract, one-click Open (PDF on disk → `/api/orchestrator/files`,
-  URL → new tab), and a Cite dropdown that copies Chicago / `(Last
-  Year)` / link to clipboard. Cards are draggable — dataTransfer
-  carries all three citation forms under different MIME types so the
-  user can drop into Word/Pages and paste any form.
-- `/write/search` (Wave 2) → corpus search page with debounced (300 ms)
-  FTS5 query + filter rail (source checkboxes, score-floor radio, year
-  range, has-PDF tri-state, gap_id autocomplete). Results reuse
-  `<SourceCard>` with a `snippet` prop that renders the
-  `<mark>`-highlighted excerpt below the abstract. "Load more" button
-  appends to the result list (no infinite scroll).
-- `/write/characters` (Wave 2) → main-characters dashboard. Card grid
-  (responsive 1–4 cols) of company-profile gaps with a 4-bar tier
-  histogram, top-3 tier-3 titles, and a one-click "Open dossier"
-  button. Tabs: All / Empty / Thin / Supplementary, filtered by
-  rationale substring.
-- `/write/queue` (Wave 2) → reading queue. Lists starred articles
-  grouped by gap. Marks are now DB-backed (v3); see marks endpoints.
-- `/write/manuscript` (v3) → manuscript reader. Three-pane layout:
-  - Left (w-52): `<ManuscriptOutline>` — chapter navigator with
-    low-contrast chips showing gap-linked and uncited-paragraph counts.
-  - Center: `<ChapterScroll>` + `<ParagraphRow>` — paragraph-by-
-    paragraph render with left-gutter chips: ⚓N (footnote count);
-    ⚠ cite? (>100-char body with 0 cites); gap badges per gap_id
-    (CP=emerald, IP=blue, TODO=amber); TODO chip when bracketed_todos
-    is non-empty. Clicking any gap badge or the row itself opens the
-    side panel.
-  - Right (fixed, w-96): `<DossierSidePanel>` — reuses
-    `fetchDossier` + `TierSection`. Multi-gap paragraphs get a tab
-    strip. ESC closes; URL updates to
-    `/write/manuscript/:chapterSlug/:paraId`.
+### Frontend — `/write` route tree (ship-this-week revision, 2026-05-04)
+
+**Default route:** `/write` → redirect to `/write/manuscript` (was `/write/gaps`).
+The writing companion opens manuscript-first since that is the primary daily workflow.
+
+- `/write/manuscript` (v3, now default) → manuscript reader. Three-pane layout:
+  - Left (w-52): `<ManuscriptOutline>` — chapter navigator.
+  - Center: `<ChapterScroll>` + `<ParagraphRow>` — paragraph render with
+    left-gutter chips (⚓N footnotes; ⚠ cite?; gap badges; TODO chip).
+    Default chapter selection skips preamble/title-only chapters: first
+    chapter whose non-heading paragraphs exceed 200 words total is selected.
+  - Right (fixed, w-96): `<DossierSidePanel>` — all tier sections now use
+    `compact=true` (panel is 384px wide). When opened via paragraph click,
+    the panel shows the paragraph text at the top under "Citing this passage:"
+    label (italicised) so the user confirms the source list applies to the
+    passage they're working on. Multi-gap paragraphs get a tab strip. ESC
+    closes; URL updates to `/write/manuscript/:chapterSlug/:paraId`.
   Keyboard shortcuts: `j`/`k` next/prev paragraph; URL is bookmarkable.
 
-The shared `<SourceCard>` (Wave 2 polish) gains a hover action toolbar:
-Copy dropdown (Chicago / short / link), Star, Read. In v3, Star/Read
-write to `POST /api/library/marks` (optimistic update in the Zustand
-store). On app start, `hydrateMarks()` migrates any legacy
-`localStorage['library.marks']` to the DB then clears localStorage.
-Copy actions surface a 1.6 s toast via the global `<ToastHost>` mounted
-in `<WriteShell>`.
+- `/write/gaps` → chapter-grouped gap list. Null/empty chapter titles render
+  as "Cross-chapter theses" with a tooltip explaining these are intro promises
+  whose chapter wasn't auto-paired.
+
+- `/write/gaps/:gapId` → live dossier view:
+  - Header: gap metadata + "Pull more sources →" link (→ `/runs/new?gap=<id>`)
+    shown when tier-3 count is 0 OR gap is `intro_promise` with < 5 tier-3 entries.
+  - **TopPicks strip**: above filter controls, shows the 3 most citation-ready
+    tier-3 entries (sorted by has_pdf_path, source priority, pub_date_desc).
+    Falls back to tier-2 if no tier-3 exist. Hidden entirely when tier-3 = 0.
+  - Filter strip (source toggles · score floor · has-PDF only).
+  - Four collapsible tier sections (tier 3/2 default-open, tier 1/0 collapsed).
+  Each entry is a `<SourceCard>` with:
+    - Per-card score badge reads "score N" (not "tier N"; "tier" is reserved
+      for gap-level priority badges in headers and DossierHeader).
+    - Drag handle visible at opacity-40 at rest (was opacity-0).
+    - Primary "Open" CTA prefers PDF when available; secondary "(or open URL)"
+      link shown when both PDF and URL exist.
+    - `also_in_sources` moved from inline meta to hover popover only ("Also in: …").
+    - Read (Eye) toggle removed from UI; underlying `read` state preserved in DB.
+    - Hover popover (300 ms) shows full WHY + abstract + also_in + doi/url.
+    - **Drag onboarding**: first-ever hover on the drag handle shows a tooltip
+      "Drag to Word — drops Chicago citation" that auto-dismisses after 5 s or
+      on × click. Persisted to `localStorage['library.onboarding.drag_seen']`.
+    - Cite dropdown copies Chicago / `(Author Year)` / link to clipboard with toast.
+    - Cards are draggable via `attachDragCitations` (dataTransfer MIME types).
+
+- `/write/search` → corpus search. On mount, reads `?q=` URL param and seeds
+  both the query input and fires the search immediately. Enables linking to
+  `/write/search?q=China` from external surfaces.
+
+- `/write/characters` → main-characters dashboard (unchanged from Wave 2).
+
+- `/write/queue` → reading queue. Uses `POST /api/library/articles/resolve_gaps`
+  on mount to map starred article IDs → gap IDs server-side. The "visit the
+  dossier once to populate" message is removed. Articles with no resolved gap
+  (data integrity issue) appear under a "(no gap mapping)" group.
+
+The shared `<SourceCard>` action row: Copy dropdown (Chicago / short / link),
+Star. Read toggle removed from UI. In v3, Star writes to `POST /api/library/marks`
+(optimistic update in Zustand). On app start, `hydrateMarks()` migrates any
+legacy `localStorage['library.marks']` to the DB then clears localStorage.
 
 ### UI smoke tests (Playwright)
 
@@ -195,11 +205,16 @@ npm run test:e2e -- tests/e2e/dossier.spec.ts
 ```
 
 **Test files:**
-- `frontend/tests/e2e/dossier.spec.ts` — 6 tests for `/write/gaps/TODO9`:
+- `frontend/tests/e2e/dossier.spec.ts` — 8 tests for `/write/gaps/TODO9`:
   gap ID visible, 91-entry summary, all 4 tier headers, count badges (1/1/1/88),
-  Tier 0 expand+cards, screenshot saved to `tests/e2e/screenshots/`.
+  Tier 0 expand+cards, drag handle opacity > 0, TopPicks strip visible, screenshot.
 - `frontend/tests/e2e/routes.spec.ts` — 7 route smoke tests covering all
-  `/write/*` surfaces and `/runs`.
+  `/write/*` surfaces and `/runs`. `/write` redirect now asserts `/write/manuscript`.
+- `frontend/tests/e2e/search-and-queue.spec.ts` — 2 tests: `?q=China` returns
+  results; starred card visible in queue without visiting dossier.
+- `frontend/tests/e2e/manuscript.spec.ts` — 2 tests: default chapter is not
+  preamble (>50 paragraphs visible); gap badge click opens side panel with
+  "Citing this passage:" label.
 
 Screenshots are gitignored (`frontend/tests/e2e/screenshots/`).
 Playwright HTML reports land in `frontend/playwright-report/` (gitignored).

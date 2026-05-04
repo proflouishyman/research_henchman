@@ -27,9 +27,10 @@ import {
   Link as LinkIcon,
   Network,
   Star,
-  Eye,
   GripVertical,
 } from 'lucide-react'
+// Note: Eye import removed — C12: Read toggle hidden from UI.
+// The underlying read state in library.ts is preserved for future use.
 import type { DossierEntry } from '../../types/library'
 import { fileUrl } from '../../lib/library_api'
 import { attachDragCitations, chicagoCitation, shortCitation, linkOnly } from '../../lib/citations'
@@ -123,15 +124,16 @@ export function SourceCard({ entry, compact, snippet }: Props) {
 
   const handleDragStart = (ev: React.DragEvent) => {
     attachDragCitations(ev, entry)
+    // D14: Dismiss the onboarding drag hint on first drag.
+    try { window.localStorage.setItem(DRAG_SEEN_KEY, '1') } catch { /* ignore */ }
   }
 
+  // B13: also_in_sources moved to hover popover only — main meta line keeps
+  // just primary source. This declutters the card's single info row.
   const meta: string[] = []
   if (entry.authors) meta.push(entry.authors)
   if (entry.pub_date) meta.push(entry.pub_date)
   meta.push(srcLabel(entry.source_id))
-  if (entry.also_in_sources.length > 0) {
-    meta.push(`also in: ${entry.also_in_sources.map(srcLabel).join(', ')}`)
-  }
 
   // Compact single-line variant (tier 0/1).
   if (compact) {
@@ -191,13 +193,14 @@ export function SourceCard({ entry, compact, snippet }: Props) {
       <DragHandle />
 
       <div className="flex items-start gap-3 mb-2">
+        {/* B9: renamed from "tier N" → "score N" to reserve "tier" for gap-level badges. */}
         <span
           className={`text-[10px] font-mono px-1.5 py-0.5 rounded border shrink-0 mt-1 ${tierBadgeClass(
             entry.relevance_score,
           )}`}
-          title="Relevance score"
+          title="Relevance score (0=false positive, 3=cite-worthy)"
         >
-          tier {entry.relevance_score ?? '—'}
+          score {entry.relevance_score ?? '—'}
         </span>
         <div className="flex-1 min-w-0">
           <h3 className="text-sm font-semibold text-ink leading-snug">
@@ -258,35 +261,116 @@ export function SourceCard({ entry, compact, snippet }: Props) {
   )
 }
 
-/** Small drag handle, only visible on card hover. */
+const DRAG_SEEN_KEY = 'library.onboarding.drag_seen'
+
+/**
+ * Small drag handle with improved discoverability.
+ *
+ * B5: opacity-40 at rest (was opacity-0) so it's always faintly visible.
+ * D14: On first hover, a small tooltip emerges from the handle. Dismissed
+ *   on first drag-start, × click, or after 5 seconds. Persists to
+ *   localStorage['library.onboarding.drag_seen'].
+ */
 function DragHandle() {
+  const [showHint, setShowHint] = useState(false)
+  const hintTimer = useRef<number | null>(null)
+  // Check once whether the user has seen the hint.
+  const alreadySeen =
+    typeof window !== 'undefined' && !!window.localStorage.getItem(DRAG_SEEN_KEY)
+
+  const dismissHint = () => {
+    setShowHint(false)
+    if (hintTimer.current) window.clearTimeout(hintTimer.current)
+    try {
+      window.localStorage.setItem(DRAG_SEEN_KEY, '1')
+    } catch { /* ignore */ }
+  }
+
+  const onMouseEnter = () => {
+    if (alreadySeen) return
+    const seen = window.localStorage.getItem(DRAG_SEEN_KEY)
+    if (seen) return
+    setShowHint(true)
+    hintTimer.current = window.setTimeout(dismissHint, 5000)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (hintTimer.current) window.clearTimeout(hintTimer.current)
+    }
+  }, [])
+
   return (
     <span
-      className="absolute -left-4 top-2 opacity-0 group-hover:opacity-100 transition-opacity text-ink-muted cursor-grab active:cursor-grabbing"
-      title="Drag to Word/Pages — drops Chicago citation"
+      className="absolute -left-4 top-2 opacity-40 group-hover:opacity-100 transition-opacity text-ink-muted cursor-grab active:cursor-grabbing"
+      title="Drag to Word — drops Chicago citation"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={() => {
+        // Don't hide while the hint is showing — let the timer or × handle it.
+      }}
     >
       <GripVertical size={14} />
+      {showHint && (
+        <div
+          className="absolute left-5 top-0 z-50 flex items-center gap-2 bg-ink text-surface rounded-md px-3 py-1.5 text-[11px] whitespace-nowrap shadow-panel pointer-events-auto"
+          style={{ minWidth: 220 }}
+        >
+          <span>Drag to Word — drops Chicago citation</span>
+          <button
+            onClick={(e) => { e.stopPropagation(); dismissHint() }}
+            className="ml-1 opacity-70 hover:opacity-100 font-bold text-xs"
+            title="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
     </span>
   )
 }
 
-/** Open + Cite + Star + Read action row. */
+/**
+ * Open + Cite + Star action row.
+ *
+ * A4: If entry has BOTH a pdf_path AND a url, the primary CTA opens the PDF
+ *   and a secondary "(or open URL)" link is shown.
+ * C12: Read toggle (Eye icon) removed from UI. The underlying read state in
+ *   library.ts is preserved; only the render is removed.
+ */
 function CardActions({ entry, onOpen }: { entry: DossierEntry; onOpen: () => void }) {
-  const hasOpenable = !!entry.pdf_path || !!entry.url
-  const { isStarred, isRead, toggleStar, toggleRead } = useLibraryStore()
+  const hasPdf = !!entry.pdf_path
+  const hasUrl = !!entry.url
+  const hasOpenable = hasPdf || hasUrl
+  const { isStarred, toggleStar } = useLibraryStore()
   const starred = isStarred(entry.id)
-  const read = isRead(entry.id)
+
+  // A4: secondary URL handler for when the primary CTA opens the PDF.
+  const onOpenUrl = () => {
+    if (entry.url) window.open(entry.url, '_blank', 'noopener,noreferrer')
+  }
+
   return (
-    <div className="flex items-center gap-2 ml-auto">
+    <div className="flex items-center gap-2 ml-auto flex-wrap">
+      {/* A4: Primary open button — prefers PDF when available. */}
       <button
         onClick={onOpen}
         disabled={!hasOpenable}
         className="flex items-center gap-1 text-[11px] font-medium text-ink-secondary hover:text-ink disabled:opacity-40 disabled:cursor-not-allowed"
-        title={entry.pdf_path ? `Open PDF: ${entry.pdf_path}` : entry.url || 'No link'}
+        title={hasPdf ? `Open PDF: ${entry.pdf_path}` : entry.url || 'No link'}
       >
-        {entry.pdf_path ? <FileText size={12} /> : <ExternalLink size={12} />}
-        {entry.pdf_path ? 'Open PDF' : 'Open URL'}
+        {hasPdf ? <FileText size={12} /> : <ExternalLink size={12} />}
+        {hasPdf ? 'Open PDF' : 'Open URL'}
       </button>
+      {/* A4: Secondary URL link when both PDF and URL exist. */}
+      {hasPdf && hasUrl && (
+        <button
+          onClick={onOpenUrl}
+          className="text-[10px] text-ink-muted hover:text-ink underline"
+          title={`Open original URL: ${entry.url}`}
+        >
+          or open URL
+        </button>
+      )}
       <CiteDropdown entry={entry} />
       <button
         onClick={() => {
@@ -299,18 +383,6 @@ function CardActions({ entry, onOpen }: { entry: DossierEntry; onOpen: () => voi
         title={starred ? 'Unstar' : 'Star (add to reading queue)'}
       >
         <Star size={12} fill={starred ? 'currentColor' : 'none'} />
-      </button>
-      <button
-        onClick={() => {
-          toggleRead(entry.id)
-          showToast(read ? 'Marked unread' : 'Marked as read')
-        }}
-        className={`flex items-center gap-1 text-[11px] font-medium ${
-          read ? 'text-emerald-600' : 'text-ink-secondary hover:text-ink'
-        }`}
-        title={read ? 'Mark unread' : 'Mark as read'}
-      >
-        <Eye size={12} />
       </button>
     </div>
   )
@@ -431,7 +503,9 @@ function CrossGapChip({ refs }: { refs: string[] }) {
   )
 }
 
-/** Hover popover with the full WHY + abstract — "preview before clicking". */
+/** Hover popover with the full WHY + abstract — "preview before clicking".
+ * B13: also_in_sources rendered here as "Also in: HathiTrust, EBSCO."
+ */
 function HoverPopover({ entry }: { entry: DossierEntry }) {
   return (
     <div className="absolute left-full top-0 ml-3 z-40 w-96 bg-surface-card border border-border rounded-md shadow-panel p-4 pointer-events-none">
@@ -450,6 +524,12 @@ function HoverPopover({ entry }: { entry: DossierEntry }) {
         </>
       ) : (
         <p className="text-[11px] text-ink-muted italic">No abstract available.</p>
+      )}
+      {/* B13: also_in_sources shown in hover popover instead of inline meta. */}
+      {entry.also_in_sources.length > 0 && (
+        <p className="mt-2 text-[10px] text-ink-muted">
+          Also in: {entry.also_in_sources.map(srcLabel).join(', ')}
+        </p>
       )}
       {(entry.doi || entry.url || entry.pdf_path) && (
         <div className="mt-3 pt-2 border-t border-border text-[10px] font-mono text-ink-muted break-all">

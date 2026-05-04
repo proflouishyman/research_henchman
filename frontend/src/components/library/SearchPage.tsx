@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Search, X, ArrowDown } from 'lucide-react'
 import { fetchLibraryIndex, searchArticles } from '../../lib/library_api'
 import { useLibraryStore } from '../../store/library'
@@ -28,6 +28,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 export function SearchPage() {
   const navigate = useNavigate()
+  const [urlParams] = useSearchParams()
   const {
     searchQuery,
     setSearchQuery,
@@ -45,6 +46,19 @@ export function SearchPage() {
     setSearchError,
     clearSearch,
   } = useLibraryStore()
+
+  // A1: Seed searchQuery from ?q= URL param on mount.
+  // Only fires once so we don't override user input on subsequent renders.
+  const seededFromUrl = useRef(false)
+  useEffect(() => {
+    if (seededFromUrl.current) return
+    seededFromUrl.current = true
+    const qParam = urlParams.get('q')
+    if (qParam && qParam.trim()) {
+      setSearchQuery(qParam.trim())
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Library index supplies source list + gap ids for the filter rail.
   const { data: index } = useQuery({

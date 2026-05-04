@@ -40,6 +40,8 @@ export function ManuscriptReader() {
 
   // State for which gap_ids are showing in the side panel
   const [activePanelGapIds, setActivePanelGapIds] = useState<string[]>([])
+  // B8: The paragraph text that triggered the panel open, for "Citing this passage:".
+  const [activePanelParaText, setActivePanelParaText] = useState<string | undefined>(undefined)
 
   // Fetch manuscript structure (cached server-side + react-query)
   const { data, isLoading, error } = useQuery({
@@ -48,14 +50,29 @@ export function ManuscriptReader() {
     staleTime: 60000,
   })
 
-  // Derive chapter from URL slug or default to first chapter
+  // A3: Find the first chapter with meaningful body content (word count > 200).
+  // This skips preamble/title-only sections so the default landing is useful.
+  const firstBodyChapter = useMemo(() => {
+    if (!data) return null
+    for (const ch of data.chapters) {
+      const wordCount = ch.sections
+        .flatMap((s) => s.paragraphs)
+        .filter((p) => !p.is_heading && p.text.trim())
+        .reduce((acc, p) => acc + p.text.split(/\s+/).length, 0)
+      if (wordCount > 200) return ch
+    }
+    // Fallback: first chapter regardless.
+    return data.chapters[0] ?? null
+  }, [data])
+
+  // Derive chapter from URL slug or default to first body chapter.
   const activeChapter = useMemo(() => {
     if (!data) return null
     if (chapterSlug) {
       return data.chapters.find((c) => c.slug === chapterSlug) ?? data.chapters[0] ?? null
     }
-    return data.chapters[0] ?? null
-  }, [data, chapterSlug])
+    return firstBodyChapter
+  }, [data, chapterSlug, firstBodyChapter])
 
   // Sync store with URL params
   useEffect(() => {
@@ -90,8 +107,10 @@ export function ManuscriptReader() {
 
   // Handle gap click → open side panel + update URL
   const handleGapClick = useCallback(
-    (gapId: string, clickedParaId: string, allGapIds: string[]) => {
+    (gapId: string, clickedParaId: string, allGapIds: string[], paraText?: string) => {
       setActivePanelGapIds(allGapIds.length > 0 ? allGapIds : [gapId])
+      // B8: Capture the paragraph text for the "Citing this passage:" label.
+      setActivePanelParaText(paraText)
       setDossierSidePanelOpen(true)
       if (activeChapter) {
         navigate(`/write/manuscript/${activeChapter.slug}/${clickedParaId}`, { replace: true })
@@ -104,6 +123,7 @@ export function ManuscriptReader() {
   const handlePanelClose = useCallback(() => {
     setDossierSidePanelOpen(false)
     setSelectedParaId(null)
+    setActivePanelParaText(undefined)
     if (activeChapter) {
       navigate(`/write/manuscript/${activeChapter.slug}`, { replace: true })
     }
@@ -176,7 +196,8 @@ export function ManuscriptReader() {
                 s.paragraphs.some((p) => p.para_id === clickedParaId),
               )
               const para = section?.paragraphs.find((p) => p.para_id === clickedParaId)
-              handleGapClick(gapId, clickedParaId, para?.gap_ids ?? [gapId])
+              // B8: pass paragraph text through for "Citing this passage:" label.
+              handleGapClick(gapId, clickedParaId, para?.gap_ids ?? [gapId], para?.text)
             }}
           />
         ) : (
@@ -191,6 +212,7 @@ export function ManuscriptReader() {
             gapIds={activePanelGapIds}
             paraId={selectedParaId}
             onClose={handlePanelClose}
+            paragraphText={activePanelParaText}
           />
         </div>
       )}

@@ -1,3 +1,78 @@
+[2026-05-04] - UI ship-this-week fixes (writing companion)
+
+Problem
+Multiple bugs and UX gaps blocked daily use of the writing companion:
+  1. `/write/search?q=China` ignored the ?q= URL param — results never appeared.
+  2. `/write/queue` showed "visit the dossier once to populate" for all starred
+     articles because it relied on a localStorage article→gap cache that was only
+     populated when the user had previously opened each dossier view.
+  3. `/write` landed on the gap list, not the manuscript reader.
+  4. `DossierSidePanel` rendered full-width cards in a 384px panel, stacking 5x tall.
+  5. Drag handle was invisible at rest (opacity-0) — users couldn't discover dragging.
+  6. The per-card "tier N" badge conflated card-level score with gap-level tier labels.
+  7. No paragraph context was shown in the side panel — user couldn't confirm which
+     passage the source list applied to.
+  8. Null chapter buckets in the gap list showed nothing meaningful.
+
+Root Cause
+  1. `SearchPage` never read `useSearchParams()` on mount.
+  2. `QueuePage.useArticleGapMap()` was a pure localStorage read; only populated
+     when `DossierView.stampArticleGap()` had run (i.e., the dossier was visited).
+     The server-side `resolve_gaps` endpoint existed but was unused here.
+  3. `App.tsx` Navigate index → "gaps"; no redirect to "manuscript".
+  4. `DossierSidePanel` passed `compact={false}` (implicitly) for Tier 3 entries.
+  5. `DragHandle` CSS had `opacity-0` instead of `opacity-40`.
+  6. Full-card score badge text was "tier N" — same word as gap-level tier badge.
+  7. `DossierSidePanel` had no paragraph context props or UI block.
+  8. `ChapterBlock` rendered `chapter.title` verbatim; empty string → blank heading.
+
+Solution
+  A1. `SearchPage`: import `useSearchParams`, add one-shot `useEffect` on mount
+      that reads `?q=` and calls `setSearchQuery()`.
+  A2. `QueuePage`: replace `useArticleGapMap` (localStorage) with a `useEffect`
+      that calls `resolveGaps(starredIds)` on mount and on starred set change.
+      Invert the mapping (gap_id → [article_ids]) to (article_id → gap_id).
+      Articles with no resolved gap show under "(no gap mapping)" group.
+  A3. `App.tsx`: change Navigate index from "gaps" to "manuscript". In
+      `ManuscriptReader`, compute `firstBodyChapter` — first chapter whose
+      non-heading paragraphs exceed 200 words — as the default when no slug in URL.
+  A4. `SourceCard`: primary "Open" CTA now prefers PDF; adds secondary "(or open URL)"
+      link when both pdf_path and url exist.
+  B5. `DragHandle`: `opacity-0` → `opacity-40`; added `title` attribute.
+  B6. `DossierSidePanel`: all `TierSection` calls now pass `compact` prop.
+  B7. `DossierView`: added `<TopPicks>` strip above filters — 3 most cite-ready
+      tier-3 entries sorted by (has_pdf, source_priority, pub_date_desc). Falls back
+      to tier-2 if no tier-3. Hidden when tier-3 count is 0.
+  B8. `DossierSidePanel`: added `paragraphText?: string` prop. Passed from
+      `ManuscriptReader.handleGapClick` via `para?.text`. Panel renders a
+      "Citing this passage:" block at the top when prop is present.
+  B9. Full card score badge: "tier N" → "score N".
+  B10. `ChapterBlock`: null/empty title → "Cross-chapter theses" with tooltip.
+  B11. `DossierHeader`: added "Pull more sources →" link when tier-3=0 or
+       intro_promise gap with < 5 tier-3 entries.
+  B13. `also_in_sources` removed from inline meta; added to `HoverPopover`.
+  C12. `Eye` (Read) import and button removed from `CardActions`.
+  D14. `DragHandle`: onboarding hint tooltip shown on first hover, dismissed
+       on drag-start, × click, or 5 s timeout; persisted to localStorage.
+  E15. `dossier.spec.ts`: added drag handle opacity and TopPicks strip tests.
+  E15. `routes.spec.ts`: updated `/write` redirect assertion to "manuscript".
+  E16. New `search-and-queue.spec.ts`: ?q= seeding + queue without dossier visit.
+  E17. New `manuscript.spec.ts`: default chapter has >50 paragraphs; side panel
+       shows "Citing this passage:" label.
+
+Notes
+  - `stampArticleGap` function retained in QueuePage (exported) for DossierView
+    backward compatibility; its localStorage cache is still populated on dossier
+    render but is no longer used by QueuePage itself.
+  - `resolve_gaps` returns `{mapping: {article_id_str: [gap_id, ...]}}`. The
+    frontend inverts to `article_id_number → first_gap_id`. (Note: key is
+    article_id, not gap_id — iterate `Object.entries(mapping)` as
+    `[articleIdStr, gapIds]`, not `[gapId, ids]`.)
+  - The "Pull more sources" link points to `/runs/new?gap=<id>`; the /runs side
+    does not yet consume this param — the link establishes the bridge for a future ship.
+  - Read state in `library.ts` and `user_marks` DB table is preserved; only the
+    Eye UI is hidden. Can be re-added without schema changes.
+
 [2026-05-04] - Playwright UI smoke tests + Tier 0 visibility fix
 
 Problem

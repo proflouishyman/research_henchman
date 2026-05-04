@@ -1,19 +1,22 @@
 // /write/queue — flat list of starred articles, grouped by gap.
 //
-// Marks are localStorage-only (Wave 2 scope). To populate the cards we
-// fetch each unique gap_id's dossier and pluck out the entries whose
-// id is in the starred set. Falls back gracefully if a gap is missing.
+// A2 fix: uses POST /api/library/articles/resolve_gaps to map article_ids →
+// gap_ids server-side. The previous localStorage-based useArticleGapMap is
+// replaced with a single API call on mount so "visit the dossier once" is
+// never required. Articles with no resolved gap show under "(no gap mapping)".
 
 import { useEffect, useMemo, useState } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { Star } from 'lucide-react'
-import { fetchDossier } from '../../lib/library_api'
+import { fetchDossier, resolveGaps } from '../../lib/library_api'
 import { useLibraryStore } from '../../store/library'
 import type { DossierEntry } from '../../types/library'
 import { SourceCard } from './SourceCard'
 
+const NO_GAP = '_no_gap_mapping'
+
 export function QueuePage() {
-  const { marks, isStarred } = useLibraryStore()
+  const { marks } = useLibraryStore()
   const starredIds = useMemo(
     () =>
       Object.entries(marks)
@@ -22,28 +25,49 @@ export function QueuePage() {
     [marks],
   )
 
-  // We don't know the gap_id from localStorage alone — we have to look
-  // it up in the dossiers. Strategy: maintain a small cache mapping
-  // article_id → gap_id learned the last time the user saw the entry
-  // (stamped by SourceCard render). Fall back to scanning all gaps if
-  // the cache is cold.
-  const articleGapMap = useArticleGapMap(starredIds)
+  // A2: Server-resolved article_id → gap_id mapping via POST resolve_gaps.
+  // Keyed by article_id (number), value is the first gap_id returned.
+  const [articleGapMap, setArticleGapMap] = useState<Record<number, string>>({})
+  const [resolving, setResolving] = useState(false)
 
-  // Group starred ids by gap_id (or "_unknown" while still loading).
+  useEffect(() => {
+    if (starredIds.length === 0) return
+    setResolving(true)
+    resolveGaps(starredIds)
+      .then(({ mapping }) => {
+        // mapping shape: { article_id_str: [gap_id, ...] }
+        // Convert to: { article_id_number: first_gap_id }
+        const m: Record<number, string> = {}
+        for (const [articleIdStr, gapIds] of Object.entries(mapping)) {
+          const numId = Number(articleIdStr)
+          if (Number.isFinite(numId) && gapIds.length > 0) {
+            // First gap wins for articles appearing in multiple gaps.
+            m[numId] = gapIds[0]
+          }
+        }
+        setArticleGapMap(m)
+      })
+      .catch(() => {
+        // Non-fatal — articles will show under no-gap-mapping group.
+      })
+      .finally(() => setResolving(false))
+  // Re-resolve whenever the starred set changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [starredIds.join(',')])
+
+  // Group starred ids by gap_id (or NO_GAP for unresolved).
   const grouped = useMemo(() => {
     const out: Record<string, number[]> = {}
     for (const id of starredIds) {
-      const gap = articleGapMap[id] || '_unknown'
+      const gap = articleGapMap[id] ?? NO_GAP
       if (!out[gap]) out[gap] = []
       out[gap].push(id)
     }
     return out
   }, [starredIds, articleGapMap])
 
-  // Fetch one dossier per unique known gap. ``_unknown`` is omitted —
-  // the user will see a placeholder for those until they revisit the
-  // dossier (which writes the article→gap mapping).
-  const knownGaps = Object.keys(grouped).filter((g) => g !== '_unknown')
+  // Fetch one dossier per unique known gap.
+  const knownGaps = Object.keys(grouped).filter((g) => g !== NO_GAP)
   const dossierQueries = useQueries({
     queries: knownGaps.map((g) => ({
       queryKey: ['dossier', g],
@@ -104,6 +128,7 @@ export function QueuePage() {
         <p className="text-xs text-ink-muted mt-1">
           {starredIds.length} starred article{starredIds.length === 1 ? '' : 's'} ·
           grouped by gap.
+          {resolving && <span className="ml-1 text-ink-muted">(resolving…)</span>}
         </p>
       </header>
 
@@ -121,12 +146,18 @@ export function QueuePage() {
             </div>
           </section>
         ))}
-        {grouped['_unknown']?.length > 0 && (
+        {/* A2: Articles with no resolved gap mapping (data integrity issue). */}
+        {(grouped[NO_GAP]?.length ?? 0) > 0 && (
           <section>
-            <p className="text-xs text-ink-muted italic">
-              {grouped['_unknown'].length} starred article(s) from gaps you
-              haven't reopened yet — visit the dossier once to populate them.
-            </p>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[11px] font-semibold text-ink-muted italic">
+                (no gap mapping)
+              </span>
+              <span className="text-xs text-ink-muted">
+                — {grouped[NO_GAP].length} article{grouped[NO_GAP].length === 1 ? '' : 's'} not
+                linked to a gap in the database
+              </span>
+            </div>
           </section>
         )}
       </div>
@@ -137,7 +168,7 @@ export function QueuePage() {
 /**
  * Compact queue row: collapsed by default; click the title to toggle the
  * full SourceCard. Reuses <SourceCard> compact mode for the collapsed
- * variant so the same star/copy/read primitives are always available.
+ * variant so the same star/copy primitives are always available.
  */
 function QueueRow({ entry }: { entry: DossierEntry }) {
   const [expanded, setExpanded] = useState(false)
@@ -149,53 +180,21 @@ function QueueRow({ entry }: { entry: DossierEntry }) {
 }
 
 /**
- * Hook: maintain a localStorage-backed map from article_id → gap_id so
- * /write/queue can look up which dossier each starred article belongs
- * to without a backend table.
- *
- * Population happens here on demand: any time the queue is rendered we
- * try to refine the cache from the dossier responses. The actual
- * write also happens on dossier render via a side effect — see
- * useStampArticleGap below, which DossierView calls.
- */
-const ARTICLE_GAP_KEY = 'library.article_gap'
-
-function useArticleGapMap(starredIds: number[]): Record<number, string> {
-  const [map, setMap] = useState<Record<number, string>>(() => loadArticleGapMap())
-  // Reload whenever the starred set changes — cheap, single localStorage read.
-  useEffect(() => {
-    setMap(loadArticleGapMap())
-  }, [starredIds.join(',')])
-  return map
-}
-
-function loadArticleGapMap(): Record<number, string> {
-  if (typeof window === 'undefined') return {}
-  try {
-    const raw = window.localStorage.getItem(ARTICLE_GAP_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as Record<string, string>
-    const out: Record<number, string> = {}
-    for (const [k, v] of Object.entries(parsed)) {
-      const n = Number(k)
-      if (Number.isFinite(n) && typeof v === 'string') out[n] = v
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
-
-/**
  * Stamp a (article_id → gap_id) mapping into localStorage. Called by
  * DossierView on every render so the queue page can resolve gap
  * membership for starred articles.
+ *
+ * NOTE: This function is kept for DossierView compatibility. The QueuePage
+ * itself now uses the server-side resolve_gaps endpoint instead of this map.
  */
+const ARTICLE_GAP_KEY = 'library.article_gap'
+
 export function stampArticleGap(articleIds: number[], gapId: string): void {
   if (typeof window === 'undefined') return
   if (!gapId) return
   try {
-    const cur = loadArticleGapMap()
+    const raw = window.localStorage.getItem(ARTICLE_GAP_KEY)
+    const cur: Record<string, string> = raw ? JSON.parse(raw) : {}
     let changed = false
     for (const id of articleIds) {
       if (cur[id] !== gapId) {

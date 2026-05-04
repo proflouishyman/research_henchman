@@ -46,7 +46,8 @@ export default function App() {
 
         {/* Library / writing companion. */}
         <Route path="/write" element={<WriteShell />}>
-          <Route index element={<Navigate to="gaps" replace />} />
+          {/* A3: Default /write → /write/manuscript (not gaps). */}
+          <Route index element={<Navigate to="manuscript" replace />} />
           {/* v3: Manuscript reader — before gaps so slug matching is unambiguous */}
           <Route path="manuscript" element={<ManuscriptReader />} />
           <Route path="manuscript/:chapterSlug" element={<ManuscriptReader />} />

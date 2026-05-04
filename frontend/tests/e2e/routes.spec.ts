@@ -17,11 +17,11 @@ test.describe('Route smoke tests', () => {
     await expect(page.locator('text=Failed to load')).toHaveCount(0)
   })
 
-  test('/write redirects to /write/gaps', async ({ page }) => {
+  test('/write redirects to /write/manuscript (not /write/gaps)', async ({ page }) => {
     await page.goto('/write')
-    // React Router navigates: index → Navigate to="gaps"
-    await page.waitForURL('**/write/gaps', { timeout: 5000 })
-    await expect(page.url()).toContain('/write/gaps')
+    // A3: index → Navigate to="manuscript"
+    await page.waitForURL('**/write/manuscript', { timeout: 5000 })
+    await expect(page.url()).toContain('/write/manuscript')
   })
 
   test('/write/gaps loads with sidebar visible', async ({ page }) => {

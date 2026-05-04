@@ -138,6 +138,7 @@ export function SourceCard({ entry, compact, snippet }: Props) {
     return (
       <div
         ref={cardRef}
+        data-testid="source-card"
         draggable
         onDragStart={handleDragStart}
         onMouseEnter={onMouseEnter}
@@ -180,6 +181,7 @@ export function SourceCard({ entry, compact, snippet }: Props) {
   return (
     <article
       ref={cardRef}
+      data-testid="source-card"
       draggable
       onDragStart={handleDragStart}
       onMouseEnter={onMouseEnter}

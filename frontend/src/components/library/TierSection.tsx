@@ -16,12 +16,13 @@ interface Props {
 
 export function TierSection({ bucket, heading, entries, defaultOpen, compact }: Props) {
   const [open, setOpen] = useState(defaultOpen)
-  if (entries.length === 0 && !open) {
-    // Still render the header so the user can expand and see "0 entries".
-  }
+
+  // Tier 0 (search false positives) gets a muted visual treatment to signal
+  // de-emphasis without hiding the section.
+  const isDeemphasized = bucket === '0'
 
   return (
-    <section className="bg-surface-card border border-border rounded-md">
+    <section className={`bg-surface-card border border-border rounded-md${isDeemphasized ? ' opacity-70' : ''}`}>
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-surface-muted transition-colors"

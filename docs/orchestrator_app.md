@@ -173,6 +173,37 @@ store). On app start, `hydrateMarks()` migrates any legacy
 Copy actions surface a 1.6 s toast via the global `<ToastHost>` mounted
 in `<WriteShell>`.
 
+### UI smoke tests (Playwright)
+
+Local end-to-end smoke tests run against the live uvicorn server on port 8000.
+They verify structural correctness — all four dossier tier sections visible,
+correct entry counts, expandable cards — and catch regressions before manual
+browsing.
+
+**Prerequisites**: uvicorn already running on `http://127.0.0.1:8000`.
+
+**Run all tests:**
+```bash
+cd frontend
+npm run test:e2e
+```
+
+**Run a single spec:**
+```bash
+cd frontend
+npm run test:e2e -- tests/e2e/dossier.spec.ts
+```
+
+**Test files:**
+- `frontend/tests/e2e/dossier.spec.ts` — 6 tests for `/write/gaps/TODO9`:
+  gap ID visible, 91-entry summary, all 4 tier headers, count badges (1/1/1/88),
+  Tier 0 expand+cards, screenshot saved to `tests/e2e/screenshots/`.
+- `frontend/tests/e2e/routes.spec.ts` — 7 route smoke tests covering all
+  `/write/*` surfaces and `/runs`.
+
+Screenshots are gitignored (`frontend/tests/e2e/screenshots/`).
+Playwright HTML reports land in `frontend/playwright-report/` (gitignored).
+
 ## Removed MVP concepts
 - `Intent` endpoints and intent state are removed.
 - Manual strategy-preview endpoint is removed.

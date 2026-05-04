@@ -1,3 +1,53 @@
+[2026-05-04] - Playwright UI smoke tests + Tier 0 visibility fix
+
+Problem
+Running `curl .../gaps/TODO9/dossier` confirmed 91 consolidated entries
+(tier-3:1, tier-2:1, tier-1:1, tier-0:88), but the user reported seeing only
+3 tier sections in the rendered UI. Tier 0 appeared to be missing.
+
+Root Cause
+Two combined issues:
+
+  1. The `TierSection` component contained a dead empty `if` block:
+       if (entries.length === 0 && !open) {
+         // Still render the header so the user can expand and see "0 entries".
+       }
+     This comment implied the section would be skipped in some cases, but
+     the empty block was a no-op — the component always rendered. The real
+     problem was visual: Tier 0 (88 entries, compact, collapsed-by-default)
+     had no visual differentiation from a normal tier, so its collapsed
+     header blended in at the bottom of a long list. Playwright tests
+     confirmed the header WAS in the DOM — the user likely missed it visually.
+
+  2. `SourceCard` lacked a `data-testid` attribute, making it impossible to
+     confirm via automated test that clicking a tier header actually expanded
+     and showed cards. Without this anchor, the first Playwright test run
+     falsely appeared to confirm the bug on "source cards not visible."
+
+Solution
+  - Removed the dead empty `if` block from `TierSection`; added `opacity-70`
+    to bucket "0" sections to visually de-emphasize them (false positives)
+    while keeping them clearly present.
+  - Added `data-testid="source-card"` to both the compact (`<div>`) and full
+    (`<article>`) SourceCard rendering paths.
+  - Installed `@playwright/test` + chromium in `frontend/`.
+  - Created `frontend/playwright.config.ts` (headless, baseURL=:8000, 1 worker).
+  - Created `frontend/tests/e2e/dossier.spec.ts` — 6 tests covering:
+      * gap ID in header, summary count (91), all 4 tier headers visible,
+        count badges (1/1/1/88), Tier 0 expand+cards, screenshot.
+  - Created `frontend/tests/e2e/routes.spec.ts` — 7 smoke tests covering
+    all /write/* routes and /runs.
+  - Added `npm run test:e2e` script to `frontend/package.json`.
+  - Built fresh dist; all 13 Playwright tests pass; 378 backend tests pass.
+
+Notes
+  - The empty `if` block in TierSection was likely a remnant of an early
+    design that considered hiding zero-entry sections; the comment was
+    left when the return-early was removed. The section always rendered.
+  - `opacity-70` is applied at the `<section>` level so both the header
+    and expanded content appear muted. Hover states remain fully visible.
+  - Screenshots are gitignored (`frontend/tests/e2e/screenshots/`).
+
 [2026-05-04] - Writing-companion UI v3 — manuscript reader + marks DB migration
 
 Problem

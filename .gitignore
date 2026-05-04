@@ -7,3 +7,6 @@ codex/
 docs/Chapter 1 Merchant 8.17.24.docx
 frontend/node_modules/
 logs/
+frontend/tests/e2e/screenshots/
+frontend/playwright-report/
+frontend/test-results/

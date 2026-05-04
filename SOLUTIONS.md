@@ -1,3 +1,84 @@
+[2026-05-04] - Architecture-level UI improvements (writing companion)
+
+Problem
+Several high-value usability gaps remained after the ship-this-week pass:
+  1. No "addressed" status for gaps — no way to distinguish written-up vs pending gaps.
+  2. Manuscript parser cache could not be manually refreshed from the UI.
+  3. Null-chapter intro-promise gaps (23) were only visible in the gap library, not the
+     manuscript reader outline.
+  4. "(no chapter)" label appeared in the sidebar but not "Cross-chapter theses".
+  5. Dossier side panel closed on outside-click; panel not persistent.
+  6. No keyboard shortcut to open dossier for current paragraph (only j/k existed).
+  7. No help overlay listing shortcuts.
+
+Root Cause
+  1. `footnote_count` was available in `manuscript_parse.py` but never exposed as a
+     per-gap "addressed" signal; no backend helper existed.
+  2. `parse_manuscript` always returned the cache-hit; no bypass path existed.
+  3. `ManuscriptOutline` only rendered `data.chapters` from the manuscript structure;
+     null-chapter gaps from the index were never fetched there.
+  4. The CROSS_CHAPTER_LABEL constant was local to `ChapterGroupedGapList`; not shared
+     to `WriteShell` sidebar chapter filter.
+  5. Side panel is only gated on `selectedParaId` being truthy; the panel already
+     persisted in v3 — just needed the render condition relaxed.
+  6. Only `j/k/Escape` were wired; `o` key handler was missing.
+  7. No `?` key handler or help modal existed.
+
+Solution
+  Backend:
+    - `adapters/gap_tree.py`: new `gap_addressed_status(conn, paragraphs, gap_links) →
+      Dict[gap_id, bool]`. Pure-Python computation over flat paragraph list; no extra SQL.
+    - `routers/library.py`: `GET /api/library/gaps` now includes `addressed: bool` per gap.
+    - `GET /api/library/index` now includes `gap_count_addressed` per chapter.
+    - `POST /api/library/manuscript/refresh`: deletes the cache file then re-parses;
+      returns `{paragraph_count, gap_link_count, last_modified}`.
+
+  Frontend types:
+    - `GapTreeRow.addressed?: boolean` added to types.
+    - `LibraryChapter.gap_count_addressed?: number` added.
+    - `refreshManuscript()` API function added to `library_api.ts`.
+
+  Components:
+    - `ChapterGroupedGapList`: addressed gaps rendered at `opacity-50` + ✓ badge;
+      "Show addressed" toggle (default OFF) hides addressed gaps; promoted
+      `CROSS_CHAPTER_LABEL` as an export.
+    - `WriteShell`: Refresh button (↻) in sidebar header (only on manuscript route),
+      spinner during refresh, toast on completion; "?" HelpCircle icon; `HelpModal`
+      component with shortcut table + workflow hint; sidebar chapter list shows
+      "X un-addressed" count in amber when addressed > 0; "Reading queue" nav
+      renamed to "Starred".
+    - `ManuscriptOutline`: fetches index query; "Cross-chapter theses" virtual button
+      at top of outline; per-chapter addressed/un-addressed annotation in stat line;
+      "★ Starred (N)" toggle for the starredFilter prop.
+    - `ManuscriptReader`: wires starredFilter state; adds `CrossChapterPane` for the
+      virtual chapter; `o` key handler opens dossier for current paragraph; panel
+      highlight (200ms border accent) on paragraph change via keyboard; side panel
+      render condition relaxed (no longer requires `selectedParaId` to be set, works
+      for cross-chapter gap clicks too).
+    - `CrossChapterPane` (new): renders null-chapter gaps as paragraph-shaped rows with
+      gap badge in gutter; clicking opens the side panel dossier.
+
+  Tests:
+    - `dossier.spec.ts`: added "score N badge" test; updated to check no card-level
+      "tier N" badge inside source-card spans.
+    - `routes.spec.ts`: updated queue test to assert URL stays on `/write/queue`.
+    - `architecture.spec.ts` (new): 8 tests — help modal, j navigation, refresh button
+      visibility, cross-chapter virtual chapter, orphan gap click, o key handler.
+
+Notes
+  - `gap_addressed_status` is pure-Python over the already-parsed paragraph list;
+    no extra SQL query is needed per request.
+  - The `addressed` computation is best-effort: wrapped in try/except in the API
+    handler; if the docx is missing or parse fails, all gaps default to False.
+  - The manuscript refresh endpoint is `POST /api/library/manuscript/refresh` — it
+    invalidates the cache by deleting the JSON file, then calls `parse_manuscript`
+    (which repopulates the cache). The react-query caches for
+    `['manuscript-structure']` and `['library-index']` are both invalidated after.
+  - Side panel `selectedParaId` requirement relaxed: cross-chapter gap clicks open
+    the panel without a paragraph URL param. The `paraId` prop to `DossierSidePanel`
+    now has a fallback sentinel `'panel'`.
+  - Playwright: 28/28 pass (was 13/13); backend: 378/378 pass (unchanged).
+
 [2026-05-04] - UI ship-this-week fixes (writing companion)
 
 Problem

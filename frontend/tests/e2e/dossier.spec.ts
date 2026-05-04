@@ -119,6 +119,30 @@ test.describe('Dossier view — TODO9', () => {
     await expect(page.getByText('Top picks — most citation-ready')).toBeVisible({ timeout: 5000 })
   })
 
+  test('source card score badge shows "score N" (not card-level "tier N")', async ({ page }) => {
+    // B9/Architecture: card-level article badge should say "score N", not "tier N".
+    // Note: the gap-level header badge renders "tier N" (gap tier) — that's correct.
+    // We expand Tier 3 to see a full SourceCard.
+    const tier3Btn = page.locator('button', {
+      has: page.getByText('Tier 3 — cite-worthy primary sources'),
+    })
+    await tier3Btn.click()
+    await page.locator('[data-testid="source-card"]').first().waitFor({ timeout: 5000 })
+
+    // The full SourceCard renders: "score N" in the badge span (with title attribute).
+    // We verify a "score N" badge exists inside at least one source card.
+    const firstCard = page.locator('[data-testid="source-card"]').first()
+    await expect(firstCard.getByText(/score \d/, { exact: false })).toBeVisible()
+
+    // Cards should NOT have an inline "score" badge that just says "tier N"
+    // (i.e., no span with text exactly "tier 0", "tier 1", "tier 2", "tier 3"
+    // inside a source-card element — the header row can have gap-level tier badges).
+    const tierBadgesInsideCards = page.locator('[data-testid="source-card"] span').filter({
+      hasText: /^tier \d$/,
+    })
+    await expect(tierBadgesInsideCards).toHaveCount(0)
+  })
+
   test('screenshot saved for manual review', async ({ page }) => {
     // Expand Tier 0 so it appears in the screenshot.
     const tier0Btn = page.locator('button', {

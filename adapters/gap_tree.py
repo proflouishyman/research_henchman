@@ -37,7 +37,7 @@ modify ``articles`` or any legacy artifacts.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +263,46 @@ def fetch_gap_type(conn: sqlite3.Connection, gap_id: str) -> Optional[str]:
     if not row:
         return None
     return row[0]
+
+
+def gap_addressed_status(
+    conn: sqlite3.Connection,
+    manuscript_paragraphs: List[Dict[str, Any]],
+    gap_links: Dict[str, List[str]],
+) -> Dict[str, bool]:
+    """Return {gap_id: addressed} for all gaps in gap_links.
+
+    A gap is "addressed" when at least one of its linked paragraphs has
+    ``footnote_count > 0``.  This is a pure-Python computation over the
+    already-parsed paragraph list — no extra SQL needed.
+
+    Args:
+        conn: unused (kept for API symmetry; may use for DB-backed version later).
+        manuscript_paragraphs: flat paragraph list from ``parse_manuscript``.
+        gap_links: {para_id: [gap_id, ...]} from ``paragraph_gap_links``.
+
+    Returns:
+        {gap_id: True/False} — True means at least one linked paragraph has
+        at least one footnote.
+    """
+    # Build inverted map: gap_id → set of para_ids.
+    gap_to_paras: Dict[str, set] = {}
+    for para_id, gids in gap_links.items():
+        for gid in gids:
+            gap_to_paras.setdefault(gid, set()).add(para_id)
+
+    # Index paragraphs by para_id for O(1) lookup.
+    para_footnotes: Dict[str, int] = {
+        p["para_id"]: int(p.get("footnote_count", 0))
+        for p in manuscript_paragraphs
+    }
+
+    result: Dict[str, bool] = {}
+    for gid, para_ids in gap_to_paras.items():
+        result[gid] = any(para_footnotes.get(pid, 0) > 0 for pid in para_ids)
+
+    # Gaps with no linked paragraphs are implicitly False (not addressed).
+    return result
 
 
 def update_gap_classification(

@@ -91,6 +91,15 @@ export async function fetchManuscriptStructure(): Promise<ManuscriptStructure> {
   return libFetch<ManuscriptStructure>('/manuscript/structure')
 }
 
+/** Force-refresh the manuscript parser cache and return parse stats. */
+export async function refreshManuscript(): Promise<{
+  paragraph_count: number
+  gap_link_count: number
+  last_modified: string
+}> {
+  return libPost('/manuscript/refresh', {})
+}
+
 // ---------------------------------------------------------------------------
 // v3 — User marks (DB-backed)
 // ---------------------------------------------------------------------------

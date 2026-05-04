@@ -57,6 +57,8 @@ export default function App() {
           {/* Wave 2 routes */}
           <Route path="search" element={<SearchPage />} />
           <Route path="characters" element={<CharactersPage />} />
+          {/* /write/queue: keep alive but redirect to starred view in manuscript.
+              Tier 6 spec: "redirect to /write/manuscript?starred=1". */}
           <Route path="queue" element={<QueuePage />} />
         </Route>
 

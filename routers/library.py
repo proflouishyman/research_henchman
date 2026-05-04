@@ -225,6 +225,20 @@ def api_library_gaps(
 
         rows = cursor.fetchall()
         counts = _all_article_counts_by_gap(conn)
+
+        # Compute "addressed" status — True if any linked manuscript paragraph
+        # has footnote_count > 0.  Best-effort: silently skip if docx missing.
+        addressed_map: Dict[str, bool] = {}
+        try:
+            from layers.manuscript_parse import parse_manuscript, paragraph_gap_links
+            from adapters.gap_tree import gap_addressed_status
+            if _DEFAULT_DOCX.exists():
+                _paras = parse_manuscript(_DEFAULT_DOCX)
+                _links = paragraph_gap_links(_paras, conn)
+                addressed_map = gap_addressed_status(conn, _paras, _links)
+        except Exception:
+            pass  # Non-fatal — addressed defaults to False.
+
         out: List[Dict[str, Any]] = []
         for r in rows:
             gap = _gap_tree_row_to_dict(r)
@@ -232,6 +246,7 @@ def api_library_gaps(
             if c:
                 gap["total_rows"] = c["total_rows"]
                 gap["tier_counts"] = c["tier_counts"]
+            gap["addressed"] = addressed_map.get(gap["gap_id"], False)
             out.append(gap)
 
         return {"gaps": out}
@@ -316,6 +331,19 @@ def api_library_index() -> Dict[str, Any]:
 
         counts = _all_article_counts_by_gap(conn)
 
+        # Compute per-gap "addressed" status from manuscript footnotes.
+        # Best-effort: if docx is missing or parse fails, addressed_map stays empty.
+        addressed_map: Dict[str, bool] = {}
+        try:
+            from layers.manuscript_parse import parse_manuscript, paragraph_gap_links
+            from adapters.gap_tree import gap_addressed_status
+            if _DEFAULT_DOCX.exists():
+                _paras = parse_manuscript(_DEFAULT_DOCX)
+                _links = paragraph_gap_links(_paras, conn)
+                addressed_map = gap_addressed_status(conn, _paras, _links)
+        except Exception:
+            pass  # Non-fatal.
+
         chapters_map: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         for r in rows:
             gap = _gap_tree_row_to_dict(r)
@@ -323,6 +351,7 @@ def api_library_index() -> Dict[str, Any]:
             if c:
                 gap["total_rows"] = c["total_rows"]
                 gap["tier_counts"] = c["tier_counts"]
+            gap["addressed"] = addressed_map.get(gap["gap_id"], False)
             chapter = gap["chapter"] or "(no chapter)"
             chapters_map[chapter].append(gap)
 
@@ -336,11 +365,13 @@ def api_library_index() -> Dict[str, Any]:
         chapters_out: List[Dict[str, Any]] = []
         for chapter_title, gaps in chapters_map.items():
             gaps.sort(key=_gap_sort_key)
+            gap_count_addressed = sum(1 for g in gaps if g.get("addressed"))
             chapters_out.append({
-                "slug":      chapter_slug(chapter_title),
-                "title":     chapter_title,
-                "gap_count": len(gaps),
-                "gaps":      gaps,
+                "slug":                chapter_slug(chapter_title),
+                "title":               chapter_title,
+                "gap_count":           len(gaps),
+                "gap_count_addressed": gap_count_addressed,
+                "gaps":                gaps,
             })
         chapters_out.sort(key=lambda c: c["title"].lower())
 
@@ -676,6 +707,51 @@ def api_manuscript_structure(
 
     chapters = group_into_chapters(paragraphs, gap_links)
     return {"chapters": chapters}
+
+
+@router.post("/manuscript/refresh")
+def api_manuscript_refresh(
+    docx: Optional[str] = Query(default=None, description="Absolute path to .docx file"),
+) -> Dict[str, Any]:
+    """Force-refresh the manuscript parser cache, bypassing the mtime check.
+
+    Deletes the on-disk cache file (if any) and re-parses the docx from scratch.
+    Returns ``{paragraph_count, gap_link_count, last_modified}`` so the frontend
+    can display a confirmation toast.
+    """
+    from layers.manuscript_parse import (
+        parse_manuscript,
+        paragraph_gap_links,
+        _cache_path,  # internal helper — same module, safe to use here
+    )
+
+    docx_path = _resolve_docx(docx)
+
+    # Invalidate cache by deleting the cache file before calling parse_manuscript.
+    cache_file = _cache_path(docx_path)
+    try:
+        if cache_file.exists():
+            cache_file.unlink()
+    except Exception:
+        pass  # Non-fatal — parse_manuscript will overwrite it anyway.
+
+    paragraphs = parse_manuscript(docx_path)
+
+    conn = _open_conn()
+    try:
+        gap_links = paragraph_gap_links(paragraphs, conn)
+    finally:
+        conn.close()
+
+    import datetime
+    stat = docx_path.stat()
+    last_modified = datetime.datetime.fromtimestamp(stat.st_mtime, tz=datetime.timezone.utc).isoformat()
+
+    return {
+        "paragraph_count": len(paragraphs),
+        "gap_link_count":  sum(len(v) for v in gap_links.values()),
+        "last_modified":   last_modified,
+    }
 
 
 @router.get("/manuscript/paragraph/{para_id}")

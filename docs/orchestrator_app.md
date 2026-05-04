@@ -50,8 +50,12 @@ SQLite (no markdown intermediate). The sibling `/runs` mode is unchanged.
 
 ### API endpoints — `routers/library.py`
 - `GET /api/library/index` — chapter-grouped gap list + corpus stats.
-  Returns `{chapters: [{slug, title, gap_count, gaps: [GapTreeRow]}], corpus_total_rows, corpus_scored_rows, sources}`.
+  Returns `{chapters: [{slug, title, gap_count, gap_count_addressed, gaps: [GapTreeRow]}],
+  corpus_total_rows, corpus_scored_rows, sources}`.
+  `gap_count_addressed` counts gaps with at least one linked paragraph that has a footnote.
 - `GET /api/library/gaps` — flat gap list with article counts joined.
+  Each gap row now includes `addressed: bool` — True when at least one linked manuscript
+  paragraph has `footnote_count > 0` (computed via `adapters.gap_tree.gap_addressed_status`).
   Query params: `chapter`, `gap_type` (CSV), `tier`, `status`,
   `detector_pass`, `parent_gap_id` (`<root>` finds top-level rows).
 - `GET /api/library/gaps/{gap_id}` — single gap_tree row + counts.
@@ -90,6 +94,12 @@ SQLite (no markdown intermediate). The sibling `/runs` mode is unchanged.
   to their primary gap. Body: `{article_ids: [int]}`. Returns
   `{mapping: {article_id_str: [gap_id]}}`. Uses `articles.gap_id`
   (primary ingest gap).
+- `POST /api/library/manuscript/refresh` (architecture pass) — force-refresh
+  the manuscript parser cache by deleting the on-disk JSON and re-parsing.
+  Returns `{paragraph_count, gap_link_count, last_modified}`. The cache
+  invalidation helper `_cache_path` (from `layers.manuscript_parse`) is called
+  internally. React-query caches for `manuscript-structure` and `library-index`
+  are invalidated by the frontend after this endpoint responds.
 
 #### Marks DB schema (v3)
 ```sql
@@ -121,28 +131,57 @@ thin wrapper that consumes the same helpers (`norm_title`,
 `dedupe_within_gap`, `pick_primary`, `build_cross_gap_index`,
 `absolutize_url`, `render_url_or_pdf`).
 
-### Frontend — `/write` route tree (ship-this-week revision, 2026-05-04)
+### Frontend — `/write` route tree (architecture pass, 2026-05-04)
 
 **Default route:** `/write` → redirect to `/write/manuscript` (was `/write/gaps`).
 The writing companion opens manuscript-first since that is the primary daily workflow.
 
 - `/write/manuscript` (v3, now default) → manuscript reader. Three-pane layout:
   - Left (w-52): `<ManuscriptOutline>` — chapter navigator.
+    - Virtual "Cross-chapter theses" button at the top; clicking shows the orphan
+      gaps (null-chapter intro promises) in the center pane via `<CrossChapterPane>`.
+    - "★ Starred (N)" toggle above chapter list; when on, filters the outline to
+      chapters that have gap-linked paragraphs.
+    - Per-chapter stat line annotates addressed vs un-addressed gap count in amber.
   - Center: `<ChapterScroll>` + `<ParagraphRow>` — paragraph render with
     left-gutter chips (⚓N footnotes; ⚠ cite?; gap badges; TODO chip).
     Default chapter selection skips preamble/title-only chapters: first
     chapter whose non-heading paragraphs exceed 200 words total is selected.
+    Virtual cross-chapter chapter renders `<CrossChapterPane>` (orphan gaps as
+    paragraph-shaped rows; clicking opens the dossier panel).
   - Right (fixed, w-96): `<DossierSidePanel>` — all tier sections now use
     `compact=true` (panel is 384px wide). When opened via paragraph click,
     the panel shows the paragraph text at the top under "Citing this passage:"
     label (italicised) so the user confirms the source list applies to the
     passage they're working on. Multi-gap paragraphs get a tab strip. ESC
     closes; URL updates to `/write/manuscript/:chapterSlug/:paraId`.
-  Keyboard shortcuts: `j`/`k` next/prev paragraph; URL is bookmarkable.
+    Panel is persistent — does not close on outside-click.
+    200ms top-border accent flash when the paragraph changes via j/k.
+  Keyboard shortcuts: `j`/`k` next/prev paragraph; `o` opens dossier for
+  current paragraph; `?` opens shortcuts modal; `Escape` closes panel.
+  URL is bookmarkable.
+
+  **WriteShell sidebar additions (architecture pass):**
+  - Refresh button (↻) in the Library header — only visible on manuscript routes;
+    calls `POST /api/library/manuscript/refresh` and invalidates both
+    `manuscript-structure` and `library-index` react-query caches.
+    Spinner during refresh, toast on completion.
+  - `?` help button (HelpCircle icon) opens `<HelpModal>` with keyboard shortcuts
+    table + drag-to-Word workflow hint.
+  - Sidebar chapter list shows "Y un-addressed" in amber when `gap_count_addressed > 0`.
+  - "Reading queue" nav renamed to "Starred".
+  - "(no chapter)" chapter title → "Cross-chapter theses" in sidebar chapter filter.
 
 - `/write/gaps` → chapter-grouped gap list. Null/empty chapter titles render
   as "Cross-chapter theses" with a tooltip explaining these are intro promises
   whose chapter wasn't auto-paired.
+  **Architecture pass additions:**
+  - Addressed gaps rendered at `opacity-50` with a ✓ check badge.
+  - "Show addressed" toggle (default OFF) — hides addressed gaps so un-addressed
+    gaps are front and center. Total addressed count shown in the toggle badge.
+  - Chapter blocks show "X addressed" count in a softer color when > 0.
+  - `CROSS_CHAPTER_LABEL` constant exported from `ChapterGroupedGapList` and
+    reused in `WriteShell` and `ManuscriptOutline` for consistent naming.
 
 - `/write/gaps/:gapId` → live dossier view:
   - Header: gap metadata + "Pull more sources →" link (→ `/runs/new?gap=<id>`)

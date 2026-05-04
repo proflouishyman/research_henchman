@@ -22,6 +22,8 @@ export interface GapTreeRow {
   created_at: string
   total_rows: number
   tier_counts: Record<string, number>  // keys: "3"|"2"|"1"|"0"|"unscored"
+  /** True when at least one linked manuscript paragraph has a footnote. */
+  addressed?: boolean
 }
 
 export interface DossierEntry {
@@ -71,6 +73,8 @@ export interface LibraryChapter {
   slug: string
   title: string
   gap_count: number
+  /** Number of gaps that are "addressed" (linked paragraph has footnote). */
+  gap_count_addressed?: number
   gaps: GapTreeRow[]
 }
 

@@ -53,10 +53,13 @@ test.describe('Route smoke tests', () => {
     await expect(page.getByText('Chapters')).toBeVisible({ timeout: 15000 })
   })
 
-  test('/write/queue loads (may be empty)', async ({ page }) => {
+  test('/write/queue loads (may be empty, stays on /write/queue)', async ({ page }) => {
+    // Architecture pass: /write/queue is still a valid route (not redirected).
+    // The QueuePage is kept; only the sidebar nav label changed to "Starred".
     await page.goto('/write/queue')
-    // QueuePage always renders — content may be empty but no error overlay.
     await expect(page.locator('body')).toBeVisible()
     await expect(page.locator('text=Failed to load')).toHaveCount(0)
+    // URL stays on /write/queue (no server-side redirect — it's still a valid SPA route).
+    await expect(page.url()).toContain('/write/queue')
   })
 })

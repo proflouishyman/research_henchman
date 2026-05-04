@@ -4,14 +4,16 @@
 //   * per-dossier filter state (source toggles, score floor, has-PDF)
 //   * tier section expanded/collapsed bookkeeping
 //   * search query + filters + result accumulator (Load More semantics)
-//   * marks (star + read) keyed by article id, persisted to localStorage
+//   * marks (star + read) keyed by article id — v3: DB-backed via API
+//   * manuscript structure + reader UI state (v3)
 //
-// Marks are intentionally browser-local in Wave 2 — defer the server-side
-// table to v3. Hydration runs once on store creation; persistence runs on
-// every mutation through ``_persistMarks``.
+// v3 migration: marks now live in article_index.sqlite via the marks API.
+// On first load, any marks in localStorage['library.marks'] are migrated
+// to the DB then cleared. The store reads/writes via the API.
 
 import { create } from 'zustand'
-import type { SearchFilters, SearchResult } from '../types/library'
+import type { ManuscriptStructure, SearchFilters, SearchResult } from '../types/library'
+import { upsertMark, fetchMarks } from '../lib/library_api'
 
 export interface DossierFilters {
   /** When non-empty, only show entries whose source_id is in the set. */
@@ -46,14 +48,13 @@ const DEFAULT_SEARCH_FILTERS: SearchFilters = {
 
 const MARKS_KEY = 'library.marks'
 
-/** Hydrate marks dict from localStorage. Returns {} on any failure. */
-function _loadMarks(): Record<number, ArticleMark> {
+/** Hydrate marks dict from localStorage (legacy Wave 2 format). */
+function _loadLegacyMarks(): Record<number, ArticleMark> {
   if (typeof window === 'undefined') return {}
   try {
     const raw = window.localStorage.getItem(MARKS_KEY)
     if (!raw) return {}
     const parsed = JSON.parse(raw) as Record<string, ArticleMark>
-    // Normalize keys (JSON serialises numbers as strings).
     const out: Record<number, ArticleMark> = {}
     for (const [k, v] of Object.entries(parsed)) {
       const id = Number(k)
@@ -71,13 +72,46 @@ function _loadMarks(): Record<number, ArticleMark> {
   }
 }
 
-/** Persist marks dict to localStorage; silent on failure (private mode etc.). */
-function _persistMarks(marks: Record<number, ArticleMark>): void {
-  if (typeof window === 'undefined') return
+/**
+ * Migrate any Wave 2 localStorage marks to the DB, then clear localStorage.
+ * Idempotent: if localStorage is already empty this is a no-op.
+ */
+async function _migrateLegacyMarks(
+  setMarks: (m: Record<number, ArticleMark>) => void,
+): Promise<void> {
+  const legacy = _loadLegacyMarks()
+  const entries = Object.entries(legacy)
+  if (entries.length === 0) return
+
+  // Upload each mark to the API.
+  for (const [idStr, mark] of entries) {
+    const id = Number(idStr)
+    if (!Number.isFinite(id)) continue
+    try {
+      await upsertMark({ article_id: id, starred: mark.starred, read: mark.read })
+    } catch {
+      // Best-effort — don't block migration on a single failure.
+    }
+  }
+
+  // Clear localStorage once migration is done.
   try {
-    window.localStorage.setItem(MARKS_KEY, JSON.stringify(marks))
+    window.localStorage.removeItem(MARKS_KEY)
   } catch {
-    /* quota exceeded / private mode — silently no-op. */
+    /* private mode */
+  }
+
+  // Reload from DB so in-memory state is fresh.
+  try {
+    const { marks: dbMarks } = await fetchMarks()
+    const next: Record<number, ArticleMark> = {}
+    for (const m of dbMarks) {
+      next[m.article_id] = { starred: m.starred, read: m.read, addedAt: Date.now() }
+    }
+    setMarks(next)
+  } catch {
+    // Fallback: keep the legacy in-memory marks.
+    setMarks(legacy)
   }
 }
 
@@ -114,14 +148,31 @@ interface LibraryState {
   setSearchError: (msg: string | null) => void
   clearSearch: () => void
 
-  // ---- Wave 2: marks (star + read) ----
+  // ---- Wave 2 / v3: marks (star + read) — now DB-backed ----
   marks: Record<number, ArticleMark>
+  _setMarks: (m: Record<number, ArticleMark>) => void
   toggleStar: (articleId: number) => void
   toggleRead: (articleId: number) => void
   isStarred: (articleId: number) => boolean
   isRead: (articleId: number) => boolean
   starredCount: () => number
   starredIds: () => number[]
+  /** Call once on app mount to hydrate from DB + migrate legacy localStorage. */
+  hydrateMarks: () => Promise<void>
+
+  // ---- v3: manuscript reader ----
+  manuscriptStructure: ManuscriptStructure | null
+  manuscriptLoading: boolean
+  manuscriptError: string | null
+  selectedChapter: string | null
+  selectedParaId: string | null
+  dossierSidePanelOpen: boolean
+  setManuscriptStructure: (s: ManuscriptStructure | null) => void
+  setManuscriptLoading: (b: boolean) => void
+  setManuscriptError: (msg: string | null) => void
+  setSelectedChapter: (ch: string | null) => void
+  setSelectedParaId: (id: string | null) => void
+  setDossierSidePanelOpen: (open: boolean) => void
 }
 
 export const useLibraryStore = create<LibraryState>((set, get) => ({
@@ -179,57 +230,88 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       searchError: null,
     }),
 
-  // ---- Marks ----
-  marks: _loadMarks(),
+  // ---- v3 Marks (DB-backed) ----
+  // Initialize from localStorage (legacy) so the UI isn't empty on first
+  // mount before hydrateMarks() resolves. hydrateMarks() will overwrite.
+  marks: _loadLegacyMarks(),
+  _setMarks: (m) => set({ marks: m }),
+
   toggleStar: (articleId) => {
     const cur = get().marks
     const existing = cur[articleId]
-    const next: Record<number, ArticleMark> = { ...cur }
-    if (existing && existing.starred) {
-      // Un-starring: keep the entry only if read is also true.
-      if (existing.read) {
-        next[articleId] = { ...existing, starred: false }
-      } else {
-        delete next[articleId]
-      }
-    } else {
-      next[articleId] = {
-        starred: true,
+    const newStarred = !(existing?.starred ?? false)
+    const next: Record<number, ArticleMark> = {
+      ...cur,
+      [articleId]: {
+        starred: newStarred,
         read: existing?.read ?? false,
         addedAt: existing?.addedAt ?? Date.now(),
-      }
+      },
     }
-    _persistMarks(next)
+    if (!newStarred && !next[articleId].read) {
+      delete next[articleId]
+    }
     set({ marks: next })
+    // Persist to DB (fire-and-forget; UI is already optimistically updated).
+    upsertMark({ article_id: articleId, starred: newStarred }).catch(() => undefined)
   },
+
   toggleRead: (articleId) => {
     const cur = get().marks
     const existing = cur[articleId]
-    const next: Record<number, ArticleMark> = { ...cur }
-    if (existing && existing.read) {
-      // Un-marking read: keep the entry only if still starred.
-      if (existing.starred) {
-        next[articleId] = { ...existing, read: false }
-      } else {
-        delete next[articleId]
-      }
-    } else {
-      next[articleId] = {
+    const newRead = !(existing?.read ?? false)
+    const next: Record<number, ArticleMark> = {
+      ...cur,
+      [articleId]: {
         starred: existing?.starred ?? false,
-        read: true,
+        read: newRead,
         addedAt: existing?.addedAt ?? Date.now(),
-      }
+      },
     }
-    _persistMarks(next)
+    if (!newRead && !next[articleId].starred) {
+      delete next[articleId]
+    }
     set({ marks: next })
+    upsertMark({ article_id: articleId, read: newRead }).catch(() => undefined)
   },
+
   isStarred: (articleId) => !!get().marks[articleId]?.starred,
   isRead: (articleId) => !!get().marks[articleId]?.read,
-  starredCount: () =>
-    Object.values(get().marks).filter((m) => m.starred).length,
+  starredCount: () => Object.values(get().marks).filter((m) => m.starred).length,
   starredIds: () =>
     Object.entries(get().marks)
       .filter(([, m]) => m.starred)
       .sort((a, b) => (b[1].addedAt || 0) - (a[1].addedAt || 0))
       .map(([id]) => Number(id)),
+
+  hydrateMarks: async () => {
+    const setMarks = (m: Record<number, ArticleMark>) => get()._setMarks(m)
+    // Migrate legacy localStorage marks (idempotent if already clear).
+    await _migrateLegacyMarks(setMarks)
+    // Reload from DB to get the canonical state.
+    try {
+      const { marks: dbMarks } = await fetchMarks()
+      const next: Record<number, ArticleMark> = {}
+      for (const m of dbMarks) {
+        next[m.article_id] = { starred: m.starred, read: m.read, addedAt: Date.now() }
+      }
+      set({ marks: next })
+    } catch {
+      // Non-fatal — keep whatever state we have.
+    }
+  },
+
+  // ---- v3 Manuscript reader ----
+  manuscriptStructure: null,
+  manuscriptLoading: false,
+  manuscriptError: null,
+  selectedChapter: null,
+  selectedParaId: null,
+  dossierSidePanelOpen: false,
+  setManuscriptStructure: (s) => set({ manuscriptStructure: s }),
+  setManuscriptLoading: (b) => set({ manuscriptLoading: b }),
+  setManuscriptError: (msg) => set({ manuscriptError: msg }),
+  setSelectedChapter: (ch) => set({ selectedChapter: ch }),
+  setSelectedParaId: (id) => set({ selectedParaId: id }),
+  setDossierSidePanelOpen: (open) => set({ dossierSidePanelOpen: open }),
 }))

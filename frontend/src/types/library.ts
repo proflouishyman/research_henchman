@@ -117,3 +117,44 @@ export interface CharacterCard extends GapTreeRow {
 export interface LibraryCharacters {
   characters: CharacterCard[]
 }
+
+// ---------------------------------------------------------------------------
+// v3 — Manuscript reader contracts
+// ---------------------------------------------------------------------------
+
+export interface ManuscriptParagraph {
+  para_id: string
+  text: string
+  is_heading: boolean
+  heading_level: number
+  footnote_count: number
+  bracketed_todos: string[]
+  gap_ids: string[]
+}
+
+export interface ManuscriptSection {
+  heading: string
+  paragraphs: ManuscriptParagraph[]
+}
+
+export interface ManuscriptChapter {
+  title: string
+  slug: string
+  sections: ManuscriptSection[]
+}
+
+export interface ManuscriptStructure {
+  chapters: ManuscriptChapter[]
+}
+
+// ---------------------------------------------------------------------------
+// v3 — User marks
+// ---------------------------------------------------------------------------
+
+export interface MarkRow {
+  article_id: number
+  starred: boolean
+  read: boolean
+  note: string
+  updated_at: string
+}

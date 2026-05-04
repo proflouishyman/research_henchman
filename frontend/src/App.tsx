@@ -7,6 +7,7 @@
 import { useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { useUIStore } from './store/ui'
+import { useLibraryStore } from './store/library'
 import { Layout } from './components/layout/Layout'
 import { WriteShell } from './components/library/WriteShell'
 import { ChapterGroupedGapList } from './components/library/ChapterGroupedGapList'
@@ -14,9 +15,11 @@ import { DossierView } from './components/library/DossierView'
 import { SearchPage } from './components/library/SearchPage'
 import { CharactersPage } from './components/library/CharactersPage'
 import { QueuePage } from './components/library/QueuePage'
+import { ManuscriptReader } from './components/library/manuscript/ManuscriptReader'
 
 export default function App() {
   const { darkMode } = useUIStore()
+  const hydrateMarks = useLibraryStore((s) => s.hydrateMarks)
 
   // Apply dark mode class on the document root
   useEffect(() => {
@@ -26,6 +29,11 @@ export default function App() {
       document.documentElement.classList.remove('dark')
     }
   }, [darkMode])
+
+  // Hydrate marks from DB on app start (migrates legacy localStorage marks).
+  useEffect(() => {
+    hydrateMarks().catch(() => undefined)
+  }, [hydrateMarks])
 
   return (
     <BrowserRouter>
@@ -39,6 +47,10 @@ export default function App() {
         {/* Library / writing companion. */}
         <Route path="/write" element={<WriteShell />}>
           <Route index element={<Navigate to="gaps" replace />} />
+          {/* v3: Manuscript reader — before gaps so slug matching is unambiguous */}
+          <Route path="manuscript" element={<ManuscriptReader />} />
+          <Route path="manuscript/:chapterSlug" element={<ManuscriptReader />} />
+          <Route path="manuscript/:chapterSlug/:paraId" element={<ManuscriptReader />} />
           <Route path="gaps" element={<ChapterGroupedGapList />} />
           <Route path="gaps/:gapId" element={<DossierView />} />
           {/* Wave 2 routes */}

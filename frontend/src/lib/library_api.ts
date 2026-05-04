@@ -8,6 +8,8 @@ import type {
   LibrarySearch,
   GapTreeRow,
   SearchFilters,
+  ManuscriptStructure,
+  MarkRow,
 } from '../types/library'
 
 const BASE = '/api/library'
@@ -78,4 +80,61 @@ export async function searchArticles(
 /** Company-profile gaps with histogram + top tier-3 titles. */
 export async function fetchCharacters(): Promise<LibraryCharacters> {
   return libFetch<LibraryCharacters>('/characters')
+}
+
+// ---------------------------------------------------------------------------
+// v3 — Manuscript reader
+// ---------------------------------------------------------------------------
+
+/** Fetch the full parsed manuscript structure (cached server-side). */
+export async function fetchManuscriptStructure(): Promise<ManuscriptStructure> {
+  return libFetch<ManuscriptStructure>('/manuscript/structure')
+}
+
+// ---------------------------------------------------------------------------
+// v3 — User marks (DB-backed)
+// ---------------------------------------------------------------------------
+
+async function libPost<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(`API POST ${path} → ${res.status}: ${text}`)
+  }
+  return res.json() as Promise<T>
+}
+
+/** Upsert a mark. Only provided fields are updated. */
+export async function upsertMark(payload: {
+  article_id: number
+  starred?: boolean
+  read?: boolean
+  note?: string
+}): Promise<MarkRow> {
+  return libPost<MarkRow>('/marks', payload)
+}
+
+/** Bulk fetch marks (optionally filtered). */
+export async function fetchMarks(filters: {
+  starred?: boolean
+  read?: boolean
+} = {}): Promise<{ marks: MarkRow[] }> {
+  const params = new URLSearchParams()
+  if (filters.starred !== undefined) params.set('starred', filters.starred ? 'true' : 'false')
+  if (filters.read !== undefined) params.set('read', filters.read ? 'true' : 'false')
+  const qs = params.toString()
+  return libFetch<{ marks: MarkRow[] }>(`/marks${qs ? '?' + qs : ''}`)
+}
+
+/** Resolve article_ids → gap_ids they belong to. */
+export async function resolveGaps(
+  articleIds: number[],
+): Promise<{ mapping: Record<string, string[]> }> {
+  return libPost<{ mapping: Record<string, string[]> }>('/articles/resolve_gaps', {
+    article_ids: articleIds,
+  })
 }

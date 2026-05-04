@@ -74,6 +74,19 @@ def _open_conn() -> sqlite3.Connection:
     return conn
 
 
+def _open_conn_rw() -> sqlite3.Connection:
+    """Open a read-write connection to the article-index DB.
+
+    Creates the DB file if it doesn't exist (needed for the first marks
+    write before any articles are ingested in a fresh test environment).
+    """
+    db_path = _resolve_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 # ---------------------------------------------------------------------------
 # Helpers — gap_tree row + article counts
 # ---------------------------------------------------------------------------
@@ -605,5 +618,238 @@ def api_library_characters() -> Dict[str, Any]:
 
         out.sort(key=_sort_key)
         return {"characters": out}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# v3 — Manuscript reader endpoints
+# ---------------------------------------------------------------------------
+
+# Default manuscript path shipped with the project.
+_DEFAULT_DOCX = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "manuscript_exports"
+    / "manuscript"
+    / "manuscript.docx"
+)
+
+
+def _resolve_docx(docx_param: Optional[str]) -> Path:
+    """Resolve the docx path query param (or use the project default)."""
+    if docx_param and docx_param.strip():
+        p = Path(docx_param.strip())
+        if not p.is_absolute():
+            repo_root = Path(__file__).resolve().parent.parent
+            p = repo_root / p
+        if not p.exists():
+            raise HTTPException(status_code=404, detail=f"docx not found: {p}")
+        return p
+    if not _DEFAULT_DOCX.exists():
+        raise HTTPException(status_code=404, detail="default manuscript not found")
+    return _DEFAULT_DOCX
+
+
+@router.get("/manuscript/structure")
+def api_manuscript_structure(
+    docx: Optional[str] = Query(default=None, description="Absolute path to .docx file"),
+) -> Dict[str, Any]:
+    """Return the cached manuscript structure grouped into chapters/sections/paragraphs.
+
+    Each paragraph carries: para_id, text, is_heading, heading_level,
+    footnote_count, bracketed_todos, gap_ids (gap_ids linked to this paragraph
+    from gap_tree via heading/claim heuristics).
+
+    Default docx is the project manuscript when ``docx`` param is omitted.
+    """
+    from layers.manuscript_parse import parse_manuscript, paragraph_gap_links, group_into_chapters
+
+    docx_path = _resolve_docx(docx)
+    paragraphs = parse_manuscript(docx_path)
+
+    conn = _open_conn()
+    try:
+        gap_links = paragraph_gap_links(paragraphs, conn)
+    finally:
+        conn.close()
+
+    chapters = group_into_chapters(paragraphs, gap_links)
+    return {"chapters": chapters}
+
+
+@router.get("/manuscript/paragraph/{para_id}")
+def api_manuscript_paragraph(
+    para_id: str,
+    docx: Optional[str] = Query(default=None),
+) -> Dict[str, Any]:
+    """Return a single paragraph with resolved gap_tree rows.
+
+    Includes full gap_links and the raw gap_tree dicts for each linked gap.
+    """
+    from layers.manuscript_parse import parse_manuscript, paragraph_gap_links
+
+    docx_path = _resolve_docx(docx)
+    paragraphs = parse_manuscript(docx_path)
+
+    # Find the requested paragraph.
+    target = next((p for p in paragraphs if p["para_id"] == para_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"paragraph not found: {para_id}")
+
+    conn = _open_conn()
+    try:
+        gap_links = paragraph_gap_links([target], conn)
+        gap_ids = gap_links.get(para_id, [])
+
+        # Resolve gap_tree rows.
+        gap_rows: List[Dict[str, Any]] = []
+        if gap_ids:
+            try:
+                placeholders = ",".join("?" for _ in gap_ids)
+                rows = conn.execute(
+                    f"SELECT * FROM gap_tree WHERE gap_id IN ({placeholders})",
+                    gap_ids,
+                ).fetchall()
+                for r in rows:
+                    gap_rows.append(_gap_tree_row_to_dict(r))
+            except Exception:
+                pass
+
+        return {
+            "para_id":         target["para_id"],
+            "chapter":         target["chapter"],
+            "heading_path":    target["heading_path"],
+            "text":            target["text"],
+            "is_heading":      target["is_heading"],
+            "heading_level":   target["heading_level"],
+            "footnote_count":  target["footnote_count"],
+            "bracketed_todos": target["bracketed_todos"],
+            "char_offset":     target["char_offset"],
+            "gap_ids":         gap_ids,
+            "gap_rows":        gap_rows,
+        }
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# v3 — User marks (star + read) endpoints
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel as _BaseModel  # noqa: E402 (needed after router defs)
+
+
+class _MarkUpsertInput(_BaseModel):
+    article_id: int
+    starred: Optional[bool] = None
+    read: Optional[bool] = None
+    note: Optional[str] = None
+
+
+@router.post("/marks")
+def api_marks_upsert(body: _MarkUpsertInput) -> Dict[str, Any]:
+    """Upsert a star/read/note mark for an article.
+
+    Only provided fields are updated; existing values for omitted fields are
+    preserved. Returns the resulting mark row.
+    """
+    from adapters.article_index import set_mark, get_marks, ensure_marks_schema
+
+    conn = _open_conn_rw()
+    try:
+        ensure_marks_schema(conn)
+        set_mark(
+            conn,
+            body.article_id,
+            starred=body.starred,
+            read=body.read,
+            note=body.note,
+        )
+        marks = get_marks(conn, [body.article_id])
+        if body.article_id in marks:
+            m = marks[body.article_id]
+            return {"article_id": body.article_id, **m}
+        # Row was deleted (all false + no note).
+        return {"article_id": body.article_id, "starred": False, "read": False, "note": "", "updated_at": ""}
+    finally:
+        conn.close()
+
+
+@router.get("/marks")
+def api_marks_list(
+    starred: Optional[bool] = Query(default=None),
+    read: Optional[bool] = Query(default=None),
+) -> Dict[str, Any]:
+    """Bulk fetch marks.
+
+    With no filters: returns all marks.
+    With ``starred=true``: only starred rows.
+    With ``read=true``: only read rows.
+    Filters are ANDed.
+    """
+    from adapters.article_index import ensure_marks_schema
+
+    conn = _open_conn_rw()
+    try:
+        ensure_marks_schema(conn)
+        clauses: List[str] = []
+        params: List[Any] = []
+        if starred is not None:
+            clauses.append("starred = ?")
+            params.append(int(starred))
+        if read is not None:
+            clauses.append("read = ?")
+            params.append(int(read))
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            f"SELECT article_id, starred, read, note, updated_at FROM user_marks {where} ORDER BY updated_at DESC",
+            params,
+        ).fetchall()
+        marks = [
+            {
+                "article_id": int(r["article_id"]),
+                "starred":    bool(r["starred"]),
+                "read":       bool(r["read"]),
+                "note":       r["note"] or "",
+                "updated_at": r["updated_at"] or "",
+            }
+            for r in rows
+        ]
+        return {"marks": marks}
+    finally:
+        conn.close()
+
+
+class _ResolveGapsInput(_BaseModel):
+    article_ids: List[int] = []
+
+
+@router.post("/articles/resolve_gaps")
+def api_resolve_gaps(body: _ResolveGapsInput) -> Dict[str, Any]:
+    """Return the gap_ids associated with each article_id.
+
+    Uses the articles.gap_id column (each article belongs to exactly one
+    primary gap at ingest time). Returns {article_id (str): [gap_id]}.
+    """
+    if not body.article_ids:
+        return {"mapping": {}}
+
+    conn = _open_conn()
+    try:
+        placeholders = ",".join("?" for _ in body.article_ids)
+        rows = conn.execute(
+            f"SELECT id, gap_id FROM articles WHERE id IN ({placeholders})",
+            body.article_ids,
+        ).fetchall()
+        mapping: Dict[str, List[str]] = {}
+        for r in rows:
+            aid = str(int(r["id"]))
+            gid = str(r["gap_id"] or "")
+            if gid:
+                mapping.setdefault(aid, [])
+                if gid not in mapping[aid]:
+                    mapping[aid].append(gid)
+        return {"mapping": mapping}
     finally:
         conn.close()

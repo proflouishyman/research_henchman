@@ -469,6 +469,92 @@ class LibraryCharactersOut(BaseModel):
     characters: List[CharacterCardOut] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# v3 — Manuscript reader contracts
+# ---------------------------------------------------------------------------
+
+
+class ManuscriptParagraphOut(BaseModel):
+    """One paragraph row in the manuscript structure response."""
+
+    para_id: str
+    text: str
+    is_heading: bool = False
+    heading_level: int = 0
+    footnote_count: int = 0
+    bracketed_todos: List[str] = Field(default_factory=list)
+    gap_ids: List[str] = Field(default_factory=list)
+
+
+class ManuscriptSectionOut(BaseModel):
+    """One heading-2 section within a chapter."""
+
+    heading: str = ""
+    paragraphs: List[ManuscriptParagraphOut] = Field(default_factory=list)
+
+
+class ManuscriptChapterOut(BaseModel):
+    """One heading-1 chapter."""
+
+    title: str
+    slug: str = ""
+    sections: List[ManuscriptSectionOut] = Field(default_factory=list)
+
+
+class ManuscriptStructureOut(BaseModel):
+    """Response shape for ``GET /api/library/manuscript/structure``."""
+
+    chapters: List[ManuscriptChapterOut] = Field(default_factory=list)
+
+
+class ManuscriptParagraphDetailOut(ManuscriptParagraphOut):
+    """Paragraph detail with resolved gap_tree rows."""
+
+    gap_rows: List[Dict] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# v3 — User marks contracts
+# ---------------------------------------------------------------------------
+
+
+class MarkUpsertInput(BaseModel):
+    """Payload for ``POST /api/library/marks``."""
+
+    article_id: int
+    starred: Optional[bool] = None
+    read: Optional[bool] = None
+    note: Optional[str] = None
+
+
+class MarkOut(BaseModel):
+    """One user mark row."""
+
+    article_id: int
+    starred: bool = False
+    read: bool = False
+    note: str = ""
+    updated_at: str = ""
+
+
+class MarksListOut(BaseModel):
+    """Response for ``GET /api/library/marks``."""
+
+    marks: List[MarkOut] = Field(default_factory=list)
+
+
+class ResolveGapsInput(BaseModel):
+    """Payload for ``POST /api/library/articles/resolve_gaps``."""
+
+    article_ids: List[int] = Field(default_factory=list)
+
+
+class ResolveGapsOut(BaseModel):
+    """Maps article_id (as str key) → list of gap_ids that contain it."""
+
+    mapping: Dict[str, List[str]] = Field(default_factory=dict)
+
+
 T = TypeVar("T")
 
 

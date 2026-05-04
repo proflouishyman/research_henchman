@@ -1,3 +1,84 @@
+[2026-05-04] - Writing-companion UI v3 — manuscript reader + marks DB migration
+
+Problem
+After Wave 2 (search + characters + marks via localStorage), two surfaces
+were still missing for the daily writing workflow:
+
+  1. No in-browser manuscript reader — the user had to keep the .docx open
+     separately and manually cross-reference gap IDs. No per-paragraph gap
+     overlay existed.
+  2. Marks (star/read) lived only in localStorage — lost on clear, not
+     shareable, no server persistence.
+
+Root Cause
+Wave 2 deliberately deferred both features ("v3 follow-up"). The server-side
+parsing infrastructure (python-docx walks, footnote detection, bracketed-TODO
+regex) had never been wired to an HTTP layer. The marks DB table was
+placeholder-commented in SOLUTIONS.md.
+
+Solution
+Eight pieces shipped together as v3:
+
+  1. ``layers/manuscript_parse.py`` — new module. Walks the .docx via
+     python-docx, emitting one dict per paragraph with: para_id (SHA1 of
+     positional key + first 80 chars), chapter, heading_path, text,
+     is_heading, heading_level, footnote_count (w:footnoteReference count),
+     bracketed_todos (regex), char_offset. Disk cache keyed by (mtime, size)
+     at ``data/.manuscript_cache/<filename>.json`` — re-parses only when
+     the docx changes. ``paragraph_gap_links(paras, conn)`` links paras to
+     gap_ids via three heuristics: heading-path substring overlap, 60-char
+     claim-text prefix match, bracketed-TODO vs Pass-B claim match.
+     ``group_into_chapters(paras, gap_links)`` produces the nested
+     chapters/sections/paragraphs tree consumed by the API.
+
+  2. New API endpoints under ``/api/library/manuscript/``:
+       GET /manuscript/structure?docx=<path>  → {chapters:[...]} tree
+       GET /manuscript/paragraph/{para_id}    → detail + resolved gap rows
+     Default docx is the project manuscript. Live: 16 chapters, intro alone
+     has 34 paragraph-gap links.
+
+  3. Marks DB table ``user_marks`` in article_index.sqlite. Helpers in
+     ``adapters/article_index.py``: ``ensure_marks_schema``, ``set_mark``,
+     ``get_marks``, ``list_starred``. New endpoints:
+       POST /api/library/marks        — upsert (idempotent)
+       GET  /api/library/marks        — bulk fetch with starred/read filters
+       POST /api/library/articles/resolve_gaps — article_ids → gap_ids
+
+  4. Frontend migration: ``hydrateMarks()`` in ``library.ts`` store runs at
+     app start, migrates any legacy localStorage['library.marks'] entries
+     to the DB via the POST endpoint, then clears localStorage. Subsequent
+     toggleStar/toggleRead calls write to the API (optimistic update + async
+     PUT). The marks table in the DB is the canonical source of truth.
+
+  5. ``ManuscriptReader`` component (three-pane layout):
+       Left: ``ManuscriptOutline`` — chapter navigator with gap/uncited chips
+       Center: ``ChapterScroll`` + ``ParagraphRow`` — per-paragraph gutter
+               chips (footnote count ⚓N or ⚠ cite?, gap badges by type,
+               TODO highlight)
+       Right: ``DossierSidePanel`` — fixed-position slide-in; reuses
+              TierSection/fetchDossier; tab strip for multi-gap paragraphs.
+
+  6. Routes: ``/write/manuscript``, ``/write/manuscript/:chapterSlug``,
+     ``/write/manuscript/:chapterSlug/:paraId``. Keyboard shortcuts: j/k
+     next/prev paragraph; Escape closes side panel.
+
+  7. ``WriteShell`` sidebar: Manuscript nav link added between index and
+     Gaps. Order: Manuscript · Gaps · Search · Characters · Reading queue.
+
+  8. Tests: 31 new tests across three files — ``test_manuscript_parse.py``
+     (9 cases), ``test_library_api_manuscript.py`` (7 cases),
+     ``test_library_api_marks.py`` (15 cases). Suite: 362 → 378 passing.
+
+Notes
+  - ``paragraph_gap_links`` heading-path heuristic uses substring overlap;
+    precision depends on how consistently heading_path is set in gap_tree.
+    In practice, 34+ links in the intro alone suggests good recall.
+  - The side panel uses a ``fixed`` position overlay (right-0) so it works
+    inside the parent scroll container without nested-overflow issues.
+  - ``resolve_gaps`` uses articles.gap_id (primary ingest gap); articles that
+    appear in multiple gaps via cross_gap_refs are not yet reflected here.
+    That is a v4 TODO.
+
 [2026-05-02] - Writing-companion UI Wave 2 — search + characters + marks
 
 Problem

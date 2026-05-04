@@ -11,7 +11,7 @@
 import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { Library, Search, Users, Star } from 'lucide-react'
+import { BookOpen, Library, Search, Users, Star } from 'lucide-react'
 import { TopBar } from '../layout/TopBar'
 import { fetchLibraryIndex } from '../../lib/library_api'
 import { useUIStore } from '../../store/ui'
@@ -38,14 +38,15 @@ export function WriteShell() {
     else document.documentElement.classList.remove('dark')
   }, [darkMode])
 
-  // Top-level routes available from the sidebar nav. Wave 2 adds
-  // search / characters / queue.
+  // Top-level routes. v3 adds Manuscript between index and Gaps.
+  // Order: Manuscript · Gaps · Search · Characters · Reading queue.
   const navItems: Array<{
     path: string
     label: string
     icon: React.ReactNode
     badge?: string
   }> = [
+    { path: '/write/manuscript', label: 'Manuscript', icon: <BookOpen size={13} /> },
     { path: '/write/gaps', label: 'Gaps', icon: <Library size={13} /> },
     { path: '/write/search', label: 'Search', icon: <Search size={13} /> },
     { path: '/write/characters', label: 'Characters', icon: <Users size={13} /> },

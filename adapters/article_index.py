@@ -751,3 +751,121 @@ def dedupe_by_doi(
 
     conn.commit()
     return updated
+
+
+# ---------------------------------------------------------------------------
+# User marks (star + read) — v3 DB-backed replacement for localStorage
+# ---------------------------------------------------------------------------
+
+_MARKS_DDL = """
+CREATE TABLE IF NOT EXISTS user_marks (
+    article_id INTEGER PRIMARY KEY REFERENCES articles(id),
+    starred    INTEGER NOT NULL DEFAULT 0,
+    read       INTEGER NOT NULL DEFAULT 0,
+    note       TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+
+def ensure_marks_schema(conn: sqlite3.Connection) -> None:
+    """Create the user_marks table if it doesn't already exist.
+
+    Idempotent — safe to call repeatedly.
+    """
+    conn.executescript(_MARKS_DDL)
+    conn.commit()
+
+
+def set_mark(
+    conn: sqlite3.Connection,
+    article_id: int,
+    *,
+    starred: Optional[bool] = None,
+    read: Optional[bool] = None,
+    note: Optional[str] = None,
+) -> None:
+    """Upsert a mark for an article.
+
+    Only the supplied keyword args are updated; existing values are
+    preserved for omitted fields. Rows with starred=False and read=False
+    and no note are deleted to keep the table clean.
+    """
+    ensure_marks_schema(conn)
+
+    existing = conn.execute(
+        "SELECT starred, read, note FROM user_marks WHERE article_id = ?",
+        (article_id,),
+    ).fetchone()
+
+    cur_starred = bool(existing["starred"]) if existing else False
+    cur_read = bool(existing["read"]) if existing else False
+    cur_note = (existing["note"] or "") if existing else ""
+
+    new_starred = starred if starred is not None else cur_starred
+    new_read = read if read is not None else cur_read
+    new_note = note if note is not None else cur_note
+
+    # Prune rows that are completely empty (no star, no read, no note).
+    if not new_starred and not new_read and not (new_note or "").strip():
+        conn.execute("DELETE FROM user_marks WHERE article_id = ?", (article_id,))
+    else:
+        conn.execute(
+            """INSERT INTO user_marks (article_id, starred, read, note, updated_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(article_id) DO UPDATE SET
+                   starred    = excluded.starred,
+                   read       = excluded.read,
+                   note       = excluded.note,
+                   updated_at = excluded.updated_at""",
+            (article_id, int(new_starred), int(new_read), new_note or None),
+        )
+    conn.commit()
+
+
+def get_marks(
+    conn: sqlite3.Connection,
+    article_ids: List[int],
+) -> Dict[int, Dict[str, Any]]:
+    """Fetch marks for the given article ids.
+
+    Returns {article_id: {starred, read, note, updated_at}} for any ids
+    that have marks; ids without marks are absent from the result.
+    """
+    if not article_ids:
+        return {}
+    ensure_marks_schema(conn)
+    placeholders = ",".join("?" for _ in article_ids)
+    rows = conn.execute(
+        f"SELECT article_id, starred, read, note, updated_at "
+        f"FROM user_marks WHERE article_id IN ({placeholders})",
+        article_ids,
+    ).fetchall()
+    return {
+        int(r["article_id"]): {
+            "starred":    bool(r["starred"]),
+            "read":       bool(r["read"]),
+            "note":       r["note"] or "",
+            "updated_at": r["updated_at"] or "",
+        }
+        for r in rows
+    }
+
+
+def list_starred(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Return all starred marks sorted by updated_at desc."""
+    ensure_marks_schema(conn)
+    rows = conn.execute(
+        "SELECT article_id, starred, read, note, updated_at "
+        "FROM user_marks WHERE starred = 1 ORDER BY updated_at DESC"
+    ).fetchall()
+    return [
+        {
+            "article_id": int(r["article_id"]),
+            "starred":    True,
+            "read":       bool(r["read"]),
+            "note":       r["note"] or "",
+            "updated_at": r["updated_at"] or "",
+        }
+        for r in rows
+    ]

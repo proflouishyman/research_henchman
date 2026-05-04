@@ -70,6 +70,48 @@ SQLite (no markdown intermediate). The sibling `/runs` mode is unchanged.
   data: company-profile gaps with `top_tier3_titles` (up to 3) and
   `tier_histogram` aliasing `tier_counts`. Sorted by tier-3 count
   desc, then `evidence_target` desc.
+- `GET /api/library/manuscript/structure?docx=<path>` (v3) — parsed
+  manuscript structure. Returns `{chapters: [{title, slug, sections:
+  [{heading, paragraphs: [{para_id, text, is_heading, heading_level,
+  footnote_count, bracketed_todos, gap_ids}]}]}]}`. Served from an
+  on-disk cache at `data/.manuscript_cache/<filename>.json` keyed by
+  file mtime+size; re-parsed only when the docx changes. `docx` param
+  defaults to the project manuscript. Parser is in
+  `layers/manuscript_parse.py`.
+- `GET /api/library/manuscript/paragraph/{para_id}?docx=<path>` (v3) —
+  single paragraph detail with `gap_ids` and `gap_rows` (resolved
+  gap_tree dicts).
+- `POST /api/library/marks` (v3) — upsert a star/read/note mark.
+  Body: `{article_id, starred?, read?, note?}`. Returns the resulting
+  mark row. Idempotent.
+- `GET /api/library/marks?starred=&read=` (v3) — bulk fetch marks with
+  optional boolean filters. Returns `{marks: [MarkRow]}`.
+- `POST /api/library/articles/resolve_gaps` (v3) — resolve article IDs
+  to their primary gap. Body: `{article_ids: [int]}`. Returns
+  `{mapping: {article_id_str: [gap_id]}}`. Uses `articles.gap_id`
+  (primary ingest gap).
+
+#### Marks DB schema (v3)
+```sql
+CREATE TABLE user_marks (
+    article_id INTEGER PRIMARY KEY REFERENCES articles(id),
+    starred    INTEGER NOT NULL DEFAULT 0,
+    read       INTEGER NOT NULL DEFAULT 0,
+    note       TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+Helpers in `adapters/article_index.py`: `ensure_marks_schema`,
+`set_mark`, `get_marks`, `list_starred`.
+
+#### Manuscript parser cache
+`layers/manuscript_parse.py` `parse_manuscript(docx_path)` caches the
+flat paragraph list at `data/.manuscript_cache/<filename>.json`. Cache
+key = `f"{mtime}:{size}"`. On cache hit the JSON is returned as-is;
+on miss (stale or absent) the docx is re-parsed with python-docx.
+`paragraph_gap_links(paras, conn)` returns `{para_id: [gap_id]}` via
+three heuristics: heading-path substring overlap, 60-char claim-text
+prefix match in paragraph body, bracketed-TODO vs Pass-B claim prefix.
 
 ### Shared dossier-render layer — `layers/dossier_render.py`
 The markdown writer (`scripts/generate_dossiers.py`) and the new API
@@ -106,18 +148,30 @@ thin wrapper that consumes the same helpers (`norm_title`,
   histogram, top-3 tier-3 titles, and a one-click "Open dossier"
   button. Tabs: All / Empty / Thin / Supplementary, filtered by
   rationale substring.
-- `/write/queue` (Wave 2) → reading queue. Lists locally-starred
-  articles grouped by gap. Marks (star + read) live in
-  `localStorage['library.marks']` and persist across sessions. The
-  article→gap mapping is stamped from `localStorage['library.article_gap']`
-  whenever the user opens a dossier so the queue can resolve gap
-  membership without a server-side table.
+- `/write/queue` (Wave 2) → reading queue. Lists starred articles
+  grouped by gap. Marks are now DB-backed (v3); see marks endpoints.
+- `/write/manuscript` (v3) → manuscript reader. Three-pane layout:
+  - Left (w-52): `<ManuscriptOutline>` — chapter navigator with
+    low-contrast chips showing gap-linked and uncited-paragraph counts.
+  - Center: `<ChapterScroll>` + `<ParagraphRow>` — paragraph-by-
+    paragraph render with left-gutter chips: ⚓N (footnote count);
+    ⚠ cite? (>100-char body with 0 cites); gap badges per gap_id
+    (CP=emerald, IP=blue, TODO=amber); TODO chip when bracketed_todos
+    is non-empty. Clicking any gap badge or the row itself opens the
+    side panel.
+  - Right (fixed, w-96): `<DossierSidePanel>` — reuses
+    `fetchDossier` + `TierSection`. Multi-gap paragraphs get a tab
+    strip. ESC closes; URL updates to
+    `/write/manuscript/:chapterSlug/:paraId`.
+  Keyboard shortcuts: `j`/`k` next/prev paragraph; URL is bookmarkable.
 
 The shared `<SourceCard>` (Wave 2 polish) gains a hover action toolbar:
-Copy dropdown (Chicago / short / link), Star (toggles localStorage
-`library.marks`), Read (mark/unmark), and a small grip icon advertising
-the drag affordance. Copy actions surface a 1.6 s toast via the global
-`<ToastHost>` mounted in `<WriteShell>`.
+Copy dropdown (Chicago / short / link), Star, Read. In v3, Star/Read
+write to `POST /api/library/marks` (optimistic update in the Zustand
+store). On app start, `hydrateMarks()` migrates any legacy
+`localStorage['library.marks']` to the DB then clears localStorage.
+Copy actions surface a 1.6 s toast via the global `<ToastHost>` mounted
+in `<WriteShell>`.
 
 ## Removed MVP concepts
 - `Intent` endpoints and intent state are removed.

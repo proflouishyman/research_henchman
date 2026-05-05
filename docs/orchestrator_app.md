@@ -100,6 +100,15 @@ SQLite (no markdown intermediate). The sibling `/runs` mode is unchanged.
   invalidation helper `_cache_path` (from `layers.manuscript_parse`) is called
   internally. React-query caches for `manuscript-structure` and `library-index`
   are invalidated by the frontend after this endpoint responds.
+- `POST /api/library/gaps/{gap_id}/pull-more` (Phase 3) — trigger an async pull
+  for `gap_id`. Returns `{run_id, status: "started"}`. Returns 409 if a pull is
+  already running for this gap. The background job writes to the `pull_jobs` table
+  and sends a Telegram notification on completion. Each call generates a fresh
+  `run_id` (UUID4).
+- `GET /api/library/gaps/{gap_id}/pull-status` (Phase 3) — query the latest pull
+  job for `gap_id`. Returns `{run_id, status, started_at, finished_at,
+  records_pulled, sources_used, errors}`. Returns 404 if no pull has ever been
+  requested for this gap.
 
 #### Marks DB schema (v3)
 ```sql
@@ -123,6 +132,35 @@ on miss (stale or absent) the docx is re-parsed with python-docx.
 three heuristics: heading-path substring overlap, 60-char claim-text
 prefix match in paragraph body, bracketed-TODO vs Pass-B claim prefix.
 
+#### Articles schema (Phase 1 additions)
+Four new columns added to the `articles` table by `adapters/article_index.py`:
+```sql
+access   TEXT   -- "Full view" | "Limited (search-only)" | NULL
+hathi_id TEXT   -- HathiTrust item identifier (e.g. "mdp.49015001020396")
+subject  TEXT   -- Subject tag from HathiTrust / Internet Archive seed
+language TEXT   -- Language tag from seed
+```
+Migration via `_MIGRATION_DDL` list (four `ALTER TABLE IF NOT EXISTS`-style
+statements). Run automatically by `open_index` before the base DDL. The
+`scripts/backfill_hathitrust_access.py` script back-fills existing rows
+from on-disk seed JSON files (23,702 updates, 21,923 rows set).
+
+#### Pull-jobs schema (Phase 3)
+```sql
+CREATE TABLE IF NOT EXISTS pull_jobs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    gap_id      TEXT NOT NULL,
+    run_id      TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'running',
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    records_pulled INTEGER,
+    sources_used   TEXT,
+    errors         TEXT
+);
+```
+Managed by `_ensure_pull_jobs(conn)` in `routers/library.py`.
+
 ### Shared dossier-render layer — `layers/dossier_render.py`
 The markdown writer (`scripts/generate_dossiers.py`) and the new API
 endpoint share `assemble_dossier(conn, gap_id) -> dict`. The shape
@@ -130,6 +168,61 @@ returned is identical for both surfaces; the markdown writer is now a
 thin wrapper that consumes the same helpers (`norm_title`,
 `dedupe_within_gap`, `pick_primary`, `build_cross_gap_index`,
 `absolutize_url`, `render_url_or_pdf`).
+
+**Phase 1 additions:**
+- `_articles_columns(conn)` — introspects `PRAGMA table_info(articles)` so
+  `fetch_gap_rows` builds a dynamic SELECT safe on pre-migration and test DBs.
+- `DossierEntry` dict now includes `access`, `hathi_id`, `subject`, `language`,
+  and `from_gap_id` fields (null when absent).
+
+**Phase 2 — cross-gap candidates:**
+- `find_cross_gap_candidates(conn, gap_id, limit=20) -> List[dict]` — queries
+  the `articles_fts` FTS5 index using an OR-joined token set derived from the
+  gap's `claim_text`. Returns AUTO-* articles with `relevance_score >= 1` and
+  a non-null `pdf_path` that were NOT fetched for the querying gap itself.
+- `_to_fts(text) -> str` — skips stopwords and tokens ≤3 chars, upper-bounds
+  at 12 unique tokens, joins with OR (not AND) so partial overlap scores.
+- `assemble_dossier` populates a `"related"` key in `tiers` for CP/IP/TODO/RG
+  gaps (empty list for AUTO-* source gaps to prevent self-reference loops).
+- `TIER_ORDER` updated to include `"related"`; `SOURCE_PRIORITY` and
+  `_SOURCE_LABELS` include `internet_archive` and `internet_archive_ia_html`
+  at priority 6.
+
+### Internet Archive source (Phase 4)
+
+**Adapter — `adapters/internet_archive.py`:**
+- `search(query, *, mediatype='texts', limit=50) -> List[Dict]` — hits
+  `https://archive.org/advancedsearch.php` with JSON output. 200 ms throttle.
+- `item_metadata(identifier) -> Dict` — fetches `https://archive.org/metadata/<id>`.
+- `download_url(identifier, format='pdf') -> Optional[str]` — walks the files
+  list for a PDF, falls back to `https://archive.org/download/<id>/<id>.pdf`.
+
+**Puller script — `scripts/pull_internet_archive.py`:**
+```
+python3 scripts/pull_internet_archive.py \
+    --gap-ids CP31 AUTO-181-G1 \
+    --run-id ia-smoke-test \
+    --limit 20 --ia-limit 30 --dry-run
+```
+Writes seed JSON matching HathiTrust schema format; sets `access = "Full view"`
+when `downloads > 0`, otherwise `"Library only"`. `SOURCE_ID = "internet_archive"`.
+
+**Planner — `layers/gap_query_planner.py`:**
+- `SRC_IA = "internet_archive"` constant added.
+- `IA_QUERY_SYSTEM` prompt (period vocabulary + named entity bias).
+- One IA query added to every gap type:
+  - `intro_promise` tier-1: 8 plans total (3 sources × 2 + intl × 1 + IA × 1)
+  - `intro_promise` tier-2: 7 plans total (3 sources × 2 + IA × 1)
+  - `research_gap`: 3 plans total (EBSCO + HathiTrust + IA)
+  - `company_profile`: 5 plans total (EDGAR + EBSCO + HathiTrust + PQ US + IA)
+
+**Dispatcher — `layers/pull_dispatch.py`:**
+- `_pull_internet_archive(*, query, gap_id, pull_root, limit=50)` shim added.
+- `pull_gap` accepts `sources_filter: Optional[List[str]] = None` to restrict
+  which source IDs are run.
+
+**CLI filter — `scripts/pull_gap_tree.py`:**
+- `--sources SEC_10K ebsco_api` flag passes `sources_filter` to `pull_gap`.
 
 ### Frontend — `/write` route tree (architecture pass, 2026-05-04)
 
@@ -184,13 +277,18 @@ The writing companion opens manuscript-first since that is the primary daily wor
     reused in `WriteShell` and `ManuscriptOutline` for consistent naming.
 
 - `/write/gaps/:gapId` → live dossier view:
-  - Header: gap metadata + "Pull more sources →" link (→ `/runs/new?gap=<id>`)
-    shown when tier-3 count is 0 OR gap is `intro_promise` with < 5 tier-3 entries.
+  - Header: gap metadata + **"Pull more sources"** button (Phase 3). Button POSTs
+    to `POST /api/library/gaps/{gap_id}/pull-more`; shows a spinner and polls
+    `GET /api/library/gaps/{gap_id}/pull-status` every 10 s until done. A 409
+    response (already running) resumes the poll without a second POST.
   - **TopPicks strip**: above filter controls, shows the 3 most citation-ready
     tier-3 entries (sorted by has_pdf_path, source priority, pub_date_desc).
     Falls back to tier-2 if no tier-3 exist. Hidden entirely when tier-3 = 0.
   - Filter strip (source toggles · score floor · has-PDF only).
   - Four collapsible tier sections (tier 3/2 default-open, tier 1/0 collapsed).
+  - **"Related from prior research"** section (Phase 2): automatically populated
+    for CP/IP/TODO/RG gaps via FTS5 OR-token search across AUTO-* articles.
+    Hidden when empty.
   Each entry is a `<SourceCard>` with:
     - Per-card score badge reads "score N" (not "tier N"; "tier" is reserved
       for gap-level priority badges in headers and DossierHeader).
@@ -203,7 +301,13 @@ The writing companion opens manuscript-first since that is the primary daily wor
     - **Drag onboarding**: first-ever hover on the drag handle shows a tooltip
       "Drag to Word — drops Chicago citation" that auto-dismisses after 5 s or
       on × click. Persisted to `localStorage['library.onboarding.drag_seen']`.
-    - Cite dropdown copies Chicago / `(Author Year)` / link to clipboard with toast.
+    - **Inline cite buttons** (Phase 1): three icon buttons (Chicago, Short, Link)
+      replace the `CiteDropdown`. Each copies to clipboard with a transient Check
+      icon confirmation.
+    - **`AvailabilityBadge`** (Phase 1): color-coded badge — blue=Local PDF,
+      green=Full view, yellow=Library only, orange=Cloud (no PDF, no full view).
+    - **`LibrarySearchLinks`** (Phase 1): JHU Catalyst + Internet Archive search
+      links shown for non-directly-readable sources.
     - Cards are draggable via `attachDragCitations` (dataTransfer MIME types).
 
 - `/write/search` → corpus search. On mount, reads `?q=` URL param and seeds

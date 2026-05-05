@@ -38,6 +38,7 @@ SRC_HATHI          = "hathitrust_fulltext"
 SRC_PQ_US          = "proquest_us_newsstream"
 SRC_PQ_INTL        = "proquest_international_newsstream"
 SRC_SEC_10K        = "sec_edgar_10k"
+SRC_IA             = "internet_archive"  # Phase 4: Internet Archive
 
 # Gap types we know how to handle — anything else is dropped silently.
 _PULLABLE_GAP_TYPES = {"intro_promise", "research_gap", "company_profile"}
@@ -149,8 +150,36 @@ def _llm_query(system: str, user_msg: str, llm: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+# System prompt for Internet Archive queries (Phase 4). IA biases toward
+# period vocabulary + named entities, similar to HathiTrust but broader.
+IA_QUERY_SYSTEM = """\
+You are an expert in Internet Archive search. Generate ONE concise query
+to find books, government documents, digitized newspapers, and historical
+texts on the research topic.
+
+Rules:
+1. Use period vocabulary for historical topics: "mail order", "department
+   store", "annual report", "catalog", "corporation", "trust".
+2. Include named entities (companies, people, place names) when present.
+3. Keep queries SHORT — 3-6 key terms work best. Under 100 characters.
+4. Recall over precision — broad results are useful for context.
+
+Output: a SINGLE query, one line, no commentary, no markdown. Just the query.
+
+Examples:
+Topic: "Mail-order catalogs democratized rural consumption"
+Query: "mail order catalog" rural Sears consumption
+
+Topic: "Alibaba shaped China retail"
+Query: Alibaba China retail e-commerce marketplace
+
+Topic: "Mercado Libre Latin America"
+Query: "Mercado Libre" Latin America e-commerce retail
+"""
+
+
 def _plan_intro_promise(node: Dict[str, Any], llm: Any) -> List[Tuple[str, str]]:
-    """Hath + EBSCO + ProQuest US (broad + narrow each); +Intl on tier 1."""
+    """Hath + EBSCO + ProQuest US (broad + narrow each); +Intl on tier 1; +IA."""
     claim = (node.get("claim_text") or "").strip()
     if not claim:
         return []
@@ -173,27 +202,37 @@ def _plan_intro_promise(node: Dict[str, Any], llm: Any) -> List[Tuple[str, str]]
             plans.append((narrow_q, src))
 
     if int(node.get("tier", 2)) == 1:
-        # Tier-1 build-from-scratch promises also get an Intl Newsstream pass
-        # — many such promises are about non-US regions that US Newsstream
-        # under-covers. Single query = the broad one.
+        # Tier-1 build-from-scratch promises also get an Intl Newsstream pass.
         plans.append((broad_q, SRC_PQ_INTL))
+
+    # Phase 4: one IA query per intro_promise gap — IA's broad digitized
+    # collection complements HathiTrust's OCR full-text index.
+    ia_user = f"Topic: \"{claim}\"\nQuery:"
+    ia_q = _llm_query(IA_QUERY_SYSTEM, ia_user, llm) or broad_q
+    plans.append((ia_q, SRC_IA))
 
     return plans
 
 
 def _plan_research_gap(node: Dict[str, Any], llm: Any) -> List[Tuple[str, str]]:
-    """Single tight query × EBSCO + HathiTrust."""
+    """Single tight query × EBSCO + HathiTrust + IA (Phase 4)."""
     claim = (node.get("claim_text") or "").strip()
     if not claim:
         return []
 
     user = f"Gap: \"{claim}\"\nQuery:"
     q = _llm_query(RESEARCH_GAP_SYSTEM, user, llm) or claim[:80]
-    return [(q, SRC_EBSCO), (q, SRC_HATHI)]
+
+    # Phase 4: add one IA query — uses the same query as EBSCO/HathiTrust
+    # since research_gap queries are already concise Boolean strings.
+    ia_user = f"Topic: \"{claim}\"\nQuery:"
+    ia_q = _llm_query(IA_QUERY_SYSTEM, ia_user, llm) or q
+
+    return [(q, SRC_EBSCO), (q, SRC_HATHI), (ia_q, SRC_IA)]
 
 
 def _plan_company_profile(node: Dict[str, Any], llm: Any) -> List[Tuple[str, str]]:
-    """SEC EDGAR (entity name = "query") + 1 LLM-rewritten query × press sources."""
+    """SEC EDGAR + 1 LLM-rewritten query × press sources + IA (Phase 4)."""
     entity = (node.get("claim_text") or "").strip()
     if not entity:
         return []
@@ -201,13 +240,18 @@ def _plan_company_profile(node: Dict[str, Any], llm: Any) -> List[Tuple[str, str
     user = f"Company: \"{entity}\"\nQuery:"
     press_q = _llm_query(COMPANY_PROFILE_SYSTEM, user, llm) or entity
 
+    # Phase 4: IA is especially useful for company_profile — IA hosts early
+    # annual reports, newspaper archives, and historical company literature.
+    ia_user = f"Topic: \"{entity} company history\"\nQuery:"
+    ia_q = _llm_query(IA_QUERY_SYSTEM, ia_user, llm) or entity
+
     return [
-        # SEC EDGAR puller treats the "query" as the entity name (it does
-        # the CIK lookup itself); the dispatcher uses limit=8.
+        # SEC EDGAR puller treats the "query" as the entity name.
         (entity, SRC_SEC_10K),
         (press_q, SRC_EBSCO),
         (press_q, SRC_HATHI),
         (press_q, SRC_PQ_US),
+        (ia_q, SRC_IA),  # Phase 4
     ]
 
 

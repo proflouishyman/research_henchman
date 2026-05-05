@@ -161,6 +161,11 @@ def main() -> int:
                    help="Skip browser open (HathiTrust + ProQuest pulls become no-ops).")
     p.add_argument("--include-pulled", action="store_true",
                    help="Re-run pulls on gaps already at status='pulled'.")
+    p.add_argument("--sources", default=None,
+                   help="Comma-separated source IDs to restrict pulls to "
+                        "(e.g. 'internet_archive'). When set, the query plan "
+                        "runs normally but only (query, source) pairs matching "
+                        "the filter are dispatched. Other sources are skipped.")
     args = p.parse_args()
 
     run_id = args.run_id or _autogen_run_id()
@@ -200,6 +205,12 @@ def main() -> int:
         timeout_seconds=120, temperature=0.2,
     )
 
+    # Parse --sources filter (Phase 4 addition).
+    sources_filter: Optional[List[str]] = None
+    if args.sources:
+        sources_filter = [s.strip() for s in args.sources.split(",") if s.strip()]
+        print(f"Source filter: {sources_filter}", flush=True)
+
     # ---- dry-run: print the plan and exit
     if args.dry_run:
         for node in nodes:
@@ -208,6 +219,8 @@ def main() -> int:
                   f"type={node['gap_type']} "
                   f"claim={(node['claim_text'] or '')[:80]}")
             for q, src in plans:
+                if sources_filter and src not in sources_filter:
+                    continue
                 print(f"  → {src}: {q[:90]}")
         return 0
 
@@ -243,6 +256,7 @@ def main() -> int:
                     pull_root=pull_root,
                     page=page,
                     sec_user_agent=SEC_UA,
+                    sources_filter=sources_filter,
                 )
             except Exception as exc:
                 tb = traceback.format_exc()

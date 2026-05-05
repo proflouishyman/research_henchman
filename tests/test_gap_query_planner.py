@@ -9,6 +9,7 @@ import pytest
 from layers.gap_query_planner import (
     SRC_EBSCO,
     SRC_HATHI,
+    SRC_IA,
     SRC_PQ_INTL,
     SRC_PQ_US,
     SRC_SEC_10K,
@@ -69,7 +70,8 @@ class TestCleanQuery:
 
 class TestPlanIntroPromise:
     def test_tier_1_includes_intl(self):
-        llm = FakeLLM(["broad query", "narrow query"])
+        # Phase 4: 3rd LLM call is the IA query.
+        llm = FakeLLM(["broad query", "narrow query", "ia query"])
         node = {
             "gap_type": "intro_promise",
             "tier": 1,
@@ -78,11 +80,14 @@ class TestPlanIntroPromise:
         plans = plan_queries(node, llm)
         sources = [s for _, s in plans]
         assert SRC_PQ_INTL in sources
-        # Hath + EBSCO + PQ-US each get broad + narrow = 6, plus Intl broad = 7
-        assert len(plans) == 7
+        assert SRC_IA in sources
+        # Hath + EBSCO + PQ-US each get broad + narrow = 6, plus Intl broad = 7,
+        # plus IA = 8 (Phase 4)
+        assert len(plans) == 8
 
     def test_tier_2_no_intl(self):
-        llm = FakeLLM(["broad q", "narrow q"])
+        # Phase 4: 3rd LLM call is the IA query.
+        llm = FakeLLM(["broad q", "narrow q", "ia q"])
         node = {
             "gap_type": "intro_promise",
             "tier": 2,
@@ -91,8 +96,9 @@ class TestPlanIntroPromise:
         plans = plan_queries(node, llm)
         sources = [s for _, s in plans]
         assert SRC_PQ_INTL not in sources
-        # 3 sources × 2 queries = 6
-        assert len(plans) == 6
+        assert SRC_IA in sources
+        # 3 sources × 2 queries = 6, plus IA = 7 (Phase 4)
+        assert len(plans) == 7
 
     def test_falls_back_to_claim_when_llm_blank(self):
         llm = FakeLLM(["", ""])
@@ -115,15 +121,17 @@ class TestPlanIntroPromise:
 
 class TestPlanResearchGap:
     def test_two_sources_one_query(self):
-        llm = FakeLLM(["alipay AND PBOC"])
+        # Phase 4: 2nd LLM call is the IA query.
+        llm = FakeLLM(["alipay AND PBOC", "alipay regulatory history"])
         node = {
             "gap_type": "research_gap",
             "tier": 1,
             "claim_text": "Alipay regulatory history",
         }
         plans = plan_queries(node, llm)
-        assert len(plans) == 2
-        assert {s for _, s in plans} == {SRC_EBSCO, SRC_HATHI}
+        # Phase 4: EBSCO + HathiTrust + IA = 3 sources
+        assert len(plans) == 3
+        assert {s for _, s in plans} == {SRC_EBSCO, SRC_HATHI, SRC_IA}
         assert plans[0][0] == "alipay AND PBOC"
 
 
@@ -134,21 +142,24 @@ class TestPlanResearchGap:
 
 class TestPlanCompanyProfile:
     def test_first_query_is_entity_for_edgar(self):
-        llm = FakeLLM(['("Wal-Mart" OR "Walmart") AND history'])
+        # Phase 4: 2nd LLM call is the IA query.
+        llm = FakeLLM(['("Wal-Mart" OR "Walmart") AND history', 'Walmart history annual report'])
         node = {
             "gap_type": "company_profile",
             "tier": 1,
             "claim_text": "Wal-Mart",
         }
         plans = plan_queries(node, llm)
-        # 1 EDGAR + 3 press sources
-        assert len(plans) == 4
+        # Phase 4: 1 EDGAR + 3 press sources + 1 IA = 5
+        assert len(plans) == 5
         # EDGAR gets the raw entity name (the puller does the CIK lookup itself)
         edgar = [(q, s) for q, s in plans if s == SRC_SEC_10K]
         assert edgar == [("Wal-Mart", SRC_SEC_10K)]
-        # Other three sources share the LLM-generated press query
-        press = [(q, s) for q, s in plans if s != SRC_SEC_10K]
-        assert {s for _, s in press} == {SRC_EBSCO, SRC_HATHI, SRC_PQ_US}
+        # Other sources include EBSCO, HathiTrust, PQ US, and IA
+        non_edgar = [(q, s) for q, s in plans if s != SRC_SEC_10K]
+        assert {s for _, s in non_edgar} == {SRC_EBSCO, SRC_HATHI, SRC_PQ_US, SRC_IA}
+        # Press sources (non-EDGAR, non-IA) share the LLM press query
+        press = [(q, s) for q, s in plans if s not in (SRC_SEC_10K, SRC_IA)]
         assert all(q.startswith('("Wal-Mart"') for q, _ in press)
 
 

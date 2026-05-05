@@ -1,10 +1,10 @@
 // Per-gap dossier view: header, TopPicks strip, filters, four tier sections.
 // Loads from /api/library/gaps/{gapId}/dossier.
 
-import React, { useEffect, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, GripVertical } from 'lucide-react'
+import { ArrowLeft, GripVertical, Loader2 } from 'lucide-react'
 import { fetchDossier, fileUrl } from '../../lib/library_api'
 import { useLibraryStore } from '../../store/library'
 import type { DossierEntry, LibraryDossier } from '../../types/library'
@@ -12,6 +12,7 @@ import { DossierFilters } from './DossierFilters'
 import { TierSection } from './TierSection'
 import { stampArticleGap } from './QueuePage'
 import { attachDragCitations } from '../../lib/citations'
+import { showToast } from './Toast'
 
 export function DossierView() {
   const { gapId } = useParams<{ gapId: string }>()
@@ -82,6 +83,16 @@ export function DossierView() {
           entries={filteredTiers['3']}
           defaultOpen={expandedTiers.includes('3')}
         />
+        {/* Phase 2: Related from prior research (AUTO-* cross-links with PDFs). */}
+        {(filteredTiers['related'] ?? []).length > 0 && (
+          <TierSection
+            bucket="related"
+            heading="Related from prior research"
+            entries={filteredTiers['related'] ?? []}
+            defaultOpen={expandedTiers.includes('related')}
+            compact
+          />
+        )}
         <TierSection
           bucket="2"
           heading="Tier 2 — adjacent context"
@@ -116,13 +127,94 @@ export function DossierView() {
   )
 }
 
+/**
+ * Phase 3: DossierHeader with live "Pull more sources" button.
+ *
+ * Polls /api/library/gaps/{gap_id}/pull-status every 10s when a pull is
+ * running. On completion, refetches the dossier and shows a toast.
+ * On mount, reads pull-status and resumes the spinner if still running.
+ */
 function DossierHeader({ dossier }: { dossier: LibraryDossier }) {
   const { gap, summary } = dossier
+  const qc = useQueryClient()
 
-  // B11: Show "Pull more sources →" when tier-3 is empty OR gap is intro_promise with < 5 tier-3.
+  // Pull-more state: null = idle, 'running' = in progress
+  const [pullStatus, setPullStatus] = useState<'idle' | 'running' | 'done' | 'failed'>('idle')
+  const [pullRunId, setPullRunId] = useState<string | null>(null)
+  const pollRef = useRef<number | null>(null)
+
   const tier3Count = summary.tier_counts['3'] ?? 0
   const showPullMore =
     tier3Count === 0 || (gap.gap_type === 'intro_promise' && tier3Count < 5)
+
+  // Poll /pull-status until done or failed.
+  const startPolling = useCallback((runId: string) => {
+    if (pollRef.current) window.clearInterval(pollRef.current)
+    pollRef.current = window.setInterval(async () => {
+      try {
+        const res = await fetch(`/api/library/gaps/${gap.gap_id}/pull-status`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.status === 'done') {
+          window.clearInterval(pollRef.current!)
+          pollRef.current = null
+          setPullStatus('done')
+          const n = data.records_pulled ?? 0
+          const srcs = (data.sources_used ?? []).join(', ')
+          showToast(`Added ${n} new sources${srcs ? ' from ' + srcs : ''}`)
+          qc.invalidateQueries({ queryKey: ['dossier', gap.gap_id] })
+        } else if (data.status === 'failed') {
+          window.clearInterval(pollRef.current!)
+          pollRef.current = null
+          setPullStatus('failed')
+          showToast('Pull failed — check server logs')
+        }
+      } catch { /* network error — keep polling */ }
+    }, 10000)
+  }, [gap.gap_id, qc])
+
+  // On mount: check if a pull is already running (restore spinner after reload).
+  useEffect(() => {
+    fetch(`/api/library/gaps/${gap.gap_id}/pull-status`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.status === 'running') {
+          setPullStatus('running')
+          setPullRunId(data.run_id)
+          startPolling(data.run_id)
+        }
+      })
+      .catch(() => { /* no prior pull — ignore */ })
+    return () => {
+      if (pollRef.current) window.clearInterval(pollRef.current)
+    }
+  }, [gap.gap_id, startPolling])
+
+  const handlePullMore = async () => {
+    if (pullStatus === 'running') return
+    setPullStatus('running')
+    try {
+      const res = await fetch(`/api/library/gaps/${gap.gap_id}/pull-more`, { method: 'POST' })
+      if (res.status === 409) {
+        const data = await res.json()
+        showToast('Pull already running')
+        setPullRunId(data.detail?.match(/run_id=(\w+)/)?.[1] ?? null)
+        startPolling(pullRunId ?? '')
+        return
+      }
+      if (!res.ok) {
+        setPullStatus('failed')
+        showToast('Failed to start pull')
+        return
+      }
+      const data = await res.json()
+      setPullRunId(data.run_id)
+      startPolling(data.run_id)
+    } catch {
+      setPullStatus('failed')
+      showToast('Network error starting pull')
+    }
+  }
 
   return (
     <header className="border-b border-border pb-4">
@@ -150,15 +242,18 @@ function DossierHeader({ dossier }: { dossier: LibraryDossier }) {
             </span>
           )}
         </div>
-        {/* B11: Pull more sources button — links to /runs/new?gap=<gap_id>. */}
+        {/* Phase 3: Live pull-more button. */}
         {showPullMore && (
-          <a
-            href={`/runs/new?gap=${encodeURIComponent(gap.gap_id)}`}
-            className="shrink-0 text-[11px] font-medium text-accent hover:text-accent/80 border border-accent/30 bg-accent-light/50 rounded px-2 py-1 transition-colors"
-            title="Start a new evidence pull run for this gap"
+          <button
+            onClick={handlePullMore}
+            disabled={pullStatus === 'running'}
+            data-testid="pull-more-btn"
+            className="shrink-0 flex items-center gap-1 text-[11px] font-medium text-accent hover:text-accent/80 border border-accent/30 bg-accent-light/50 rounded px-2 py-1 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            title="Pull more evidence sources for this gap"
           >
-            Pull more sources →
-          </a>
+            {pullStatus === 'running' && <Loader2 size={11} className="animate-spin" />}
+            {pullStatus === 'running' ? 'Pulling…' : 'Pull more sources →'}
+          </button>
         )}
       </div>
       <h1 className="text-xl font-semibold text-ink mb-1">{gap.chapter || 'Gap dossier'}</h1>

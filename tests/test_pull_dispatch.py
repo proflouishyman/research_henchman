@@ -19,6 +19,7 @@ from layers import pull_dispatch
 from layers.gap_query_planner import (
     SRC_EBSCO,
     SRC_HATHI,
+    SRC_IA,
     SRC_PQ_INTL,
     SRC_PQ_US,
     SRC_SEC_10K,
@@ -76,10 +77,15 @@ def patched_pullers(monkeypatch):
         calls.append({"source": source_id, "gap": gap_id, "q": query})
         return 2, None, []
 
-    monkeypatch.setattr(pull_dispatch, "_pull_sec_edgar", stub_sec)
-    monkeypatch.setattr(pull_dispatch, "_pull_ebsco",     stub_ebsco)
-    monkeypatch.setattr(pull_dispatch, "_pull_hathitrust", stub_hathi)
-    monkeypatch.setattr(pull_dispatch, "_pull_proquest",   stub_proquest)
+    def stub_ia(*, query, gap_id, pull_root, **kwargs):
+        calls.append({"source": SRC_IA, "gap": gap_id, "q": query})
+        return 4, None, []
+
+    monkeypatch.setattr(pull_dispatch, "_pull_sec_edgar",        stub_sec)
+    monkeypatch.setattr(pull_dispatch, "_pull_ebsco",            stub_ebsco)
+    monkeypatch.setattr(pull_dispatch, "_pull_hathitrust",       stub_hathi)
+    monkeypatch.setattr(pull_dispatch, "_pull_proquest",         stub_proquest)
+    monkeypatch.setattr(pull_dispatch, "_pull_internet_archive", stub_ia)
     return calls
 
 
@@ -99,7 +105,7 @@ class TestPullGap:
             "SELECT * FROM gap_tree WHERE gap_id='CP_TEST'"
         ).fetchone())
         result = pull_dispatch.pull_gap(
-            db, node, run_id="r", llm=FakeLLM(["meli AND retail"]),
+            db, node, run_id="r", llm=FakeLLM(["meli AND retail", "meli ia query"]),
             pull_root=tmp_path / "po",
         )
         sources = {c["source"] for c in patched_pullers}
@@ -107,8 +113,10 @@ class TestPullGap:
         assert SRC_EBSCO in sources
         assert SRC_HATHI in sources
         assert SRC_PQ_US in sources
-        assert result["queries_run"] == 4
-        assert result["records_pulled"] == 5 + 7 + 3 + 2
+        assert SRC_IA in sources
+        # Phase 4: 1 EDGAR + 3 press sources + 1 IA = 5 queries
+        assert result["queries_run"] == 5
+        assert result["records_pulled"] == 5 + 7 + 3 + 2 + 4
         # Status flipped to pulled
         s = db.execute(
             "SELECT status FROM gap_tree WHERE gap_id='CP_TEST'"
@@ -126,13 +134,14 @@ class TestPullGap:
         ).fetchone())
         pull_dispatch.pull_gap(
             db, node, run_id="r",
-            llm=FakeLLM(["broad q", "narrow q"]),
+            llm=FakeLLM(["broad q", "narrow q", "ia q"]),
             pull_root=tmp_path / "po",
         )
         sources = {c["source"] for c in patched_pullers}
         assert SRC_PQ_INTL in sources
-        # 3 sources × 2 queries + intl × 1 = 7
-        assert len(patched_pullers) == 7
+        assert SRC_IA in sources
+        # Phase 4: 3 sources × 2 queries + intl × 1 + IA × 1 = 8
+        assert len(patched_pullers) == 8
 
     def test_editorial_todo_skipped(self, db, tmp_path, patched_pullers):
         insert_node(

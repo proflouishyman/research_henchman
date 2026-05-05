@@ -45,6 +45,10 @@ SOURCE_PRIORITY: Dict[str, int] = {
     "proquest_historical_newspapers": 3,
     "hathitrust_fulltext": 4,
     "sec_edgar": 5,
+    # Phase 4: Internet Archive — lower priority than HathiTrust since IA
+    # records lack abstracts but higher than unknown sources.
+    "internet_archive":          6,
+    "internet_archive_ia_html":  6,
 }
 
 _SOURCE_LABELS: Dict[str, str] = {
@@ -54,6 +58,9 @@ _SOURCE_LABELS: Dict[str, str] = {
     "proquest_historical_newspapers":     "ProQuest Historical",
     "hathitrust_fulltext":                "HathiTrust",
     "sec_edgar":                          "SEC EDGAR",
+    # Phase 4
+    "internet_archive":                   "Internet Archive",
+    "internet_archive_ia_html":           "Internet Archive",
 }
 
 
@@ -242,16 +249,151 @@ def build_cross_gap_index(conn: sqlite3.Connection) -> Dict[str, List[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Phase 2: Cross-gap candidates (AUTO-* PDFs for new CP/IP/TODO gaps)
+# ---------------------------------------------------------------------------
+
+def find_cross_gap_candidates(
+    conn: sqlite3.Connection,
+    gap_id: str,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
+    """Find AUTO-* gap articles relevant to *gap_id* via FTS5 search.
+
+    Queries the FTS index using the requesting gap's claim_text / research
+    question as the search terms, restricted to AUTO-* gaps with PDF and
+    relevance_score >= 1. Returns up to *limit* candidates (capped at 10 in
+    the caller for dossier rendering) annotated with ``from_gap_id``.
+
+    Falls back to an empty list if FTS is unavailable, the gap has no claim
+    text, or there are no AUTO-* results.
+    """
+    # Fetch the claim text for this gap to build the FTS query.
+    claim = ""
+    try:
+        gt = conn.execute(
+            "SELECT claim_text, research_question FROM gap_tree WHERE gap_id = ?",
+            (gap_id,),
+        ).fetchone()
+        if gt:
+            claim = (gt["claim_text"] or gt["research_question"] or "").strip()
+    except sqlite3.OperationalError:
+        return []
+
+    if not claim:
+        return []
+
+    # Build a safe FTS5 OR query from the claim tokens.
+    # We use OR rather than AND (implicit with space in FTS5) so that any
+    # matching token contributes — requiring ALL claim words would exclude
+    # most results since claim and article vocabularies rarely overlap
+    # fully. Short stopwords (≤ 3 chars) are dropped to improve precision.
+    _STOPWORDS = {"the", "and", "for", "was", "are", "its", "has", "had",
+                  "but", "not", "all", "by", "in", "of", "to", "a", "an"}
+
+    def _to_fts(text: str) -> str:
+        tokens = []
+        for tok in text.split():
+            cleaned = "".join(c for c in tok if c not in '"*+-^():')
+            cleaned = cleaned.replace('"', '""')
+            # Skip very short tokens and common stopwords.
+            if len(cleaned) <= 3 or cleaned.lower() in _STOPWORDS:
+                continue
+            tokens.append(f'"{cleaned}"')
+        unique_tokens = list(dict.fromkeys(tokens))[:12]
+        return " OR ".join(unique_tokens)
+
+    fts_query = _to_fts(claim)
+    if not fts_query:
+        return []
+
+    try:
+        rows = conn.execute(
+            """SELECT a.id, a.title, a.authors, a.journal, a.pub_date,
+                      a.abstract, a.doi, a.url, a.pdf_path, a.source_id,
+                      a.gap_id AS from_gap_id, a.relevance_score, a.relevance_why,
+                      a.access, a.hathi_id, a.subject, a.language
+                 FROM articles a
+                 JOIN articles_fts ON articles_fts.rowid = a.id
+                WHERE articles_fts MATCH ?
+                  AND a.gap_id LIKE 'AUTO-%'
+                  AND a.pdf_path IS NOT NULL AND a.pdf_path != ''
+                  AND (a.relevance_score IS NULL OR a.relevance_score >= 1)
+                ORDER BY
+                    a.relevance_score DESC,
+                    CASE WHEN a.pdf_path IS NOT NULL THEN 0 ELSE 1 END ASC,
+                    bm25(articles_fts) ASC
+                LIMIT ?""",
+            (fts_query, limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        from_gap = str(r["from_gap_id"] or "")
+        out.append({
+            "id":              int(r["id"]),
+            "title":           (r["title"] or "").strip(),
+            "authors":         (r["authors"] or "").strip(),
+            "pub_date":        (r["pub_date"] or "").strip(),
+            "journal":         (r["journal"] or "").strip(),
+            "abstract":        (r["abstract"] or "").strip(),
+            "doi":             (r["doi"] or "").strip(),
+            "url":             absolutize_url(r["url"], str(r["source_id"] or "")),
+            "pdf_path":        (r["pdf_path"] or "").strip(),
+            "source_id":       str(r["source_id"] or ""),
+            "also_in_sources": [],
+            "relevance_score": int(r["relevance_score"]) if r["relevance_score"] is not None else None,
+            "relevance_why":   (r["relevance_why"] or "").strip(),
+            "cross_gap_refs":  [],
+            "from_gap_id":     from_gap,
+            # Phase 1 availability fields
+            "access":    (r["access"] or "").strip() or None,
+            "hathi_id":  (r["hathi_id"] or "").strip() or None,
+            "subject":   (r["subject"] or "").strip() or None,
+            "language":  (r["language"] or "").strip() or None,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Gap row fetcher + structured dossier builder
 # ---------------------------------------------------------------------------
 
+def _articles_columns(conn: sqlite3.Connection) -> set:
+    """Return the set of column names currently in the articles table."""
+    try:
+        return {r[1] for r in conn.execute("PRAGMA table_info(articles)").fetchall()}
+    except sqlite3.OperationalError:
+        return set()
+
+
 def fetch_gap_rows(conn: sqlite3.Connection, gap_id: str) -> List[sqlite3.Row]:
-    """Return all article rows for a gap, with the columns the dossier needs."""
+    """Return all article rows for a gap, with the columns the dossier needs.
+
+    Phase 1: includes access, hathi_id, subject, language for availability
+    badge when those columns exist (they are absent in hand-crafted test DBs
+    that predate the migration). Falls back gracefully to the base column set.
+    """
+    cols = _articles_columns(conn)
+    # Phase 1 columns — only select them if present in the DB.
+    phase1_extras = ", ".join(
+        c for c in ("access", "hathi_id", "subject", "language") if c in cols
+    )
+    # Scoring columns also added via migration by score_relevance.py.
+    score_cols = ", ".join(
+        c for c in ("relevance_score", "relevance_why") if c in cols
+    )
+    extra_sel = ""
+    if score_cols:
+        extra_sel += f", {score_cols}"
+    if phase1_extras:
+        extra_sel += f", {phase1_extras}"
+
     return conn.execute(
-        """SELECT id, title, authors, journal, pub_date, abstract, doi,
+        f"""SELECT id, title, authors, journal, pub_date, abstract, doi,
                   url, pdf_path, source_id, gap_id, gap_topic,
-                  gap_research_question,
-                  relevance_score, relevance_why
+                  gap_research_question{extra_sel}
              FROM articles WHERE gap_id = ?""",
         (gap_id,),
     ).fetchall()
@@ -272,6 +414,17 @@ def _entry_to_primitive(
     p = entry["primary"]
     primary_src = str(p["source_id"] or "")
     also_in = [s for s in entry["sources"] if s and s != primary_src]
+
+    # Phase 1: include availability / source-specific metadata fields.
+    # These are present on HathiTrust and Internet Archive rows; NULL for others.
+    def _col(name: str) -> Optional[str]:
+        """Safely fetch a column that may not exist in older row objects."""
+        try:
+            val = p[name]
+            return (val or "").strip() or None
+        except (IndexError, sqlite3.OperationalError):
+            return None
+
     return {
         "id":              int(p["id"]),
         "title":           (p["title"] or "").strip(),
@@ -287,6 +440,11 @@ def _entry_to_primitive(
         "relevance_score": int(p["relevance_score"]) if p["relevance_score"] is not None else None,
         "relevance_why":   (p["relevance_why"] or "").strip(),
         "cross_gap_refs":  list(cross_gap_refs),
+        # Phase 1 availability fields (optional — None when not applicable).
+        "access":    _col("access"),
+        "hathi_id":  _col("hathi_id"),
+        "subject":   _col("subject"),
+        "language":  _col("language"),
     }
 
 
@@ -349,10 +507,10 @@ def assemble_dossier(
     rows = fetch_gap_rows(conn, gap_id)
     consolidated = dedupe_within_gap(rows)
 
-    # Per-tier buckets keyed by string ("0"-"3" or "unscored") so the
-    # JSON response is dict-friendly.
+    # Per-tier buckets keyed by string ("0"-"3", "unscored", "related") so the
+    # JSON response is dict-friendly. "related" is the Phase 2 cross-link bucket.
     tiers: Dict[str, List[Dict[str, Any]]] = {
-        "3": [], "2": [], "1": [], "0": [], "unscored": [],
+        "3": [], "2": [], "1": [], "0": [], "unscored": [], "related": [],
     }
     if cross_gap_idx is None:
         cross_gap_idx = build_cross_gap_index(conn)
@@ -370,6 +528,14 @@ def assemble_dossier(
         other_gaps = [g for g in cross_gap_idx.get(norm, []) if g != gap_id] if norm else []
         tiers[bucket].append(_entry_to_primitive(entry, self_gap=gap_id, cross_gap_refs=other_gaps))
 
+    # Phase 2: populate the "related" bucket with AUTO-* cross-linked PDFs.
+    # Only run for new-style gaps (CP/IP/TODO*) that might lack EBSCO content.
+    # Cap at 10 entries so the UI doesn't overflow.
+    _is_new_gap = any(gap_id.startswith(pfx) for pfx in ("CP", "IP", "TODO", "RG"))
+    if _is_new_gap:
+        cross_candidates = find_cross_gap_candidates(conn, gap_id, limit=20)
+        tiers["related"] = cross_candidates[:10]
+
     # Order each tier: source priority then pub-date desc (matches markdown).
     def _sort_key(e: Dict[str, Any]) -> tuple:
         src_rank = SOURCE_PRIORITY.get(e.get("source_id", ""), 99)
@@ -378,7 +544,8 @@ def assemble_dossier(
         year = -int(m.group()) if m else 0
         return (src_rank, year)
     for bucket in tiers:
-        tiers[bucket].sort(key=_sort_key)
+        if bucket != "related":  # related is pre-sorted by FTS rank
+            tiers[bucket].sort(key=_sort_key)
 
     # Counts
     tier_counts = {b: len(v) for b, v in tiers.items()}
@@ -435,5 +602,5 @@ def assemble_dossier(
 
 # Canonical iteration order for tier buckets used by both the markdown
 # generator and the API consumer. Tier 3 first (most cite-worthy) down to
-# Tier 0, with "unscored" last.
-TIER_ORDER: Tuple[str, ...] = ("3", "2", "1", "0", "unscored")
+# Tier 0, with "unscored" last. "related" is the Phase 2 cross-link bucket.
+TIER_ORDER: Tuple[str, ...] = ("3", "2", "1", "0", "unscored", "related")

@@ -52,6 +52,9 @@ const SOURCE_LABELS: Record<string, string> = {
   proquest_historical_newspapers: 'ProQuest Historical',
   hathitrust_fulltext: 'HathiTrust',
   sec_edgar: 'SEC EDGAR',
+  // Phase 4: Internet Archive
+  internet_archive: 'Internet Archive',
+  internet_archive_ia_html: 'Internet Archive',
 }
 
 function srcLabel(id: string): string {
@@ -92,6 +95,114 @@ function renderSnippetHtml(snippet: string): string {
   return escaped
     .replace(new RegExp(OPEN, 'g'), '<mark class="bg-accent-light text-accent rounded px-0.5">')
     .replace(new RegExp(CLOSE, 'g'), '</mark>')
+}
+
+/**
+ * Phase 1: Availability badge for a source card entry.
+ *
+ * Color scheme:
+ *   Blue  — Local PDF on disk (most actionable)
+ *   Green — Full view (HathiTrust or IA public domain)
+ *   Yellow— Library only (HathiTrust/IA limited/restricted + no PDF)
+ *   Orange— Cloud (has URL, not categorized above)
+ *   Gray  — No link available
+ *
+ * For Internet Archive records, label reads "IA · Full view" or "IA · Library only".
+ */
+function AvailabilityBadge({ entry }: { entry: DossierEntry }) {
+  const isIA = entry.source_id === 'internet_archive' || entry.source_id === 'internet_archive_ia_html'
+  const isHathi = entry.source_id === 'hathitrust_fulltext'
+  const prefix = isIA ? 'IA · ' : ''
+
+  if (entry.pdf_path) {
+    return (
+      <span
+        data-testid="availability-badge"
+        className="text-[9px] font-medium px-1 py-0.5 rounded border bg-blue-50 text-blue-600 border-blue-200"
+        title="Local PDF available"
+      >
+        Local PDF
+      </span>
+    )
+  }
+
+  if ((isHathi || isIA) && entry.access === 'Full view') {
+    return (
+      <span
+        data-testid="availability-badge"
+        className="text-[9px] font-medium px-1 py-0.5 rounded border bg-emerald-50 text-emerald-600 border-emerald-200"
+        title="Freely readable online"
+      >
+        {prefix}Full view
+      </span>
+    )
+  }
+
+  if ((isHathi || isIA) && entry.access?.startsWith('Limited') && !entry.pdf_path) {
+    return (
+      <span
+        data-testid="availability-badge"
+        className="text-[9px] font-medium px-1 py-0.5 rounded border bg-amber-50 text-amber-600 border-amber-200"
+        title="Accessible via library subscription"
+      >
+        {prefix}Library only
+      </span>
+    )
+  }
+
+  if (entry.url) {
+    return (
+      <span
+        data-testid="availability-badge"
+        className="text-[9px] font-medium px-1 py-0.5 rounded border bg-orange-50 text-orange-500 border-orange-200"
+        title="Available online"
+      >
+        Cloud
+      </span>
+    )
+  }
+
+  return null  // no link of any kind — show nothing
+}
+
+/**
+ * Phase 1: "Look up at JHU" and "Try Internet Archive" inline search links.
+ * Only shown for non-PDF, non-Full-view sources (where we can't open directly).
+ */
+function LibrarySearchLinks({ entry }: { entry: DossierEntry }) {
+  const hasPdf = !!entry.pdf_path
+  const isFullView = entry.access === 'Full view'
+  // Show these links only when the source isn't directly readable.
+  if (hasPdf || isFullView) return null
+
+  const title   = encodeURIComponent(entry.title || '')
+  const authors = encodeURIComponent(entry.authors || '')
+
+  const jhuUrl = `https://catalyst.library.jhu.edu/discovery/search?query=any,contains,${title}+${authors}&tab=Everything&search_scope=MyInst_and_CI&vid=01JHU_INST:01JHU`
+  const iaUrl  = `https://archive.org/search.php?query=title%3A%22${title}%22+creator%3A%22${authors}%22`
+
+  return (
+    <div className="flex items-center gap-2 mt-1">
+      <a
+        href={jhuUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-[10px] text-ink-muted hover:text-accent underline"
+        title="Search JHU Catalyst"
+      >
+        Look up at JHU
+      </a>
+      <a
+        href={iaUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-[10px] text-ink-muted hover:text-accent underline"
+        title="Search Internet Archive"
+      >
+        Try Internet Archive
+      </a>
+    </div>
+  )
 }
 
 export function SourceCard({ entry, compact, snippet }: Props) {
@@ -135,6 +246,9 @@ export function SourceCard({ entry, compact, snippet }: Props) {
   if (entry.pub_date) meta.push(entry.pub_date)
   meta.push(srcLabel(entry.source_id))
 
+  // Phase 2: from_gap_id breadcrumb (set on cross-linked AUTO-* entries).
+  const fromGapId = entry.from_gap_id || null
+
   // Compact single-line variant (tier 0/1).
   if (compact) {
     return (
@@ -156,10 +270,16 @@ export function SourceCard({ entry, compact, snippet }: Props) {
           {entry.relevance_score ?? '—'}
         </span>
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-ink truncate">
+          <div className="text-xs text-ink truncate flex items-center gap-1.5">
             <span className="font-medium">{entry.title || '(untitled)'}</span>
             <span className="text-ink-muted"> — {meta.join(' · ')}</span>
+            <AvailabilityBadge entry={entry} />
           </div>
+          {fromGapId && (
+            <div className="text-[10px] text-ink-muted mt-0.5">
+              from {fromGapId}
+            </div>
+          )}
           {entry.relevance_why && (
             <div className="text-[11px] italic text-ink-secondary line-clamp-1 mt-0.5">
               {entry.relevance_why}
@@ -206,7 +326,16 @@ export function SourceCard({ entry, compact, snippet }: Props) {
           <h3 className="text-sm font-semibold text-ink leading-snug">
             {entry.title || '(untitled)'}
           </h3>
-          <div className="text-[11px] text-ink-muted mt-0.5 truncate">{meta.join(' · ')}</div>
+          <div className="flex items-center gap-1.5 text-[11px] text-ink-muted mt-0.5">
+            <span className="truncate">{meta.join(' · ')}</span>
+            <AvailabilityBadge entry={entry} />
+          </div>
+          {/* Phase 2: from_gap_id breadcrumb for cross-linked AUTO-* entries. */}
+          {fromGapId && (
+            <div className="text-[10px] text-ink-muted mt-0.5">
+              from {fromGapId}
+            </div>
+          )}
         </div>
       </div>
 
@@ -251,9 +380,13 @@ export function SourceCard({ entry, compact, snippet }: Props) {
         </div>
       )}
 
-      <div className="flex items-center gap-3 mt-3 pt-2 border-t border-border/70">
-        <CardActions entry={entry} onOpen={onOpen} />
-        {entry.cross_gap_refs.length > 0 && <CrossGapChip refs={entry.cross_gap_refs} />}
+      <div className="mt-3 pt-2 border-t border-border/70">
+        <div className="flex items-center gap-3">
+          <CardActions entry={entry} onOpen={onOpen} />
+          {entry.cross_gap_refs.length > 0 && <CrossGapChip refs={entry.cross_gap_refs} />}
+        </div>
+        {/* Phase 1: JHU and IA search links for non-directly-readable sources. */}
+        <LibrarySearchLinks entry={entry} />
       </div>
 
       {hoverOpen && <HoverPopover entry={entry} />}
@@ -330,7 +463,10 @@ function DragHandle() {
 }
 
 /**
- * Open + Cite + Star action row.
+ * Open + Cite (3 inline buttons) + Star action row.
+ *
+ * Phase 1: Replaces the CiteDropdown with three inline icon buttons for
+ * Chicago, Short, and Link. One click + toast. No dropdown.
  *
  * A4: If entry has BOTH a pdf_path AND a url, the primary CTA opens the PDF
  *   and a secondary "(or open URL)" link is shown.
@@ -343,10 +479,33 @@ function CardActions({ entry, onOpen }: { entry: DossierEntry; onOpen: () => voi
   const hasOpenable = hasPdf || hasUrl
   const { isStarred, toggleStar } = useLibraryStore()
   const starred = isStarred(entry.id)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
   // A4: secondary URL handler for when the primary CTA opens the PDF.
   const onOpenUrl = () => {
     if (entry.url) window.open(entry.url, '_blank', 'noopener,noreferrer')
+  }
+
+  // Memoised so we don't re-derive the strings on every render hover.
+  const forms = useMemo(
+    () => ({
+      chicago: chicagoCitation(entry),
+      short: shortCitation(entry),
+      link: linkOnly(entry),
+    }),
+    [entry],
+  )
+
+  const copyForm = async (key: string, text: string, label: string) => {
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedKey(key)
+      window.setTimeout(() => setCopiedKey(null), 1200)
+      showToast(label)
+    } catch {
+      /* clipboard refused — silently no-op; the user can drag instead */
+    }
   }
 
   return (
@@ -371,7 +530,32 @@ function CardActions({ entry, onOpen }: { entry: DossierEntry; onOpen: () => voi
           or open URL
         </button>
       )}
-      <CiteDropdown entry={entry} />
+      {/* Phase 1: Three inline citation buttons replacing the CiteDropdown. */}
+      <button
+        onClick={() => copyForm('chicago', forms.chicago, 'Chicago citation copied')}
+        className="flex items-center gap-0.5 text-[11px] font-medium text-ink-secondary hover:text-ink"
+        title="Copy Chicago citation"
+        aria-label="Copy Chicago citation"
+      >
+        {copiedKey === 'chicago' ? <Check size={11} className="text-emerald-600" /> : <FileText size={11} />}
+      </button>
+      <button
+        onClick={() => copyForm('short', forms.short, 'Short citation copied')}
+        className="flex items-center gap-0.5 text-[11px] font-medium text-ink-secondary hover:text-ink"
+        title="Copy short citation (Author Year)"
+        aria-label="Copy short citation"
+      >
+        {copiedKey === 'short' ? <Check size={11} className="text-emerald-600" /> : <Copy size={11} />}
+      </button>
+      <button
+        onClick={() => copyForm('link', forms.link, 'Link copied')}
+        disabled={!forms.link}
+        className="flex items-center gap-0.5 text-[11px] font-medium text-ink-secondary hover:text-ink disabled:opacity-40"
+        title={entry.pdf_path ? 'Copy PDF path' : 'Copy URL'}
+        aria-label="Copy link"
+      >
+        {copiedKey === 'link' ? <Check size={11} className="text-emerald-600" /> : <LinkIcon size={11} />}
+      </button>
       <button
         onClick={() => {
           toggleStar(entry.id)
@@ -388,86 +572,9 @@ function CardActions({ entry, onOpen }: { entry: DossierEntry; onOpen: () => voi
   )
 }
 
-/** Cite dropdown menu — copies Chicago / short / link to clipboard. */
-function CiteDropdown({ entry }: { entry: DossierEntry }) {
-  const [open, setOpen] = useState(false)
-  const [copied, setCopied] = useState<string | null>(null)
-  const wrapRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    function onDoc(ev: MouseEvent) {
-      if (!wrapRef.current?.contains(ev.target as Node)) setOpen(false)
-    }
-    if (open) document.addEventListener('click', onDoc)
-    return () => document.removeEventListener('click', onDoc)
-  }, [open])
-
-  const copy = async (label: string, text: string) => {
-    if (!text) return
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(label)
-      window.setTimeout(() => setCopied(null), 1200)
-      const friendly =
-        label === 'chicago'
-          ? 'Chicago citation copied'
-          : label === 'short'
-          ? 'Short citation copied'
-          : 'Link copied'
-      showToast(friendly)
-    } catch {
-      /* clipboard refused — silently no-op; the user can drag instead. */
-    }
-  }
-
-  // Memoised so we don't re-derive the strings on every render hover.
-  const forms = useMemo(
-    () => ({
-      chicago: chicagoCitation(entry),
-      short: shortCitation(entry),
-      link: linkOnly(entry),
-    }),
-    [entry],
-  )
-
-  return (
-    <div ref={wrapRef} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 text-[11px] font-medium text-ink-secondary hover:text-ink"
-      >
-        {copied ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
-        Cite
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-30 bg-surface-card border border-border rounded-md shadow-panel py-1 w-56 text-xs">
-          <button
-            onClick={() => copy('chicago', forms.chicago)}
-            className="w-full text-left px-3 py-1.5 hover:bg-surface-muted flex items-center gap-2"
-          >
-            <FileText size={11} className="text-ink-muted" />
-            <span>Chicago</span>
-          </button>
-          <button
-            onClick={() => copy('short', forms.short)}
-            className="w-full text-left px-3 py-1.5 hover:bg-surface-muted flex items-center gap-2"
-          >
-            <Copy size={11} className="text-ink-muted" />
-            <span>(Author Year)</span>
-          </button>
-          <button
-            onClick={() => copy('link', forms.link)}
-            disabled={!forms.link}
-            className="w-full text-left px-3 py-1.5 hover:bg-surface-muted disabled:opacity-40 flex items-center gap-2"
-          >
-            <LinkIcon size={11} className="text-ink-muted" />
-            <span>{entry.pdf_path ? 'PDF path' : 'URL'}</span>
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
+// CiteDropdown replaced in Phase 1 by three inline icon buttons in CardActions.
+// The citation logic is unchanged — chicagoCitation / shortCitation / linkOnly
+// helpers are still used directly inside CardActions.
 
 /** Cross-gap reference chip — shows "Also in N gaps" with expand on click. */
 function CrossGapChip({ refs }: { refs: string[] }) {

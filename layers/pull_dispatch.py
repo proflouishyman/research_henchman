@@ -58,6 +58,7 @@ from adapters.gap_tree import (  # noqa: E402
 from layers.gap_query_planner import (  # noqa: E402
     SRC_EBSCO,
     SRC_HATHI,
+    SRC_IA,
     SRC_PQ_INTL,
     SRC_PQ_US,
     SRC_SEC_10K,
@@ -317,6 +318,45 @@ def _pull_proquest(
 
 
 # ---------------------------------------------------------------------------
+# Internet Archive shim — uses scripts.pull_internet_archive helpers.
+# ---------------------------------------------------------------------------
+
+
+def _pull_internet_archive(
+    *,
+    query: str,
+    gap_id: str,
+    pull_root: Path,
+    limit: int = 50,
+) -> Tuple[int, Optional[Path], List[str]]:
+    """Search IA and write seed JSON. Mirrors the HathiTrust shim pattern."""
+    errors: List[str] = []
+    try:
+        from scripts.pull_internet_archive import write_records
+        from adapters.internet_archive import search as ia_search
+    except Exception as exc:
+        errors.append(f"internet_archive import: {exc!s:.150}")
+        return 0, None, errors
+
+    try:
+        records = ia_search(query, limit=limit) or []
+    except Exception as exc:
+        errors.append(f"internet_archive search: {exc!s:.150}")
+        return 0, None, errors
+
+    if not records:
+        return 0, None, errors
+
+    out_path = write_records(
+        records,
+        gap_id=gap_id,
+        query=query,
+        pull_root=pull_root,
+    )
+    return len(records), out_path, errors
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -331,12 +371,15 @@ def pull_gap(
     page: Any = None,
     sec_user_agent: str = sec_edgar.DEFAULT_USER_AGENT,
     log: Any = None,
+    sources_filter: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Pull every (query, source) plan for *node* into *pull_root*.
 
     *node* must carry: gap_id, gap_type, tier, claim_text. *page* is an
     open Playwright page (or None when only EBSCO + SEC sources will run).
     *log* is an optional callable for verbose progress (defaults to print).
+    *sources_filter* restricts which source_ids are dispatched (Phase 4
+    ``--sources`` CLI flag); None means all sources.
 
     Resume semantics: skips entirely if the node's status is already
     'pulled'. Sets status to 'pulled' on full success, 'queries_built'
@@ -365,6 +408,10 @@ def pull_gap(
     errors: List[str] = []
 
     for query, source in plans:
+        # Phase 4: honour --sources filter if provided.
+        if sources_filter and source not in sources_filter:
+            say(f"  [{gap_id}] skip {source} (not in sources_filter)")
+            continue
         say(f"  [{gap_id}] → {source}: {query[:80]}")
         if source == SRC_SEC_10K:
             n, _, errs = _pull_sec_edgar(
@@ -388,6 +435,10 @@ def pull_gap(
             n, _, errs = _pull_proquest(
                 page=page, query=query, gap_id=gap_id,
                 source_id=source, pull_root=pull_root,
+            )
+        elif source == SRC_IA:
+            n, _, errs = _pull_internet_archive(
+                query=query, gap_id=gap_id, pull_root=pull_root,
             )
         else:
             n, errs = 0, [f"unknown_source: {source}"]

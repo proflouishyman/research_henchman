@@ -41,6 +41,16 @@ export interface DossierEntry {
   relevance_score: number | null
   relevance_why: string
   cross_gap_refs: string[]
+  /** Phase 1: HathiTrust/IA availability label ("Full view" / "Limited (search-only)"). */
+  access?: string | null
+  /** Phase 1: HathiTrust stable identifier e.g. "mdp.49015001020396". */
+  hathi_id?: string | null
+  /** Phase 1: Subject classification from the source. */
+  subject?: string | null
+  /** Phase 1: Language of the item. */
+  language?: string | null
+  /** Phase 2: gap_id this entry was cross-linked from (AUTO-* sources). */
+  from_gap_id?: string | null
 }
 
 export interface DossierSummary {
@@ -66,7 +76,8 @@ export interface GapHeader {
 export interface LibraryDossier {
   gap: GapHeader
   summary: DossierSummary
-  tiers: Record<string, DossierEntry[]>  // keys: "3"|"2"|"1"|"0"|"unscored"
+  /** Tier buckets: "3"|"2"|"1"|"0"|"unscored"|"related" (Phase 2 cross-links). */
+  tiers: Record<string, DossierEntry[]>
 }
 
 export interface LibraryChapter {

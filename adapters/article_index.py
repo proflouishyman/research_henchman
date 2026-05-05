@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS articles (
     -- Gap context (the research question that led to this article being pulled)
     gap_research_question TEXT,
     gap_topic             TEXT,
+    -- Availability / source-specific metadata (Phase 1)
+    access                TEXT,             -- HathiTrust/IA: "Full view" / "Limited (search-only)"
+    hathi_id              TEXT,             -- HathiTrust stable identifier e.g. "mdp.49015001020396"
+    subject               TEXT,             -- Subject classification from source
+    language              TEXT,             -- Language of the item
     -- Bookkeeping
     indexed_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(run_id, gap_id, source_id, title)
@@ -135,7 +140,19 @@ CREATE INDEX IF NOT EXISTS idx_gap       ON articles(gap_id);
 CREATE INDEX IF NOT EXISTS idx_run       ON articles(run_id);
 CREATE INDEX IF NOT EXISTS idx_doi       ON articles(doi)          WHERE doi IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_canonical ON articles(canonical_id) WHERE canonical_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_access    ON articles(access)       WHERE source_id='hathitrust_fulltext';
 """
+
+# Migration DDL: add new columns to existing databases that predate Phase 1.
+# These are no-ops when the columns already exist (SQLite ignores ADD COLUMN
+# for existing columns only when using IF NOT EXISTS, which it doesn't support
+# natively — we catch OperationalError instead in open_index).
+_MIGRATION_DDL = [
+    "ALTER TABLE articles ADD COLUMN access    TEXT",
+    "ALTER TABLE articles ADD COLUMN hathi_id  TEXT",
+    "ALTER TABLE articles ADD COLUMN subject   TEXT",
+    "ALTER TABLE articles ADD COLUMN language  TEXT",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +354,14 @@ def _ingest_seed_json(
             pub_date = (rec.get("pub_date") or "").strip() or None
             abstract = (rec.get("abstract") or "").strip() or None
 
+            # Phase 1: availability and source-specific metadata fields.
+            # HathiTrust and Internet Archive records carry these; other
+            # sources leave them NULL.
+            access   = (rec.get("access") or "").strip() or None
+            hathi_id = (rec.get("hathi_id") or "").strip() or None
+            subject  = (rec.get("subject") or "").strip() or None
+            language = (rec.get("language") or "").strip() or None
+
             # bquery context: use dedicated fields when present; otherwise
             # fall back to the ``query`` field (ProQuest records store the
             # Boolean search string there).
@@ -365,13 +390,15 @@ def _ingest_seed_json(
                         url, pdf_path, md_path,
                         run_id, gap_id, source_id,
                         bquery_original, bquery_normalized,
-                        gap_research_question, gap_topic
+                        gap_research_question, gap_topic,
+                        access, hathi_id, subject, language
                     ) VALUES (
                         :doi, :title, :authors, :journal, :pub_date, :abstract,
                         :url, NULL, NULL,
                         :run_id, :gap_id, :source_id,
                         :bquery_original, :bquery_normalized,
-                        :gap_research_question, :gap_topic
+                        :gap_research_question, :gap_topic,
+                        :access, :hathi_id, :subject, :language
                     )
                     """,
                     {
@@ -389,6 +416,10 @@ def _ingest_seed_json(
                         "bquery_normalized": bquery_normalized,
                         "gap_research_question": research_question,
                         "gap_topic": gap_topic,
+                        "access": access,
+                        "hathi_id": hathi_id,
+                        "subject": subject,
+                        "language": language,
                     },
                 )
                 inserted += 1
@@ -455,12 +486,27 @@ def open_index(db_path: Path) -> sqlite3.Connection:
     Creates the full schema (tables, FTS, triggers, indexes) if it doesn't
     already exist.  Safe to call on an existing DB — all DDL uses
     ``CREATE … IF NOT EXISTS``.
+
+    Phase 1 migration: adds the access/hathi_id/subject/language columns to
+    databases created before the Phase 1 schema upgrade. Each ALTER TABLE is
+    attempted individually; OperationalError means the column already exists
+    and is silently ignored.
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     # Enable WAL for better concurrency (reader doesn't block writer)
     conn.execute("PRAGMA journal_mode=WAL")
+    # Phase 1 migration: add new columns BEFORE running the full DDL script.
+    # The DDL's CREATE TABLE IF NOT EXISTS uses the new columns in its schema,
+    # so for existing DBs we must ADD them first (for new DBs the ALTER TABLEs
+    # are no-ops because the CREATE TABLE already includes the columns).
+    for stmt in _MIGRATION_DDL:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # column already present — idempotent
+    conn.commit()
     conn.executescript(_DDL)
     conn.commit()
     return conn

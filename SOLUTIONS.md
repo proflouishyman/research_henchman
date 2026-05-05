@@ -1669,6 +1669,56 @@ Added `era_start`/`era_end` optional params to `provider_search_url` and `build_
 Notes
 No API contract changes. `provider_search_url` remains backward-compatible (era params default to None, producing identical output when omitted). Per-source noise thresholds remain a follow-up item.
 
+[2026-05-02] - Phase 1+2+3+4 Writing-Companion Upgrade (Schema, Cross-Link, Pull-More, Internet Archive)
+
+Problem
+Four accumulated gaps in the research pipeline:
+  1. HathiTrust seed data (access, hathi_id, subject, language) was never stored in the articles DB, making availability status invisible in the UI.
+  2. Documents fetched for AUTO-* gaps were invisible in dossiers for related CP/IP/TODO gaps, requiring the user to navigate between gap views to find relevant prior research.
+  3. No mechanism existed to trigger additional source pulls for a gap from the UI; users had to run CLI scripts manually.
+  4. Internet Archive was absent from the pull pipeline entirely, missing millions of freely available full-text documents.
+
+Root Cause
+  1. `_ingest_seed_json` never extracted HathiTrust metadata fields; `_DDL` lacked the columns.
+  2. `assemble_dossier` only retrieved articles whose `gap_id` matched exactly; no cross-gap FTS search existed.
+  3. No pull-job lifecycle table or async endpoint existed; the UI had no way to trigger or poll pull operations.
+  4. `gap_query_planner.py` and `pull_dispatch.py` had no IA branch; `adapters/internet_archive.py` did not exist.
+
+Solution
+  Phase 1 — Schema & Availability:
+    - Added 4 columns (`access`, `hathi_id`, `subject`, `language`) to `articles` table in `adapters/article_index.py`.
+    - Added `_MIGRATION_DDL` ALTER TABLE list; migrations run BEFORE `executescript(_DDL)` in `open_index` to avoid column-not-found errors on existing DBs.
+    - Updated `_ingest_seed_json` to extract/insert the new fields from seed records.
+    - Added `AvailabilityBadge` and `LibrarySearchLinks` (JHU Catalyst + IA) components in `frontend/src/components/library/SourceCard.tsx`.
+    - Replaced `CiteDropdown` with 3 inline icon buttons (Chicago, Short, Link) with copy-confirmation animation.
+    - Ran `scripts/backfill_hathitrust_access.py`: 23,702 UPDATE rows, 21,923 HathiTrust rows now have `access IS NOT NULL`.
+
+  Phase 2 — Cross-Gap Linking:
+    - Added `find_cross_gap_candidates(conn, gap_id, limit)` to `layers/dossier_render.py` using FTS5 OR-token query.
+    - `_to_fts` joins unique meaningful tokens (>3 chars, non-stopword) with OR (not AND) to maximize recall.
+    - `assemble_dossier` now populates a `"related"` tier for CP/IP/TODO/RG gaps via the cross-gap query.
+    - Added `internet_archive` and `internet_archive_ia_html` to `SOURCE_PRIORITY` and `_SOURCE_LABELS`.
+    - Frontend: "Related from prior research" `TierSection` added between TopPicks and Tier 3 in `DossierView.tsx`.
+
+  Phase 3 — Pull-More Endpoint:
+    - Added `pull_jobs` table (`_PULL_JOBS_DDL`) and `_ensure_pull_jobs(conn)` to `routers/library.py`.
+    - Added `POST /api/library/gaps/{gap_id}/pull-more` (409 if running) and `GET /api/library/gaps/{gap_id}/pull-status`.
+    - Background worker sends Telegram notification on completion.
+    - Frontend `DossierHeader` rewritten with live poll (10s interval) and spinner.
+
+  Phase 4 — Internet Archive as First-Class Source:
+    - New `adapters/internet_archive.py`: `search()`, `item_metadata()`, `download_url()`, throttle.
+    - New `scripts/pull_internet_archive.py` with `--gap-ids`, `--tier`, `--limit`, `--dry-run` CLI flags.
+    - Added `SRC_IA = "internet_archive"` and IA query branch to `layers/gap_query_planner.py` for all gap types.
+    - Added `_pull_internet_archive` shim and IA routing to `layers/pull_dispatch.py`.
+    - Added `--sources` filter flag to `scripts/pull_gap_tree.py`.
+
+Notes
+  - FTS5 OR-join pattern is critical: AND would require all tokens to match, causing near-zero recall on real claim texts.
+  - Migration ordering (ALTER TABLE before executescript) is the invariant: migration adds columns idempotently, executescript's CREATE TABLE IF NOT EXISTS is then a no-op.
+  - `relevance_score` / `relevance_why` remain outside base DDL (added by `scripts/score_relevance.py`); `_articles_columns(conn)` runtime check handles test DBs lacking these columns.
+  - Test suite: 414 tests, all green post-Phase 4. New test files: `test_internet_archive.py` (13 tests), `test_pull_more_endpoint.py` (7 tests), `test_dossier_render_cross_gap.py` (7 tests), `test_article_index_access.py` (9 tests).
+
 [2026-04-02] - Load Local .env From Repository Root in API Runtime
 Problem
 API health and runs showed keyed APIs as unavailable (`missing_keys`) even when valid credentials existed in the repository `.env`, leading to avoidable zero-result routing quality in local runs.

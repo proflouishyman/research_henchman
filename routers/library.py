@@ -10,17 +10,25 @@ rows with article counts and forwards to that helper.
 
 Wave 2 additions: corpus search via FTS5 (``GET /articles/search``) and a
 main-characters dashboard for company-profile gaps (``GET /characters``).
+
+Phase 3 additions:
+  - ``pull_jobs`` SQLite table tracking per-gap pull runs.
+  - ``POST /api/library/gaps/{gap_id}/pull-more`` — trigger async pull.
+  - ``GET /api/library/gaps/{gap_id}/pull-status``  — latest job row.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
+import uuid
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from layers.dossier_render import (
     TIER_ORDER,
@@ -927,5 +935,234 @@ def api_resolve_gaps(body: _ResolveGapsInput) -> Dict[str, Any]:
                 if gid not in mapping[aid]:
                     mapping[aid].append(gid)
         return {"mapping": mapping}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — pull_jobs table + pull-more / pull-status endpoints
+# ---------------------------------------------------------------------------
+
+_PULL_JOBS_DDL = """
+CREATE TABLE IF NOT EXISTS pull_jobs (
+    gap_id        TEXT NOT NULL,
+    run_id        TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'running',
+    started_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at   TEXT,
+    records_pulled INTEGER DEFAULT 0,
+    sources_used  TEXT,
+    errors        TEXT,
+    PRIMARY KEY (gap_id, run_id)
+);
+"""
+
+
+def _ensure_pull_jobs(conn: sqlite3.Connection) -> None:
+    """Create the pull_jobs table if it doesn't exist. Idempotent."""
+    conn.executescript(_PULL_JOBS_DDL)
+    conn.commit()
+
+
+def _run_pull_in_background(
+    gap_id: str,
+    run_id: str,
+    db_path: Path,
+) -> None:
+    """Background worker: run pull_dispatch.pull_gap for the given gap.
+
+    Writes status updates to pull_jobs as it goes. Sends a Telegram
+    notification on completion (per AGENTS.md §15).
+    """
+    import os
+    import sys
+
+    # Ensure project root is on path (BackgroundTasks runs in same process).
+    repo_root = Path(__file__).resolve().parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    # Load .env so API keys are available.
+    env_path = repo_root / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    _ensure_pull_jobs(conn)
+
+    records_pulled = 0
+    sources_used: List[str] = []
+    errors: List[str] = []
+
+    try:
+        from adapters.article_index import open_index, ingest_pull_output
+        from adapters.gap_tree import ensure_gap_tree_schema
+        from config import OrchestratorSettings
+        from layers.llm_client import make_llm_client
+        from layers.pull_dispatch import pull_gap
+
+        settings = OrchestratorSettings.from_env()
+        llm = make_llm_client(settings, model="llama3.1:8b", timeout_seconds=120, temperature=0.2)
+
+        pull_root = repo_root / "data" / "pull_outputs" / run_id
+        pull_root.mkdir(parents=True, exist_ok=True)
+
+        # Re-open article index for the pull (separate from pull_jobs conn).
+        idx_conn = open_index(db_path)
+        ensure_gap_tree_schema(idx_conn)
+
+        node_row = idx_conn.execute(
+            "SELECT * FROM gap_tree WHERE gap_id = ?", (gap_id,)
+        ).fetchone()
+        if not node_row:
+            errors.append(f"gap not found in gap_tree: {gap_id}")
+            idx_conn.close()
+        else:
+            node = dict(node_row)
+            result = pull_gap(
+                idx_conn, node,
+                run_id=run_id, llm=llm, pull_root=pull_root,
+            )
+            records_pulled = result.get("records_pulled", 0)
+            sources_used   = result.get("sources_used", [])
+            errors         = result.get("errors", [])
+
+            # Re-ingest the new pull output into the article index.
+            if not result.get("skipped"):
+                ingest_pull_output(idx_conn, pull_root / run_id if (pull_root / run_id).exists() else pull_root, run_id)
+
+            idx_conn.commit()
+            idx_conn.close()
+
+    except Exception as exc:
+        errors.append(f"pull_more error: {exc!s:.200}")
+
+    finally:
+        # Update pull_jobs row with final status.
+        finished = datetime.now(timezone.utc).isoformat()
+        status = "done" if not errors else "failed"
+        try:
+            conn.execute(
+                """UPDATE pull_jobs
+                      SET status = ?, finished_at = ?, records_pulled = ?,
+                          sources_used = ?, errors = ?
+                    WHERE gap_id = ? AND run_id = ?""",
+                (
+                    status,
+                    finished,
+                    records_pulled,
+                    json.dumps(sources_used),
+                    json.dumps(errors),
+                    gap_id,
+                    run_id,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            pass
+        conn.close()
+
+        # Telegram notification on completion (AGENTS.md §15).
+        try:
+            import urllib.parse
+            import urllib.request
+
+            settings_path = Path.home() / ".claude" / "settings.json"
+            env = json.loads(settings_path.read_text()).get("env", {})
+            token = env.get("TELEGRAM_BOT_TOKEN")
+            chat = str(env.get("TELEGRAM_CHAT_ID", ""))
+            if token and chat:
+                msg = (
+                    f"[pull-more] {gap_id} done. "
+                    f"{records_pulled} records from {sources_used}. "
+                    f"run_id={run_id}"
+                )
+                body = urllib.parse.urlencode({"chat_id": chat, "text": msg}).encode()
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        data=body,
+                    ),
+                    timeout=10,
+                )
+        except Exception:
+            pass
+
+
+@router.post("/gaps/{gap_id}/pull-more")
+def api_pull_more(
+    gap_id: str,
+    background_tasks: BackgroundTasks,
+) -> Dict[str, Any]:
+    """Trigger an async evidence pull for the named gap.
+
+    Returns 409 if a pull job is already running for this gap.
+    Otherwise creates a pull_jobs row with status='running' and schedules
+    the pull in FastAPI's BackgroundTasks. Returns {run_id, status:'started'}.
+    """
+    conn = _open_conn_rw()
+    try:
+        _ensure_pull_jobs(conn)
+
+        # Check for an existing running job — refuse (409) if found.
+        running = conn.execute(
+            "SELECT run_id FROM pull_jobs WHERE gap_id = ? AND status = 'running' LIMIT 1",
+            (gap_id,),
+        ).fetchone()
+        if running:
+            raise HTTPException(
+                status_code=409,
+                detail=f"pull job already running for {gap_id}: run_id={running['run_id']}",
+            )
+
+        run_id = f"pullmore_{uuid.uuid4().hex[:12]}"
+        started = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO pull_jobs (gap_id, run_id, status, started_at)
+               VALUES (?, ?, 'running', ?)""",
+            (gap_id, run_id, started),
+        )
+        conn.commit()
+
+        db_path = _resolve_db_path()
+        background_tasks.add_task(_run_pull_in_background, gap_id, run_id, db_path)
+        return {"run_id": run_id, "status": "started"}
+    finally:
+        conn.close()
+
+
+@router.get("/gaps/{gap_id}/pull-status")
+def api_pull_status(gap_id: str) -> Dict[str, Any]:
+    """Return the latest pull_jobs row for a gap.
+
+    Returns 404 if no pull has ever been run for this gap.
+    """
+    conn = _open_conn()
+    try:
+        _ensure_pull_jobs(conn)
+        row = conn.execute(
+            """SELECT gap_id, run_id, status, started_at, finished_at,
+                      records_pulled, sources_used, errors
+                 FROM pull_jobs WHERE gap_id = ?
+                ORDER BY started_at DESC LIMIT 1""",
+            (gap_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"no pull history for {gap_id}")
+        return {
+            "gap_id":         row["gap_id"],
+            "run_id":         row["run_id"],
+            "status":         row["status"],
+            "started_at":     row["started_at"],
+            "finished_at":    row["finished_at"],
+            "records_pulled": row["records_pulled"] or 0,
+            "sources_used":   json.loads(row["sources_used"] or "[]"),
+            "errors":         json.loads(row["errors"] or "[]"),
+        }
     finally:
         conn.close()

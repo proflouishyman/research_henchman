@@ -911,10 +911,16 @@ class _ResolveGapsInput(_BaseModel):
 
 @router.post("/articles/resolve_gaps")
 def api_resolve_gaps(body: _ResolveGapsInput) -> Dict[str, Any]:
-    """Return the gap_ids associated with each article_id.
+    """Return all gap_ids associated with each article_id across the corpus.
 
-    Uses the articles.gap_id column (each article belongs to exactly one
-    primary gap at ingest time). Returns {article_id (str): [gap_id]}.
+    For each requested article, returns a list where:
+      - First element: the article's own gap_id (primary, from ingest).
+      - Subsequent elements: other distinct gap_ids from sibling articles that
+        share a strong identity key with this article — same non-null doi, OR
+        same non-null url, OR same non-null hathi_id, OR same (source_id,
+        title) pair. Sorted alphabetically; no duplicates; nulls excluded.
+
+    Returns {article_id (str): [gap_id, ...]}.
     """
     if not body.article_ids:
         return {"mapping": {}}
@@ -922,18 +928,81 @@ def api_resolve_gaps(body: _ResolveGapsInput) -> Dict[str, Any]:
     conn = _open_conn()
     try:
         placeholders = ",".join("?" for _ in body.article_ids)
+        # Fetch the primary row for each requested article.
         rows = conn.execute(
-            f"SELECT id, gap_id FROM articles WHERE id IN ({placeholders})",
+            f"SELECT id, gap_id, doi, url, hathi_id, source_id, title"
+            f" FROM articles WHERE id IN ({placeholders})",
             body.article_ids,
         ).fetchall()
+
         mapping: Dict[str, List[str]] = {}
         for r in rows:
             aid = str(int(r["id"]))
-            gid = str(r["gap_id"] or "")
-            if gid:
-                mapping.setdefault(aid, [])
-                if gid not in mapping[aid]:
-                    mapping[aid].append(gid)
+            primary_gap = str(r["gap_id"] or "").strip()
+            if not primary_gap:
+                # Article has no primary gap — omit from mapping (existing behaviour).
+                continue
+
+            # Collect all gaps this article appears in by matching siblings.
+            gap_set: set[str] = {primary_gap}
+
+            # Build OR-clause for each non-null/non-empty identity key.
+            # NULL/empty values must never match each other, so we guard each
+            # predicate with an explicit IS NOT NULL AND != '' check on both
+            # sides (SQLite: NULL != NULL is still NULL, so OR-ing is safe,
+            # but the guard makes the intent explicit and handles empty strings).
+            conds: list[str] = []
+            params: list[Any] = []
+
+            doi = (r["doi"] or "").strip()
+            if doi:
+                conds.append("(doi IS NOT NULL AND doi != '' AND doi = ?)")
+                params.append(doi)
+
+            url = (r["url"] or "").strip()
+            if url:
+                conds.append("(url IS NOT NULL AND url != '' AND url = ?)")
+                params.append(url)
+
+            hathi = (r["hathi_id"] or "").strip()
+            if hathi:
+                conds.append("(hathi_id IS NOT NULL AND hathi_id != '' AND hathi_id = ?)")
+                params.append(hathi)
+
+            # (source_id, title) always applies — title is NOT NULL by schema.
+            # source_id may be NULL; only match when both sides are non-null/non-empty.
+            src = (r["source_id"] or "").strip()
+            title = (r["title"] or "").strip()
+            if src and title:
+                conds.append(
+                    "(source_id IS NOT NULL AND source_id != ''"
+                    " AND title != '' AND source_id = ? AND title = ?)"
+                )
+                params.append(src)
+                params.append(title)
+            elif title:
+                # source_id is absent — fall back to title-only match is too
+                # broad; skip to avoid false positives (spec: pair match only).
+                pass
+
+            if conds:
+                where = " OR ".join(conds)
+                # Exclude the article itself and rows without a gap_id.
+                sibling_sql = (
+                    f"SELECT DISTINCT gap_id FROM articles"
+                    f" WHERE id != ? AND gap_id IS NOT NULL AND gap_id != ''"
+                    f" AND ({where})"
+                )
+                sibling_rows = conn.execute(
+                    sibling_sql, [int(r["id"])] + params
+                ).fetchall()
+                for sr in sibling_rows:
+                    gap_set.add(str(sr["gap_id"]).strip())
+
+            # Primary gap first; remaining gaps sorted alphabetically.
+            extra = sorted(g for g in gap_set if g != primary_gap)
+            mapping[aid] = [primary_gap] + extra
+
         return {"mapping": mapping}
     finally:
         conn.close()

@@ -1,3 +1,46 @@
+[2026-06-11] - Phase 5: Multi-Gap Article Resolution ("also appears in")
+
+Problem
+The reading queue (/write/queue) could only attribute each starred article to a
+single gap. Articles pulled independently for multiple gaps (same source pulled
+for e.g. CP3 and IP1 as separate rows) gave no signal that they were relevant
+elsewhere, so the writer could not jump from a starred source to its other gaps.
+
+Root Cause
+`POST /api/library/articles/resolve_gaps` only read `articles.gap_id` (the
+single primary gap assigned at ingest). Cross-gap membership exists in the data
+as duplicate rows sharing identity keys (doi / url / hathi_id / source+title),
+but no query surfaced it; the frontend additionally discarded all but the first
+element of the (already list-shaped) mapping.
+
+Solution
+  Backend (routers/library.py, api_resolve_gaps):
+    - For each article, after fetching its primary row, run a sibling query for
+      other rows sharing a strong identity key: same non-null/non-empty doi, OR
+      url, OR hathi_id, OR exact (source_id, title) pair. NULL/empty fields are
+      guarded so they never match each other.
+    - Returns [primary_gap] + sorted(other_gaps). Response SHAPE unchanged
+      ({"mapping": {aid: [gap_id, ...]}}) — contract-safe; old clients keep
+      working since the first element remains the primary gap.
+  Frontend (frontend/src/components/library/QueuePage.tsx):
+    - articleGapMap now stores the full string[] per article; grouping still
+      keys on element 0 (primary).
+    - QueueRow renders quiet "also in:" monospace chips for elements 1+,
+      navigating to /write/gaps/<id> with stopPropagation so the chip click
+      does not toggle row expansion.
+
+Notes
+  - Title-only matching (without source_id) was deliberately excluded — too
+    broad, would false-positive on generic titles.
+  - Per-article sibling queries are fine at queue scale (<~200 starred); no
+    new indexes added. Revisit if resolve_gaps is ever called with thousands
+    of ids.
+  - Tests: tests/test_resolve_gaps_multi.py (13 new tests: doi/url/hathi_id/
+    source+title matches, false-positive guards, single-gap regression).
+    Suite now 427 green. tests/test_library_api_marks.py fixture gained a
+    hathi_id column (additive).
+  - docs/orchestrator_app.md updated (resolve_gaps endpoint + /write/queue).
+
 [2026-05-04] - Architecture-level UI improvements (writing companion)
 
 Problem

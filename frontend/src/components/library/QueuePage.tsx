@@ -4,8 +4,13 @@
 // gap_ids server-side. The previous localStorage-based useArticleGapMap is
 // replaced with a single API call on mount so "visit the dossier once" is
 // never required. Articles with no resolved gap show under "(no gap mapping)".
+//
+// Phase 5 (cross-gap resolution): articleGapMap now stores the FULL list of
+// gap_ids per article (element 0 = primary, used for grouping; elements 1+
+// are "also appears in" gaps rendered as clickable chips next to each row).
 
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQueries } from '@tanstack/react-query'
 import { Star } from 'lucide-react'
 import { fetchDossier, resolveGaps } from '../../lib/library_api'
@@ -26,8 +31,9 @@ export function QueuePage() {
   )
 
   // A2: Server-resolved article_id → gap_id mapping via POST resolve_gaps.
-  // Keyed by article_id (number), value is the first gap_id returned.
-  const [articleGapMap, setArticleGapMap] = useState<Record<number, string>>({})
+  // Phase 5: stores the FULL gap list per article (element 0 = primary gap for
+  // grouping; remaining elements are "also appears in" cross-gap memberships).
+  const [articleGapMap, setArticleGapMap] = useState<Record<number, string[]>>({})
   const [resolving, setResolving] = useState(false)
 
   useEffect(() => {
@@ -35,14 +41,13 @@ export function QueuePage() {
     setResolving(true)
     resolveGaps(starredIds)
       .then(({ mapping }) => {
-        // mapping shape: { article_id_str: [gap_id, ...] }
-        // Convert to: { article_id_number: first_gap_id }
-        const m: Record<number, string> = {}
+        // mapping shape: { article_id_str: [primary_gap_id, ...other_gap_ids] }
+        // Preserve the full list; element 0 remains the primary for grouping.
+        const m: Record<number, string[]> = {}
         for (const [articleIdStr, gapIds] of Object.entries(mapping)) {
           const numId = Number(articleIdStr)
           if (Number.isFinite(numId) && gapIds.length > 0) {
-            // First gap wins for articles appearing in multiple gaps.
-            m[numId] = gapIds[0]
+            m[numId] = gapIds
           }
         }
         setArticleGapMap(m)
@@ -55,13 +60,15 @@ export function QueuePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [starredIds.join(',')])
 
-  // Group starred ids by gap_id (or NO_GAP for unresolved).
+  // Group starred ids by primary gap_id (element 0, or NO_GAP for unresolved).
   const grouped = useMemo(() => {
     const out: Record<string, number[]> = {}
     for (const id of starredIds) {
-      const gap = articleGapMap[id] ?? NO_GAP
-      if (!out[gap]) out[gap] = []
-      out[gap].push(id)
+      // Primary gap is the first element; fall back to NO_GAP if unresolved.
+      const gaps = articleGapMap[id]
+      const primaryGap = gaps && gaps.length > 0 ? gaps[0] : NO_GAP
+      if (!out[primaryGap]) out[primaryGap] = []
+      out[primaryGap].push(id)
     }
     return out
   }, [starredIds, articleGapMap])
@@ -141,7 +148,11 @@ export function QueuePage() {
             </div>
             <div className="space-y-2">
               {g.entries.map((e) => (
-                <QueueRow key={e.id} entry={e} />
+                <QueueRow
+                  key={e.id}
+                  entry={e}
+                  alsoInGaps={(articleGapMap[e.id] ?? []).slice(1)}
+                />
               ))}
             </div>
           </section>
@@ -169,12 +180,38 @@ export function QueuePage() {
  * Compact queue row: collapsed by default; click the title to toggle the
  * full SourceCard. Reuses <SourceCard> compact mode for the collapsed
  * variant so the same star/copy primitives are always available.
+ *
+ * Phase 5: accepts alsoInGaps — gap_ids beyond the primary — and renders
+ * a quiet "also in:" line with small monospace chips that navigate to the
+ * respective gap dossier without toggling the row's expand state.
  */
-function QueueRow({ entry }: { entry: DossierEntry }) {
+function QueueRow({ entry, alsoInGaps = [] }: { entry: DossierEntry; alsoInGaps?: string[] }) {
   const [expanded, setExpanded] = useState(false)
+  const navigate = useNavigate()
   return (
     <div onClick={() => setExpanded(!expanded)} className="cursor-pointer">
       <SourceCard entry={entry} compact={!expanded} />
+      {alsoInGaps.length > 0 && (
+        <div
+          className="flex items-center gap-1 mt-1 pl-1"
+          // Prevent the outer row toggle from firing when interacting with chips.
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="text-xs text-ink-muted">also in:</span>
+          {alsoInGaps.map((gapId) => (
+            <button
+              key={gapId}
+              onClick={(e) => {
+                e.stopPropagation()
+                navigate(`/write/gaps/${gapId}`)
+              }}
+              className="font-mono text-[11px] text-ink-muted hover:text-ink px-1 py-0.5 rounded bg-surface-card border border-border hover:border-border-strong transition-colors"
+            >
+              {gapId}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

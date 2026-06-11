@@ -30,7 +30,7 @@ def fixture_db_path(tmp_path: Path) -> Path:
             authors TEXT, journal TEXT, pub_date TEXT,
             abstract TEXT, url TEXT, pdf_path TEXT, md_path TEXT,
             run_id TEXT NOT NULL DEFAULT '',
-            doi TEXT, canonical_id INTEGER,
+            doi TEXT, hathi_id TEXT, canonical_id INTEGER,
             database_name TEXT, bquery_original TEXT, bquery_normalized TEXT,
             variant_index INTEGER, gap_research_question TEXT, gap_topic TEXT,
             relevance_why TEXT,

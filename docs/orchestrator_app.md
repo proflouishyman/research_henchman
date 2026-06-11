@@ -90,10 +90,13 @@ SQLite (no markdown intermediate). The sibling `/runs` mode is unchanged.
   mark row. Idempotent.
 - `GET /api/library/marks?starred=&read=` (v3) — bulk fetch marks with
   optional boolean filters. Returns `{marks: [MarkRow]}`.
-- `POST /api/library/articles/resolve_gaps` (v3) — resolve article IDs
-  to their primary gap. Body: `{article_ids: [int]}`. Returns
-  `{mapping: {article_id_str: [gap_id]}}`. Uses `articles.gap_id`
-  (primary ingest gap).
+- `POST /api/library/articles/resolve_gaps` (v3; Phase 5 multi-gap) — resolve
+  article IDs to ALL gaps they appear in. Body: `{article_ids: [int]}`. Returns
+  `{mapping: {article_id_str: [gap_id, ...]}}`. The first element is the
+  article's primary gap (`articles.gap_id` from ingest); subsequent elements
+  (alphabetical) are gaps of sibling rows sharing a strong identity key —
+  same non-null `doi`, `url`, `hathi_id`, or exact (`source_id`, `title`)
+  pair. Response shape is unchanged from v3 (already a list).
 - `POST /api/library/manuscript/refresh` (architecture pass) — force-refresh
   the manuscript parser cache by deleting the on-disk JSON and re-parsing.
   Returns `{paragraph_count, gap_link_count, last_modified}`. The cache
@@ -319,7 +322,9 @@ The writing companion opens manuscript-first since that is the primary daily wor
 - `/write/queue` → reading queue. Uses `POST /api/library/articles/resolve_gaps`
   on mount to map starred article IDs → gap IDs server-side. The "visit the
   dossier once to populate" message is removed. Articles with no resolved gap
-  (data integrity issue) appear under a "(no gap mapping)" group.
+  (data integrity issue) appear under a "(no gap mapping)" group. Phase 5:
+  grouping uses the primary (first) gap; any additional gaps render as quiet
+  "also in:" chips under the row, navigating to that gap's dossier.
 
 The shared `<SourceCard>` action row: Copy dropdown (Chicago / short / link),
 Star. Read toggle removed from UI. In v3, Star writes to `POST /api/library/marks`

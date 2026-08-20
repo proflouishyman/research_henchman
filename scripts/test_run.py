@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end pipeline test against the real Add to Cart manuscript.
+"""End-to-end pipeline test against the real manuscript.
 
 Usage:
     python scripts/test_run.py [--manuscript PATH] [--base-url URL] [--timeout SECONDS]
@@ -24,8 +24,7 @@ import urllib.error
 
 
 DEFAULT_MANUSCRIPT = (
-    "/Users/louishyman/Library/CloudStorage/GoogleDrive-placeholder"
-    "/My Drive/2024-2025/E-Commerce/Manuscript/manuscript.docx"
+    "/Users/louishyman/Documents/Manuscript/manuscript.docx"
 )
 DEFAULT_BASE_URL = "http://localhost:8876"
 DEFAULT_TIMEOUT  = 600  # 10 minutes
